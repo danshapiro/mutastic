@@ -1,0 +1,49 @@
+// Package daemon implements the mutastic resident daemon: mute-state
+// tracking, HID session management, and the UDP command server.
+package daemon
+
+import (
+	"sync"
+
+	"mutastic/internal/proto"
+)
+
+// Tracker holds the last known hardware mute state. The zero value is
+// usable and reports known=false until the first Apply or Set.
+type Tracker struct {
+	mu    sync.Mutex
+	known bool
+	muted bool
+}
+
+// Apply updates the state from a mute event (0x20 SoftwareMute or
+// 0x21 DeviceMute). It returns true iff the event was a mute event with a
+// decodable value byte.
+func (t *Tracker) Apply(e proto.Event) bool {
+	if e.Op != proto.EvtSoftwareMute && e.Op != proto.EvtDeviceMute {
+		return false
+	}
+	muted, ok := proto.MutedFromValue(e.Value)
+	if !ok {
+		return false
+	}
+	t.Set(muted)
+	return true
+}
+
+// Set records a known mute state (used optimistically after a successful
+// outbound mute command; the device echo then confirms it).
+func (t *Tracker) Set(muted bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.known = true
+	t.muted = muted
+}
+
+// Status returns the current state; known is false if no mute event or Set
+// has been seen yet.
+func (t *Tracker) Status() (muted bool, known bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.muted, t.known
+}
