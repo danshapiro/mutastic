@@ -1076,7 +1076,7 @@ git commit -m "feat: daemon run loop with handshake, reconnect, and UDP server"
   - Binary usage: `mutastic daemon` | `mutastic toggle|mute|unmute|status`; unknown/missing subcommand prints usage to stderr, exit 2
   - `func runClient(cmd, addr string, timeout time.Duration, out io.Writer) int` — prints the daemon reply (or `error: no daemon reachable`) to out; returns exit code 0/1/2 per Global Constraints
   - `const udpAddr = "127.0.0.1:42814"`
-  - `func openYetiX() (daemon.Device, error)` — windows: go-hid enumeration (VID 0x046D; PIDs 0x0AAF, 0x0AD1, 0x0AC6; pick `Usage == 1`, log every collection's Usage/UsagePage/Path); non-windows: returns an error
+  - `func openYetiX(logger *log.Logger) (daemon.Device, error)` — windows: go-hid enumeration (VID 0x046D; PIDs 0x0AAF, 0x0AD1, 0x0AC6; pick `Usage == 1`, log every collection's Usage/UsagePage/Path through the passed daemon logger so the lines reach `mutastic.log`); non-windows: returns an error
   - `func hideConsoleIfOwned()` — windows: hides the console window only when this process is its sole owner (i.e., launched from a shortcut, not from a terminal); non-windows: no-op
   - Daemon logging: file at `os.UserCacheDir()/mutastic/mutastic.log` (= `%LOCALAPPDATA%\mutastic\mutastic.log` on Windows), rotated to `.old` above 5 MB at startup, tee'd to stderr
 
@@ -1254,7 +1254,8 @@ func runDaemon() int {
 		logger.Printf("cannot bind %s (daemon already running?): %v", udpAddr, err)
 		return 1
 	}
-	daemon.Run(context.Background(), openYetiX, pc, logger)
+	open := func() (daemon.Device, error) { return openYetiX(logger) }
+	daemon.Run(context.Background(), open, pc, logger)
 	return 0
 }
 
@@ -1298,7 +1299,6 @@ package main
 import (
 	"errors"
 	"log"
-	"os"
 	"syscall"
 	"time"
 	"unsafe"
@@ -1317,14 +1317,15 @@ var hidReady = false
 // openYetiX finds the Yeti X vendor control interface: the HID collection
 // with Usage == 1 (per docs/yeti-x-hid-protocol.md; UsagePage is logged but
 // deliberately NOT filtered on, mirroring the reference implementation).
-func openYetiX() (daemon.Device, error) {
+// logger is the daemon's MultiWriter logger, so the enumeration lines land
+// in mutastic.log as well as on stderr (Task 8 consumes them from the file).
+func openYetiX(logger *log.Logger) (daemon.Device, error) {
 	if !hidReady {
 		if err := hid.Init(); err != nil {
 			return nil, err
 		}
 		hidReady = true
 	}
-	logger := log.New(os.Stderr, "", log.LstdFlags)
 	var path string
 	for _, pid := range yetiPIDs {
 		_ = hid.Enumerate(yetiVID, pid, func(info *hid.DeviceInfo) error {
@@ -1397,11 +1398,12 @@ package main
 
 import (
 	"errors"
+	"log"
 
 	"mutastic/internal/daemon"
 )
 
-func openYetiX() (daemon.Device, error) {
+func openYetiX(_ *log.Logger) (daemon.Device, error) {
 	return nil, errors.New("the mutastic daemon only supports Windows")
 }
 
@@ -1768,9 +1770,11 @@ git commit -m "feat: Windows deployment script (replaces finish-setup.cmd.legacy
 - [ ] **Step 1: Run the deployment from the worktree (source override argument)**
 
 ```bash
-cmd.exe /c "\\wsl.localhost\Ubuntu\home\dan\code\mutastic\.worktrees\yeti-x-mute-daemon\deploy\deploy.cmd" "\\wsl.localhost\Ubuntu\home\dan\code\mutastic\.worktrees\yeti-x-mute-daemon"
+cmd.exe /c '\\wsl.localhost\Ubuntu\home\dan\code\mutastic\.worktrees\yeti-x-mute-daemon\deploy\deploy.cmd' '\\wsl.localhost\Ubuntu\home\dan\code\mutastic\.worktrees\yeti-x-mute-daemon'
 echo "exit=$?"
 ```
+
+The single quotes are REQUIRED: inside bash double quotes the leading `\\` collapses to a single `\`, so cmd.exe would receive a drive-rooted `\wsl.localhost\...` path instead of a UNC path and fail with `The system cannot find the path specified.` (empirically verified 2026-08-08). Single quotes preserve every backslash.
 
 Expected: section banners, `Deploy complete.`, `exit=0`. (cmd may print a benign "UNC paths are not supported" cwd warning — harmless, the script never relies on cwd.)
 
@@ -1779,10 +1783,12 @@ Expected: section banners, `Deploy complete.`, `exit=0`. (cmd may print a benign
 ```bash
 ls -l /mnt/c/Users/dan/code/mutastic-deploy/
 ls -l "/mnt/c/Users/dan/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/"
-powershell.exe -NoProfile -Command "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut([Environment]::GetFolderPath('Startup') + '\MuteAllMeetings.lnk'); $s.TargetPath; $s.Arguments"
+powershell.exe -NoProfile -Command '$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut([Environment]::GetFolderPath("Startup") + "\MuteAllMeetings.lnk"); $s.TargetPath; $s.Arguments'
 tasklist.exe | grep -iE 'mutastic|AutoHotkey'
 ls -d /mnt/c/Users/dan/code/mute-unmute-meetings
 ```
+
+(The powershell command MUST be single-quoted for bash: inside double quotes bash would expand the unset `$ws`/`$s` to empty strings and PowerShell would receive an unparsable ` = New-Object ...`. Single quotes hand `$ws`/`$s` through intact; the inner PowerShell string literals use double quotes for that reason.)
 
 Expected:
 - deploy dir contains `mutastic.exe`, `MuteAllMeetings.ahk` (and `mic_mute_light.ico` unless the WARNING fired — if it fired, note it for the human);
@@ -1796,14 +1802,18 @@ Contingency if `mutastic.exe` is NOT running (or later vanishes): check Windows 
 - [ ] **Step 3: End-to-end acceptance against the deployed daemon**
 
 ```bash
-/mnt/c/Users/dan/code/mutastic-deploy/mutastic.exe status    # record ORIGINAL
+/mnt/c/Users/dan/code/mutastic-deploy/mutastic.exe unmute    # seed known state (see note below)
+/mnt/c/Users/dan/code/mutastic-deploy/mutastic.exe status    # record ORIGINAL -- must be `unmuted`
 /mnt/c/Users/dan/code/mutastic-deploy/mutastic.exe toggle
+/mnt/c/Users/dan/code/mutastic-deploy/mutastic.exe status    # must be `muted` (inverse of ORIGINAL)
 /mnt/c/Users/dan/code/mutastic-deploy/mutastic.exe toggle
-/mnt/c/Users/dan/code/mutastic-deploy/mutastic.exe status    # must equal ORIGINAL
+/mnt/c/Users/dan/code/mutastic-deploy/mutastic.exe status    # must equal ORIGINAL (`unmuted`)
 tail -20 "/mnt/c/Users/dan/AppData/Local/mutastic/mutastic.log"
 ```
 
-Expected: double toggle returns to ORIGINAL; the log file exists at the spec'd location (`%LOCALAPPDATA%\mutastic\mutastic.log`) and shows the two transitions plus `command "toggle" -> ...` lines. Finish with the mic **unmuted**: if the final status is `muted`, run one `unmute`.
+The leading `unmute` is REQUIRED: Step 1's deploy freshly (re)started the daemon, and a fresh daemon reports `unknown` until its first mute command/event (the exact behavior the README documents in Step 4) -- without seeding, ORIGINAL would be `unknown` and the double-toggle check could never equal it.
+
+Expected: ORIGINAL is `unmuted`; the middle status is `muted`; the final status equals ORIGINAL; the log file exists at the spec'd location (`%LOCALAPPDATA%\mutastic\mutastic.log`) and shows the transitions plus `command "toggle" -> ...` lines. The final state is `unmuted`, which also satisfies the leave-the-mic-unmuted requirement (no extra command needed).
 
 - [ ] **Step 4: Update README.md**
 
@@ -1852,7 +1862,9 @@ Surface these at final review as open questions for the human — software canno
 
 **2. Placeholder scan:** No TBD/TODO/"handle edge cases"/"similar to Task N" anywhere; every code step contains the complete code; every contingency names the exact alternate action (binary-payload variant with the exact test assertions to flip, /iLib UNC fallback, hid.ErrTimeout guard removal with a verification command, toolchain install packages, Windows-side build fallback).
 
-**3. Type consistency:** `EncodeCommand`/`DecodeEvent`/`Event`/`MutedFromValue` (Task 1) are used with identical signatures in Tasks 2–4; `Tracker.Apply/Set/Status` (Task 2) in Tasks 3–4; `Device`/`New`/`SetDevice`/`WriteReport`/`HandleCommand` (Task 3) in Task 4's `Run`/`session`/`serveUDP`; `OpenFunc` and `Run(ctx, open, pc, logger)` (Task 4) match the `main.go` call site and every `startDaemon` test call; `runClient(cmd, addr string, timeout time.Duration, out io.Writer) int` (Task 5) matches all three `main_test.go` call sites; `openYetiX() (daemon.Device, error)` and `hideConsoleIfOwned()` have matching windows/non-windows variants; the reply strings (`muted`/`unmuted`/`unknown`/`error: ...`) and exit codes (0/1/2) are identical across Tasks 3, 4, 5, 6, 7, 11 and the Global Constraints. ✓
+**3. Type consistency:** `EncodeCommand`/`DecodeEvent`/`Event`/`MutedFromValue` (Task 1) are used with identical signatures in Tasks 2–4; `Tracker.Apply/Set/Status` (Task 2) in Tasks 3–4; `Device`/`New`/`SetDevice`/`WriteReport`/`HandleCommand` (Task 3) in Task 4's `Run`/`session`/`serveUDP`; `OpenFunc` and `Run(ctx, open, pc, logger)` (Task 4) match the `main.go` call site and every `startDaemon` test call; `runClient(cmd, addr string, timeout time.Duration, out io.Writer) int` (Task 5) matches all three `main_test.go` call sites; `openYetiX(logger *log.Logger) (daemon.Device, error)` and `hideConsoleIfOwned()` have matching windows/non-windows variants (main.go passes the daemon logger via a closure that satisfies `OpenFunc`); the reply strings (`muted`/`unmuted`/`unknown`/`error: ...`) and exit codes (0/1/2) are identical across Tasks 3, 4, 5, 6, 7, 11 and the Global Constraints. ✓
 
 
 **4. Load-bearing validation pass (2026-08-08):** Assumption ledger (10 verified, 1 falsified, 5 accepted with mitigation, 1 deferred) lives at `.worktrees/.the-usual-logs/yeti-x-mute-daemon/load-bearing-ledger.md`. Falsified A4 (post-handshake silence benign) is fixed by Task 4's handshake liveness gate + `TestRehandshakeAfterSilentHandshake` (and `startDaemon` now waits for `Run` to exit on cleanup, so the test's `handshakeLiveness` override cannot race the daemon goroutine under `-race`). Task 5's ErrTimeout contingency was replaced by the verified fact (the `errors.Is` guard is REQUIRED). Task 7 Step 2 is upgraded to a two-cycle test resolving encoding, new-vs-old echo semantics, and polarity, with an ordered four-branch no-echo diagnosis (liveness → encoding → sibling collection → STOP). Task 8 records the two new findings. Task 11 gains a Defender false-positive contingency. Re-ran the self-review over all edited tasks: every step remains complete (no TBDs; each contingency names exact files, assertions, commands, and commit messages); type consistency holds (`handshakeLiveness`/`errHandshakeSilence` are package-internal to `internal/daemon`; no frozen interface changed — the liveness gate is behavior inside `session`, and the new test uses only existing helpers `newFakeDevice`/`startDaemon`/`waitFor`/`inputReport`); no silent deferrals introduced (the gate is unit-tested; live flakiness observation goes through Task 7's log checks; physical actions remain explicit human questions).
+
+**5. Fresh-eyes plan review pass (iteration 1, 2026-08-08):** An independent cross-model review found four blocking executable defects, all fixed: (1) Task 11 Step 1's deploy invocation now single-quotes the UNC paths (bash double quotes collapsed the leading `\\`, empirically producing "path not found"); (2) Task 11 Step 2's shortcut check now single-quotes the powershell command (bash was expanding the unset `$ws`/`$s` to empty strings); (3) Task 11 Step 3 now seeds known state with a leading `unmute` before recording ORIGINAL (a daemon freshly restarted by Step 1's deploy reports `unknown` until its first command/event, so the old `Expected` was unachievable) and its Expected now names the exact statuses; (4) `openYetiX` now takes the daemon logger as a parameter (`openYetiX(logger *log.Logger)`, both build variants; `main.go` closes over it to satisfy `OpenFunc`), so the `hid collection: ... usage_page=...` enumeration lines reach `mutastic.log` and Task 8's stated evidence source is real. Re-ran the self-review over the edited tasks (5, 7, 8, 11): every step remains complete with no placeholders; type consistency holds (signature updated consistently in the Task 5 interface list, both `hid_windows.go`/`hid_other.go` variants, the `main.go` closure call site, and check 3 above; `hid_windows.go` drops the now-unused `os` import, `hid_other.go` gains `log`; no frozen `internal/daemon` interface changed); no silent deferrals introduced (the acceptance gate is now satisfiable as written and still exercises status/toggle end-to-end; the mic still finishes unmuted).
