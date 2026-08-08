@@ -1,0 +1,18 @@
+@echo off
+REM One-click finisher: install AutoHotkey v1.1, autostart MuteAllMeetings, launch now.
+setlocal
+
+echo === Installing AutoHotkey v1.1 (silent) ===
+"%USERPROFILE%\Downloads\AutoHotkey_1.1_setup.exe" /S
+if errorlevel 1 ( echo AutoHotkey install FAILED & pause & exit /b 1 )
+
+echo === Creating Startup shortcut ===
+powershell -NoProfile -Command "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut([Environment]::GetFolderPath('Startup') + '\MuteAllMeetings.lnk'); $s.TargetPath = '%~dp0MuteAllMeetings.ahk'; $s.WorkingDirectory = '%~dp0'; $s.Save()"
+
+echo === Launching MuteAllMeetings ===
+start "" "%~dp0MuteAllMeetings.ahk"
+
+echo.
+echo Done. Middle foot pedal (F14) now toggles mute in ALL running
+echo meeting apps: Teams, Zoom, Webex, and focused Google Meet tabs.
+pause
