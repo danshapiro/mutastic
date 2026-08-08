@@ -16,7 +16,7 @@
 - Worktree/repo root (all paths below are relative to it): `/home/dan/code/mutastic/.worktrees/yeti-x-mute-daemon`
 - Target platform: windows/amd64. Build command (exact): `GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc go build -ldflags "-s -w" -o bin/mutastic.exe .` (toolchain already installed: go1.26.3 at /usr/local/bin/go, x86_64-w64-mingw32-gcc 13)
 - Dev environment is WSL2 Ubuntu. NEVER usbipd-attach the Yeti X to WSL (it would steal the system microphone). All live runs of the built .exe happen on the Windows side via WSL interop (`/mnt/c/...` or `cmd.exe /c`).
-- HID library: `github.com/sstallion/go-hid v0.15.0` exactly. Only `hid_windows.go` may import it. Device selection: VID `0x046D`, PID one of `0x0AAF`, `0x0AD1`, `0x0AC6` (this machine: 0x0AAF), HID collection with `Usage == 1` (do NOT filter on UsagePage; log it).
+- HID library: `github.com/sstallion/go-hid v0.15.0` exactly. Only `hid_windows.go` may import it. Device selection: VID `0x046D`, PID one of `0x0AAF`, `0x0AD1`, `0x0AC6` (this machine: 0x0AAF), HID collection with `Usage == 1` (do NOT filter on UsagePage; log it). Verified live 2026-08-08 by a read-only probe (load-bearing validation): only PID 0x0AAF enumerates on this machine (4 collections, all on MI_03); `Usage == 1` matches exactly one collection (UsagePage 0xFFFF, `...MI_03&Col04...`), which opens non-elevated; the exact cross-compile command above builds go-hid v0.15.0 and the result runs on Windows.
 - UDP endpoint (exact): `127.0.0.1:42814`, plain-text commands `toggle`, `mute`, `unmute`, `status`; replies are exactly `muted`, `unmuted`, `unknown`, or `error: <reason>`.
 - Client exit codes: 0 = non-error reply, 1 = `error:` reply, 2 = no daemon reachable / bad usage.
 - Daemon log file: `%LOCALAPPDATA%\mutastic\mutastic.log` on Windows — implemented as `os.UserCacheDir()` + `/mutastic/mutastic.log` (UserCacheDir IS %LOCALAPPDATA% on Windows).
@@ -725,6 +725,7 @@ git commit -m "feat: daemon command handling and device write path"
   - `type OpenFunc func() (Device, error)` — opens the Yeti X control interface
   - `func Run(ctx context.Context, open OpenFunc, pc net.PacketConn, logger *log.Logger) error` — blocks until ctx is cancelled; caller owns creating the UDP listener (binding 127.0.0.1:42814 in production doubles as a single-instance lock: a second daemon fails to bind and exits)
 - Behavior (frozen): on each successful open, send handshake `EncodeCommand(OpInit, nil)` then `EncodeCommand(OpGetVolume, nil)` (no delay between them); then loop `ReadWithTimeout(buf, 1s)`; every decoded event is logged with op and value in hex (Task 7 depends on these log lines); read error ⇒ close, clear device, retry after 2s; open failure ⇒ retry after 3s.
+- Handshake liveness gate (added by load-bearing validation — assumption A4 was FALSIFIED): the protocol doc calls the handshake “somewhat flaky” and the reference implementation retries the whole open+handshake after 5s of post-handshake silence — a write-succeeded handshake does NOT imply a live event stream, and a silent session would leave the daemon permanently deaf (no events, no error, no reconnect). Therefore: the GetVolume request must provoke at least one input report; if NO input report has arrived within 5s of the handshake (package-level `var handshakeLiveness = 5 * time.Second`, shortened in tests), `session` returns an error and the session is retried like any device loss (close, clear device, 2s, reopen + re-handshake). After the first input report of a session, silence is normal idle and never triggers the gate.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -763,8 +764,15 @@ func startDaemon(t *testing.T, open OpenFunc) (addr string, ask func(cmd string)
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go Run(ctx, open, pc, testLogger())
+	done := make(chan struct{})
+	go func() {
+		Run(ctx, open, pc, testLogger())
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done // ensure Run has exited before later cleanups (e.g. restoring handshakeLiveness)
+	})
 
 	addr = pc.LocalAddr().String()
 	ask = func(cmd string) string {
@@ -871,6 +879,36 @@ func TestOpenFailureRetriesWithoutCrashing(t *testing.T) {
 		t.Fatalf("mute with no device = %q, want error: no device", got)
 	}
 }
+
+func TestRehandshakeAfterSilentHandshake(t *testing.T) {
+	old := handshakeLiveness
+	handshakeLiveness = 200 * time.Millisecond
+	t.Cleanup(func() { handshakeLiveness = old })
+
+	dev1 := newFakeDevice() // never emits an input report: a silent (flaky) handshake
+	dev2 := newFakeDevice()
+	var opens atomic.Int32
+	open := func() (Device, error) {
+		if opens.Add(1) == 1 {
+			return dev1, nil
+		}
+		return dev2, nil
+	}
+	_, ask := startDaemon(t, open)
+
+	// The daemon must abandon the silent dev1 (liveness gate) and re-handshake
+	// on dev2. Reconnect delay is 2s; allow up to 5s.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && dev2.writeCount() < 2 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if dev2.writeCount() < 2 {
+		t.Fatal("daemon did not re-handshake after a silent (flaky) handshake")
+	}
+	// An input report on dev2 clears the gate and drives status normally.
+	dev2.events <- inputReport(0x21, 0x01)
+	waitFor(t, "status after re-handshake", func() bool { return ask("status") == "muted" })
+}
 ```
 
 Update the import block at the top of `internal/daemon/daemon_test.go` to:
@@ -936,8 +974,19 @@ func Run(ctx context.Context, open OpenFunc, pc net.PacketConn, logger *log.Logg
 	return nil
 }
 
+// handshakeLiveness bounds how long a fresh session may stay silent after the
+// handshake. The protocol doc calls the handshake "somewhat flaky": writes can
+// succeed yet the event stream never comes up, which would leave the daemon
+// deaf with no error to trigger a reconnect. The GetVolume request sent during
+// the handshake provokes a reply, so a live session always produces at least
+// one input report quickly. Var (not const) so tests can shorten it.
+var handshakeLiveness = 5 * time.Second
+
+var errHandshakeSilence = errors.New("no input report within the handshake liveness window (flaky handshake); reinitializing")
+
 // session performs the init handshake then reads input reports until the
-// device errors (unplug) or ctx is cancelled.
+// device errors (unplug), the handshake proves dead (liveness gate), or ctx
+// is cancelled.
 func (d *Daemon) session(ctx context.Context, dev Device) error {
 	if err := d.WriteReport(proto.EncodeCommand(proto.OpInit, nil)); err != nil {
 		return err
@@ -945,6 +994,8 @@ func (d *Daemon) session(ctx context.Context, dev Device) error {
 	if err := d.WriteReport(proto.EncodeCommand(proto.OpGetVolume, nil)); err != nil {
 		return err
 	}
+	deadline := time.Now().Add(handshakeLiveness)
+	live := false // becomes true on the first input report of this session
 	buf := make([]byte, 128)
 	for ctx.Err() == nil {
 		n, err := dev.ReadWithTimeout(buf, time.Second)
@@ -952,8 +1003,12 @@ func (d *Daemon) session(ctx context.Context, dev Device) error {
 			return err
 		}
 		if n == 0 {
+			if !live && time.Now().After(deadline) {
+				return errHandshakeSilence
+			}
 			continue // timeout, no data
 		}
+		live = true
 		ev, ok := proto.DecodeEvent(buf[:n])
 		if !ok {
 			continue
@@ -995,7 +1050,7 @@ func sleepCtx(ctx context.Context, dur time.Duration) {
 - [ ] **Step 4: Run all tests, including the race detector**
 
 Run: `cd /home/dan/code/mutastic/.worktrees/yeti-x-mute-daemon && go test -race ./... && go vet ./...`
-Expected: PASS for `internal/proto` and `internal/daemon`; no vet findings. (`TestReconnectAfterReadError` legitimately takes ~2–3s.)
+Expected: PASS for `internal/proto` and `internal/daemon`; no vet findings. (`TestReconnectAfterReadError` and `TestRehandshakeAfterSilentHandshake` legitimately take ~2–3s each.)
 
 - [ ] **Step 5: Commit**
 
@@ -1331,7 +1386,7 @@ func hideConsoleIfOwned() {
 }
 ```
 
-(Contingency: if `hid.ErrTimeout` does not exist in the pinned go-hid version — check with `grep -r ErrTimeout $(go env GOMODCACHE)/github.com/sstallion/go-hid@v0.15.0/` — delete the `errors.Is` guard; go-hid then already returns `(0, nil)` on timeout, which satisfies the contract.)
+(Verified 2026-08-08 against the go-hid v0.15.0 source (hid.go:63-64, 223, 232-233): `hid.ErrTimeout` EXISTS and `ReadWithTimeout` returns `(0, hid.ErrTimeout)` — not `(0, nil)` — on a timeout with no data. The `errors.Is` guard above is therefore REQUIRED to satisfy the Device contract; do NOT remove it. Also verified: hidapi loads hid.dll/cfgmgr32.dll at runtime, so the build needs no extra linker flags.)
 
 Create `hid_other.go`:
 
@@ -1454,24 +1509,38 @@ git commit -m "build: windows/amd64 cross-compile script"
 Run with the bash tool's `run_in_background: true` (stderr streams the log). Give it ~3s, then confirm from the log output (or `tail -20 "/mnt/c/Users/dan/AppData/Local/mutastic/mutastic.log"`):
 - `hid collection: ...` lines enumerate the Yeti X collections — record each `usage_page` value (open question in the protocol doc);
 - `device opened` — proves VID/PID + usage==1 selection worked.
+- Pre-verified 2026-08-08 by a read-only enumeration probe (expect the same lines here): PID 0x0AAF exposes 4 collections on MI_03 — usage_page/usage `0xFF43/0x0701`, `0xFF43/0x0702`, `0xFF43/0x0704`, `0xFFFF/0x0001`; `usage==1` matches exactly the `0xFFFF` Col04 collection.
+- If the log shows repeated `no input report within the handshake liveness window` retries: that is Task 4's liveness gate working around the doc's known handshake flakiness — the daemon should come live within a few cycles. If it NEVER comes live after ~10 retries, jump to Step 2 contingency (c) (wrong collection), NOT to the payload-encoding contingency.
 
 If instead `open device: Yeti X control interface (usage==1) not found` repeats: the mic is not attached to Windows, or another PID from the list applies, or G HUB claims it exclusively — STOP and surface to the human; do not guess.
 
-- [ ] **Step 2: Exercise mute and unmute; capture the echo encoding**
+- [ ] **Step 2: Exercise mute and unmute across TWO full cycles; capture echo encoding, new-vs-old semantics, and polarity**
 
 ```bash
-/mnt/c/Users/dan/code/mutastic-deploy/mutastic.exe mute; echo "exit=$?"
-sleep 1
-/mnt/c/Users/dan/code/mutastic-deploy/mutastic.exe status
-/mnt/c/Users/dan/code/mutastic-deploy/mutastic.exe unmute; echo "exit=$?"
-sleep 1
-/mnt/c/Users/dan/code/mutastic-deploy/mutastic.exe status
-tail -40 "/mnt/c/Users/dan/AppData/Local/mutastic/mutastic.log"
+for cycle in 1 2; do
+  echo "=== cycle $cycle ==="
+  /mnt/c/Users/dan/code/mutastic-deploy/mutastic.exe mute; echo "exit=$?"
+  sleep 1
+  /mnt/c/Users/dan/code/mutastic-deploy/mutastic.exe status
+  /mnt/c/Users/dan/code/mutastic-deploy/mutastic.exe unmute; echo "exit=$?"
+  sleep 1
+  /mnt/c/Users/dan/code/mutastic-deploy/mutastic.exe status
+done
+tail -60 "/mnt/c/Users/dan/AppData/Local/mutastic/mutastic.log"
 ```
 
-Expected: `mute` prints `muted` (exit 0), status `muted`; `unmute` prints `unmuted`, status `unmuted`. In the log, each command should be followed by a SoftwareMute echo line `event op=0x20 value=0xVV -> muted=...`. Record the exact `value=0xVV` for mute and for unmute — `0x01/0x00` means the inbound value byte is binary; `0x31/0x30` means ASCII. This resolves the protocol doc's open questions 1 and 2.
+Expected: in BOTH cycles `mute` prints `muted` (exit 0) with status `muted`, and `unmute` prints `unmuted` with status `unmuted`. In the log, each command should be followed by a SoftwareMute echo line `event op=0x20 value=0xVV -> muted=...`. Record the exact `value=0xVV` for every one of the four commands and resolve THREE questions empirically (none may be assumed):
 
-Contingency if NO echo events appear or the hardware state does not actually change: the ASCII payload assumption may be wrong. Change `setMute` in `internal/daemon/daemon.go` to use binary payloads `[]byte{0x01}` / `[]byte{0x00}` (length byte stays 0x09 automatically), update the two payload-byte assertions in `internal/daemon/daemon_test.go` and the two in `internal/proto/proto_test.go` (`0x31`→`0x01`, `0x30`→`0x00`), rebuild (`./build.sh`), redeploy (`taskkill.exe /F /IM mutastic.exe`, re-copy the exe, restart the daemon), and repeat this step. Whichever encoding produces a state change is the confirmed one; if it was binary, commit as `fix: mute payload is binary, not ASCII`.
+1. **Encoding** — `0x01/0x00` means the inbound value byte is binary; `0x31/0x30` means ASCII (protocol doc open questions 1–2).
+2. **NEW vs OLD state** — the doc's Pattern events (`0x08`/`0x12`) demonstrably carry old/new pairs, so echoes carrying the PREVIOUS state are a real possibility. Across two full cycles the sequences differ unambiguously: new-state echoes decode muted, unmuted, muted, unmuted; old-state echoes lag one step. Contingency if echoes consistently carry the OLD state: change event handling so `0x20` SoftwareMute events are ignored for state tracking (the optimistic `Set` already covers host commands; `0x21` DeviceMute stays authoritative) — in `Tracker.Apply` accept only `proto.EvtDeviceMute`, update the affected tests (`TestTrackerAppliesSoftwareUnmuteASCII` becomes an ignored-event test; the `0x20` step in `TestDeviceEventsDriveStatusOverUDP` flips expectation), rebuild, redeploy, re-run this step, and commit as `fix: 0x20 echo carries previous state; ignore for tracking`. Record the finding for Task 8.
+3. **Polarity** — a related device (Logitech Yeti GX) has an INVERTED set_mute. The echo after `mute` must decode to muted=true. Contingency if behavior is consistent but inverted: swap the payloads in `setMute` (`"1"`↔`"0"`), flip the corresponding payload assertions in `internal/daemon/daemon_test.go`, rebuild, redeploy, repeat this step, and commit as `fix: mute payload polarity inverted`. (The physically observable state — LED / actual audio mute — remains human question 1/2.)
+
+Contingency if NO echo events appear or the hardware state does not actually change — several distinct failures share this exact symptom; diagnose in THIS order:
+
+- **(a) Handshake liveness:** check the log for liveness-gate retries (Task 4). A daemon that never comes live has a handshake/collection problem, not an encoding problem — go to (c).
+- **(b) Payload encoding:** change `setMute` in `internal/daemon/daemon.go` to use binary payloads `[]byte{0x01}` / `[]byte{0x00}` (length byte stays 0x09 automatically), update the two payload-byte assertions in `internal/daemon/daemon_test.go` and the two in `internal/proto/proto_test.go` (`0x31`→`0x01`, `0x30`→`0x00`), rebuild (`./build.sh`), redeploy (`taskkill.exe /F /IM mutastic.exe`, re-copy the exe, restart the daemon), and repeat this step. Whichever encoding produces a state change is the confirmed one; if it was binary, commit as `fix: mute payload is binary, not ASCII`.
+- **(c) Wrong collection:** the mute protocol may live on one of the sibling `0xFF43` collections (usages 0x0701/0x0702/0x0704) instead of `0xFFFF/0x0001` — the usage==1 rule comes from the reference implementation, whose event handling was only battle-tested for volume. As a diagnostic experiment, temporarily change the selection in `openYetiX` to `info.UsagePage == 0xFF43 && info.Usage == 0x0701` (then 0x0702, then 0x0704), rebuild, redeploy, and retry mute/unmute (both encodings) on each. If one works, make that the permanent selection rule, update its comment, commit as `fix: mute protocol lives on the 0xFF43 collection`, and record it in Task 8.
+- **(d) Total failure:** if no collection and no encoding changes the hardware state, op 0x20 does not control mute on this firmware — STOP and surface to the human with the collected log evidence (options to present: USB capture of Logitech G HUB / Blue Sherpa traffic to find the real command, or dropping the hardware-mute goal). Do NOT guess further.
 
 - [ ] **Step 3: End-to-end toggle check (double-toggle returns to original state)**
 
@@ -1519,6 +1588,8 @@ Read the open-questions section of `docs/yeti-x-hid-protocol.md` and, for each q
 - Mute payload encoding: which outbound payload (ASCII `"1"`/`"0"`, or binary) actually toggled the device — per Task 7 Step 2 (or its contingency).
 - Inbound value byte for mute events: binary (`0x00/0x01`) or ASCII (`0x30/0x31`) — the recorded echo values.
 - The `usage_page` of the control collection — from the enumeration log lines.
+- Whether the `0x20` echo reflects the NEW or the PREVIOUS state, and the confirmed polarity (payload `"1"` = muted, or inverted) — from Task 7 Step 2's two-cycle record.
+- Which collection carries the mute protocol (`0xFFFF/0x0001` per the usage==1 rule, or a `0xFF43` sibling if Task 7 contingency (c) applied).
 - The mute LED question must REMAIN OPEN, annotated: "pending human verification — software cannot observe the LED."
 
 Do not restructure the document; only edit the open-questions content (and fix any statement elsewhere in the doc that the findings directly contradict, quoting the observed bytes).
@@ -1720,6 +1791,8 @@ Expected:
 - `tasklist` shows both `mutastic.exe` and `AutoHotkeyU64.exe` running;
 - the old folder still exists (it must NOT have been deleted).
 
+Contingency if `mutastic.exe` is NOT running (or later vanishes): check Windows Defender Protection History FIRST (read-only: `powershell.exe -NoProfile -Command "Get-MpThreatDetection | Select-Object -First 5 | Format-List"`, or the Windows Security UI) — this machine has real-time + behavior monitoring active with a history of quarantines, and unsigned stripped cgo binaries are a known false-positive class. If Defender quarantined it: rebuild without `-ldflags "-s -w"` (edit build.sh), redeploy, and document the finding in the README troubleshooting section. (SmartScreen is a non-issue: files copied via the WSL bridge carry no Mark-of-the-Web — verified 2026-08-08.)
+
 - [ ] **Step 3: End-to-end acceptance against the deployed daemon**
 
 ```bash
@@ -1780,3 +1853,6 @@ Surface these at final review as open questions for the human — software canno
 **2. Placeholder scan:** No TBD/TODO/"handle edge cases"/"similar to Task N" anywhere; every code step contains the complete code; every contingency names the exact alternate action (binary-payload variant with the exact test assertions to flip, /iLib UNC fallback, hid.ErrTimeout guard removal with a verification command, toolchain install packages, Windows-side build fallback).
 
 **3. Type consistency:** `EncodeCommand`/`DecodeEvent`/`Event`/`MutedFromValue` (Task 1) are used with identical signatures in Tasks 2–4; `Tracker.Apply/Set/Status` (Task 2) in Tasks 3–4; `Device`/`New`/`SetDevice`/`WriteReport`/`HandleCommand` (Task 3) in Task 4's `Run`/`session`/`serveUDP`; `OpenFunc` and `Run(ctx, open, pc, logger)` (Task 4) match the `main.go` call site and every `startDaemon` test call; `runClient(cmd, addr string, timeout time.Duration, out io.Writer) int` (Task 5) matches all three `main_test.go` call sites; `openYetiX() (daemon.Device, error)` and `hideConsoleIfOwned()` have matching windows/non-windows variants; the reply strings (`muted`/`unmuted`/`unknown`/`error: ...`) and exit codes (0/1/2) are identical across Tasks 3, 4, 5, 6, 7, 11 and the Global Constraints. ✓
+
+
+**4. Load-bearing validation pass (2026-08-08):** Assumption ledger (10 verified, 1 falsified, 5 accepted with mitigation, 1 deferred) lives at `.worktrees/.the-usual-logs/yeti-x-mute-daemon/load-bearing-ledger.md`. Falsified A4 (post-handshake silence benign) is fixed by Task 4's handshake liveness gate + `TestRehandshakeAfterSilentHandshake` (and `startDaemon` now waits for `Run` to exit on cleanup, so the test's `handshakeLiveness` override cannot race the daemon goroutine under `-race`). Task 5's ErrTimeout contingency was replaced by the verified fact (the `errors.Is` guard is REQUIRED). Task 7 Step 2 is upgraded to a two-cycle test resolving encoding, new-vs-old echo semantics, and polarity, with an ordered four-branch no-echo diagnosis (liveness → encoding → sibling collection → STOP). Task 8 records the two new findings. Task 11 gains a Defender false-positive contingency. Re-ran the self-review over all edited tasks: every step remains complete (no TBDs; each contingency names exact files, assertions, commands, and commit messages); type consistency holds (`handshakeLiveness`/`errHandshakeSilence` are package-internal to `internal/daemon`; no frozen interface changed — the liveness gate is behavior inside `session`, and the new test uses only existing helpers `newFakeDevice`/`startDaemon`/`waitFor`/`inputReport`); no silent deferrals introduced (the gate is unit-tested; live flakiness observation goes through Task 7's log checks; physical actions remain explicit human questions).
