@@ -725,6 +725,7 @@ git commit -m "feat: daemon command handling and device write path"
   - `type OpenFunc func() (Device, error)` — opens the Yeti X control interface
   - `func Run(ctx context.Context, open OpenFunc, pc net.PacketConn, logger *log.Logger) error` — blocks until ctx is cancelled; caller owns creating the UDP listener (binding 127.0.0.1:42814 in production doubles as a single-instance lock: a second daemon fails to bind and exits)
 - Behavior (frozen): on each successful open, send handshake `EncodeCommand(OpInit, nil)` then `EncodeCommand(OpGetVolume, nil)` (no delay between them); then loop `ReadWithTimeout(buf, 1s)`; every decoded event is logged with op and value in hex (Task 7 depends on these log lines); read error ⇒ close, clear device, retry after 2s; open failure ⇒ retry after 3s.
+- UDP serve-loop resilience (frozen): transient socket errors must not terminate the command loop. On Windows a reply sent after the one-shot client already closed its socket elicits ICMP Port Unreachable, and the next `ReadFrom` then fails with `WSAECONNRESET` because Go's net package never disables `SIO_UDP_CONNRESET` (golang/go#5834) — realistic here because the client timeout is 1s while `HandleCommand` can block >1s on a mutex-serialized HID write (ledger note A5-w). Since the bound port is also the single-instance lock, a dead serve loop would strand a healthy-looking daemon that can never answer again AND block any replacement. Therefore: only `errors.Is(err, net.ErrClosed)` (shutdown) may end the loop; any other `ReadFrom` error is logged and retried after a 100ms anti-spin pause; a `WriteTo` error is logged and the loop continues.
 - Handshake liveness gate (added by load-bearing validation — assumption A4 was FALSIFIED): the protocol doc calls the handshake “somewhat flaky” and the reference implementation retries the whole open+handshake after 5s of post-handshake silence — a write-succeeded handshake does NOT imply a live event stream, and a silent session would leave the daemon permanently deaf (no events, no error, no reconnect). Therefore: the GetVolume request must provoke at least one input report; if NO input report has arrived within 5s of the handshake (package-level `var handshakeLiveness = 5 * time.Second`, shortened in tests), `session` returns an error and the session is retried like any device loss (close, clear device, 2s, reopen + re-handshake). After the first input report of a session, silence is normal idle and never triggers the gate.
 
 - [ ] **Step 1: Write the failing tests**
@@ -909,6 +910,112 @@ func TestRehandshakeAfterSilentHandshake(t *testing.T) {
 	dev2.events <- inputReport(0x21, 0x01)
 	waitFor(t, "status after re-handshake", func() bool { return ask("status") == "muted" })
 }
+
+// --- UDP serve-loop resilience (fake PacketConn to inject socket errors) ---
+
+type readResult struct {
+	data []byte
+	err  error
+}
+
+// fakePacketConn scripts ReadFrom results (so tests can inject transient
+// socket errors), optionally fails WriteTo calls, and records successful
+// replies. Close makes ReadFrom return net.ErrClosed, mirroring a real
+// closed listener.
+type fakePacketConn struct {
+	reads     chan readResult // scripted ReadFrom results, consumed in order
+	writeErrs chan error      // scripted WriteTo failures (empty = success)
+	replies   chan string     // successfully written replies
+	closed    chan struct{}
+	once      sync.Once
+}
+
+func newFakePacketConn() *fakePacketConn {
+	return &fakePacketConn{
+		reads:     make(chan readResult, 8),
+		writeErrs: make(chan error, 8),
+		replies:   make(chan string, 8),
+		closed:    make(chan struct{}),
+	}
+}
+
+func (f *fakePacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
+	select {
+	case r := <-f.reads:
+		if r.err != nil {
+			return 0, nil, r.err
+		}
+		return copy(p, r.data), &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 1}, nil
+	case <-f.closed:
+		return 0, nil, net.ErrClosed
+	}
+}
+
+func (f *fakePacketConn) WriteTo(p []byte, _ net.Addr) (int, error) {
+	select {
+	case err := <-f.writeErrs:
+		return 0, err
+	default:
+	}
+	f.replies <- string(p)
+	return len(p), nil
+}
+
+func (f *fakePacketConn) Close() error {
+	f.once.Do(func() { close(f.closed) })
+	return nil
+}
+
+func (f *fakePacketConn) LocalAddr() net.Addr {
+	return &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 42814}
+}
+
+func (f *fakePacketConn) SetDeadline(time.Time) error      { return nil }
+func (f *fakePacketConn) SetReadDeadline(time.Time) error  { return nil }
+func (f *fakePacketConn) SetWriteDeadline(time.Time) error { return nil }
+
+// TestServeUDPSurvivesTransientErrors guards the daemon's core availability
+// property: transient socket errors must not kill the command loop. On
+// Windows this failure class is realistic, not hypothetical — a reply that
+// lands after the one-shot client (1s timeout) already closed its socket
+// elicits ICMP Port Unreachable, and the next ReadFrom then fails with
+// WSAECONNRESET because Go's net package never disables SIO_UDP_CONNRESET
+// (golang/go#5834). Only net.ErrClosed (listener closed on shutdown) may
+// terminate the loop.
+func TestServeUDPSurvivesTransientErrors(t *testing.T) {
+	d := New(testLogger())
+	pc := newFakePacketConn()
+	done := make(chan struct{})
+	go func() {
+		d.serveUDP(pc)
+		close(done)
+	}()
+
+	// 1) A transient read error (the WSAECONNRESET case) must be survived.
+	pc.reads <- readResult{err: errors.New("wsarecv: connection reset by peer")}
+	// 2) A command whose reply write fails must not kill the loop either.
+	pc.writeErrs <- errors.New("wsasendto: connection reset by peer")
+	pc.reads <- readResult{data: []byte("status")}
+	// 3) The next command must still be answered.
+	pc.reads <- readResult{data: []byte("status")}
+
+	select {
+	case reply := <-pc.replies:
+		if reply != "unknown" {
+			t.Fatalf("reply = %q, want %q (fresh daemon, no device)", reply, "unknown")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("serveUDP stopped answering after transient socket errors")
+	}
+
+	// 4) Closing the listener is the only way the loop may exit.
+	pc.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("serveUDP did not exit after the listener closed")
+	}
+}
 ```
 
 Update the import block at the top of `internal/daemon/daemon_test.go` to:
@@ -932,7 +1039,7 @@ import (
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `cd /home/dan/code/mutastic/.worktrees/yeti-x-mute-daemon && go test ./internal/daemon/`
-Expected: FAIL to build — `undefined: Run`, `undefined: OpenFunc`.
+Expected: FAIL to build — `undefined: Run`, `undefined: OpenFunc`, and `d.serveUDP undefined (type *Daemon has no field or method serveUDP)`.
 
 - [ ] **Step 3: Write the implementation**
 
@@ -1023,18 +1130,33 @@ func (d *Daemon) session(ctx context.Context, dev Device) error {
 	return ctx.Err()
 }
 
+// serveUDP answers commands until pc is closed. Transient socket errors must
+// NOT kill this loop: on Windows (the production platform), a reply that
+// lands after a one-shot client already closed its socket elicits ICMP Port
+// Unreachable, which poisons the socket so the next ReadFrom fails with
+// WSAECONNRESET — Go's net package never disables SIO_UDP_CONNRESET
+// (golang/go#5834). Because the bound port doubles as the single-instance
+// lock, a dead loop here would leave a healthy-looking daemon that can never
+// answer another command and blocks any replacement from starting. Only
+// net.ErrClosed (the shutdown path: Run's goroutine closing pc) ends the
+// loop; every other error is logged and survived.
 func (d *Daemon) serveUDP(pc net.PacketConn) {
 	buf := make([]byte, 64)
 	for {
 		n, addr, err := pc.ReadFrom(buf)
 		if err != nil {
-			return // listener closed on shutdown
+			if errors.Is(err, net.ErrClosed) {
+				return // listener closed on shutdown
+			}
+			d.Logger.Printf("udp read: %v (continuing)", err)
+			time.Sleep(100 * time.Millisecond) // don't spin if the error repeats
+			continue
 		}
 		cmd := strings.TrimSpace(string(buf[:n]))
 		reply := d.HandleCommand(cmd)
 		d.Logger.Printf("command %q -> %q", cmd, reply)
 		if _, err := pc.WriteTo([]byte(reply), addr); err != nil {
-			return
+			d.Logger.Printf("udp write to %s: %v (continuing)", addr, err)
 		}
 	}
 }
@@ -1868,3 +1990,5 @@ Surface these at final review as open questions for the human — software canno
 **4. Load-bearing validation pass (2026-08-08):** Assumption ledger (10 verified, 1 falsified, 5 accepted with mitigation, 1 deferred) lives at `.worktrees/.the-usual-logs/yeti-x-mute-daemon/load-bearing-ledger.md`. Falsified A4 (post-handshake silence benign) is fixed by Task 4's handshake liveness gate + `TestRehandshakeAfterSilentHandshake` (and `startDaemon` now waits for `Run` to exit on cleanup, so the test's `handshakeLiveness` override cannot race the daemon goroutine under `-race`). Task 5's ErrTimeout contingency was replaced by the verified fact (the `errors.Is` guard is REQUIRED). Task 7 Step 2 is upgraded to a two-cycle test resolving encoding, new-vs-old echo semantics, and polarity, with an ordered four-branch no-echo diagnosis (liveness → encoding → sibling collection → STOP). Task 8 records the two new findings. Task 11 gains a Defender false-positive contingency. Re-ran the self-review over all edited tasks: every step remains complete (no TBDs; each contingency names exact files, assertions, commands, and commit messages); type consistency holds (`handshakeLiveness`/`errHandshakeSilence` are package-internal to `internal/daemon`; no frozen interface changed — the liveness gate is behavior inside `session`, and the new test uses only existing helpers `newFakeDevice`/`startDaemon`/`waitFor`/`inputReport`); no silent deferrals introduced (the gate is unit-tested; live flakiness observation goes through Task 7's log checks; physical actions remain explicit human questions).
 
 **5. Fresh-eyes plan review pass (iteration 1, 2026-08-08):** An independent cross-model review found four blocking executable defects, all fixed: (1) Task 11 Step 1's deploy invocation now single-quotes the UNC paths (bash double quotes collapsed the leading `\\`, empirically producing "path not found"); (2) Task 11 Step 2's shortcut check now single-quotes the powershell command (bash was expanding the unset `$ws`/`$s` to empty strings); (3) Task 11 Step 3 now seeds known state with a leading `unmute` before recording ORIGINAL (a daemon freshly restarted by Step 1's deploy reports `unknown` until its first command/event, so the old `Expected` was unachievable) and its Expected now names the exact statuses; (4) `openYetiX` now takes the daemon logger as a parameter (`openYetiX(logger *log.Logger)`, both build variants; `main.go` closes over it to satisfy `OpenFunc`), so the `hid collection: ... usage_page=...` enumeration lines reach `mutastic.log` and Task 8's stated evidence source is real. Re-ran the self-review over the edited tasks (5, 7, 8, 11): every step remains complete with no placeholders; type consistency holds (signature updated consistently in the Task 5 interface list, both `hid_windows.go`/`hid_other.go` variants, the `main.go` closure call site, and check 3 above; `hid_windows.go` drops the now-unused `os` import, `hid_other.go` gains `log`; no frozen `internal/daemon` interface changed); no silent deferrals introduced (the acceptance gate is now satisfiable as written and still exercises status/toggle end-to-end; the mic still finishes unmuted).
+
+**6. Fresh-eyes plan review pass (iteration 2, 2026-08-08):** An independent cross-model review found one blocking defect: `serveUDP` exited permanently and silently on ANY socket error — realistic on Windows, where a reply landing after the one-shot client (1s timeout) already closed its socket elicits ICMP Port Unreachable and the next `ReadFrom` fails with `WSAECONNRESET` (Go never disables `SIO_UDP_CONNRESET`; golang/go#5834); with port 42814 doubling as the single-instance lock, the dead loop stranded a healthy-looking daemon AND blocked any replacement, with no log line and no test coverage. Fixed in Task 4: `serveUDP` now returns only on `errors.Is(err, net.ErrClosed)`; any other read error is logged and retried after a 100ms anti-spin pause; write errors are logged and survived. The resilience contract is added to Task 4's frozen behavior list, and a new white-box test `TestServeUDPSurvivesTransientErrors` (scripted `fakePacketConn` injecting one read error and one write error, asserting the next command is still answered and that only Close ends the loop) covers it; Step 2's expected compile failure now also names `d.serveUDP undefined`. Re-ran the self-review over the edited task (4): every step remains complete with no placeholders; type consistency holds (`fakePacketConn` satisfies `net.PacketConn`; no frozen interface signature changed — the resilience is behavior inside `serveUDP`; all imports needed by the new code — `errors`, `net`, `time`, `sync` — already appear in the daemon.go and daemon_test.go import lists as written); no silent deferrals introduced (the failure mode is unit-tested; the review's minor/nit findings were intentionally left per the fix-only-blocking policy).
