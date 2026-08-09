@@ -259,288 +259,226 @@ func (mm *MultiManager) stopAll() {
 	}
 }
 
-// fmt is used by Task 4 (command surface); referenced here so the import
-// stays valid if tasks land separately.
-var _ = fmt.Sprintf
-
-// HandleCommand dispatches a light command: @-addressed to one manager,
-// bare verbs to all (fleet). Returns a single string (joined by \n for fleets
-// multi-port replies). Commands: toggle, on, off, brightness <x>, temp <x>,
-// name <port> <name>, unname <name|port>, list, status.
+// HandleCommand implements the daemon's CommandHandler for the whole
+// fleet. The daemon strips the "light" prefix and trims, so cmd looks
+// like "toggle", "@desk brightness 40", "name COM4 desk", "unname desk",
+// or "list".
 func (mm *MultiManager) HandleCommand(cmd string) string {
 	cmd = strings.TrimSpace(cmd)
-	if cmd == "" {
+	if strings.HasPrefix(cmd, "@") {
+		return mm.handleTargeted(cmd)
+	}
+	fields := strings.Fields(cmd)
+	if len(fields) == 0 {
 		return "error: unknown light command"
 	}
-
-	// Check for @addressing: @<name|port> <verb>
-	if strings.HasPrefix(cmd, "@") {
-		parts := strings.SplitN(cmd, " ", 2)
-		if len(parts) < 2 || parts[0] == "@" {
-			return "error: usage: light@<name|COMx> <command>"
-		}
-		target := strings.TrimPrefix(parts[0], "@")
-		if target == "" {
-			return "error: usage: light@<name|COMx> <command>"
-		}
-		verb := parts[1]
-		return mm.handleTargeted(target, verb)
-	}
-
-	// Bare command: parse verb
-	parts := strings.SplitN(cmd, " ", 2)
-	verb := parts[0]
-	rest := ""
-	if len(parts) > 1 {
-		rest = parts[1]
-	}
-
-	switch verb {
+	switch fields[0] {
 	case "name":
-		return mm.handleName(rest)
+		if len(fields) != 3 {
+			return "error: usage: light name <COMx> <name>"
+		}
+		if err := mm.reg.Assign(fields[1], fields[2]); err != nil {
+			return "error: " + err.Error()
+		}
+		port, _ := NormalizePort(fields[1])
+		return fmt.Sprintf("named %s %s", port, strings.ToLower(fields[2]))
 	case "unname":
-		return mm.handleUnname(rest)
+		if len(fields) != 2 {
+			return "error: usage: light unname <name|COMx>"
+		}
+		name, err := mm.reg.Unname(fields[1])
+		if err != nil {
+			return "error: " + err.Error()
+		}
+		return "unnamed " + name
 	case "list":
-		if rest != "" {
+		if len(fields) != 1 {
 			return "error: unknown light command"
 		}
-		return mm.handleList()
-	default:
-		// Bare command: fan out to all lights
-		return mm.handleBareCommand(verb, rest)
+		return mm.list()
 	}
+	return mm.handleAll(cmd)
 }
 
-// handleTargeted dispatches a command to a single named or port-addressed light.
-func (mm *MultiManager) handleTargeted(target, verb string) string {
-	// Try to resolve the target as either a port or a name
+// handleTargeted answers "@<name|COMx> <verb...>" against a single light,
+// returning the bare Manager reply (same shape as the old single-light
+// replies).
+func (mm *MultiManager) handleTargeted(cmd string) string {
+	target, rest, _ := strings.Cut(cmd[1:], " ")
+	rest = strings.TrimSpace(rest)
+	if target == "" || rest == "" {
+		return "error: usage: light@<name|COMx> <command>"
+	}
 	port, ok := mm.reg.Resolve(target)
 	if !ok {
-		// Not a valid port, not a known name
-		knownStr := mm.knownLightsString(true, true)
-		return fmt.Sprintf(`error: unknown light "%s" (known: %s)`, target, knownStr)
+		return fmt.Sprintf("error: unknown light %q (known: %s)", target, mm.known())
 	}
-
-	// Verify the port is connected
 	mm.mu.Lock()
 	s, ok := mm.sessions[port]
 	mm.mu.Unlock()
 	if !ok {
-		knownStr := mm.knownLightsString(true, true)
-		return fmt.Sprintf("error: light %s not connected (known: %s)", port, knownStr)
+		return fmt.Sprintf("error: light %s not connected (known: %s)", port, mm.known())
 	}
-
-	// Call with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), lightCallTimeout)
-	defer cancel()
-	return s.m.HandleCommandWithTimeout(ctx, verb)
+	// One bounded call: a wedged light must not stall the UDP loop.
+	return mm.callLight(port, func() string { return s.m.HandleCommand(rest) })
 }
 
-// handleName binds a port to a name using Registry.Assign.
-func (mm *MultiManager) handleName(args string) string {
-	fields := strings.Fields(args)
-	if len(fields) != 2 {
-		return "error: usage: light name <COMx> <name>"
+// callLight runs one per-light call with a deadline. A light exceeding
+// lightCallTimeout (wedged serial I/O) yields "error: timeout"; the
+// abandoned call finishes on its own goroutine and its result is
+// discarded (buffered channel - nothing leaks beyond the wedged serial
+// write itself, which is unavoidable: the library has no write timeout).
+func (mm *MultiManager) callLight(port string, call func() string) string {
+	ch := make(chan string, 1)
+	go func() { ch <- call() }()
+	select {
+	case reply := <-ch:
+		return reply
+	case <-time.After(lightCallTimeout):
+		mm.logger.Printf("light %s: call timed out after %v", port, lightCallTimeout)
+		return "error: timeout"
 	}
-	port, name := fields[0], fields[1]
-
-	// Assign will validate and normalize the port
-	if err := mm.reg.Assign(port, name); err != nil {
-		return "error: " + err.Error()
-	}
-	// Assign already normalized port internally; we return it as returned
-	p, _ := NormalizePort(port)
-	return fmt.Sprintf("named %s %s", p, strings.ToLower(name))
 }
 
-// handleUnname removes a name binding using Registry.Unname.
-func (mm *MultiManager) handleUnname(args string) string {
-	target := strings.TrimSpace(args)
-	if target == "" {
-		return "error: usage: light unname <name|COMx>"
-	}
-
-	// Unname returns the removed name, or error
-	name, err := mm.reg.Unname(target)
-	if err != nil {
-		// Target doesn't exist; unname is idempotent - return as if it did
-		return fmt.Sprintf("unnamed %s", strings.ToLower(target))
-	}
-	return fmt.Sprintf("unnamed %s", name)
-}
-
-// handleList returns per-light status lines in sorted port order, or
-// "no lights known" if the registry is empty.
-func (mm *MultiManager) handleList() string {
+// handleAll fans a bare verb out to every tracked light IN PARALLEL, one
+// reply line per light assembled in sorted port order (stable output,
+// byte-identical to serial fan-out for healthy lights). Every per-light
+// call is bounded by lightCallTimeout so one wedged light cannot stall
+// the fleet or the daemon's UDP loop. "toggle" is fleet-level: if ANY
+// light is on, all go off; otherwise all go on (each restoring its own
+// persisted look; unknown - or timed out - counts as off).
+func (mm *MultiManager) handleAll(cmd string) string {
 	mm.mu.Lock()
 	ports := mm.portsLocked()
-	mm.mu.Unlock()
-
-	// Get all registered names
-	allNames := mm.reg.All()
-
-	if len(ports) == 0 && len(allNames) == 0 {
-		return "no lights known"
-	}
-
-	// Collect all known ports (connected + named-but-not-connected)
-	allPorts := make(map[string]bool)
+	managers := make(map[string]*Manager, len(ports))
 	for _, p := range ports {
-		allPorts[p] = true
+		managers[p] = mm.sessions[p].m
 	}
-	for _, p := range allNames {
-		allPorts[p] = true
-	}
-
-	// Sort ports and build lines
-	sortedPorts := make([]string, 0, len(allPorts))
-	for p := range allPorts {
-		sortedPorts = append(sortedPorts, p)
-	}
-	sortPorts(sortedPorts)
-
-	var lines []string
-	for _, port := range sortedPorts {
-		// Get the name for this port
-		name := mm.reg.NameFor(port)
-		if name == "" {
-			name = "-"
-		}
-
-		connected := false
-		var status string
-		mm.mu.Lock()
-		s, ok := mm.sessions[port]
-		mm.mu.Unlock()
-		if ok {
-			ctx, cancel := context.WithTimeout(context.Background(), lightCallTimeout)
-			status = s.m.ProbeStatus(ctx)
-			cancel()
-			connected = !strings.HasPrefix(status, "error:") && status != "disconnected"
-		} else {
-			status = "disconnected"
-		}
-
-		var line string
-		if strings.HasPrefix(status, "error:") {
-			line = fmt.Sprintf("%s %s %s", port, name, status)
-		} else if connected {
-			line = fmt.Sprintf("%s %s connected %s", port, name, status)
-		} else {
-			line = fmt.Sprintf("%s %s %s", port, name, status)
-		}
-		lines = append(lines, line)
-	}
-	return strings.Join(lines, "\n")
-}
-
-// handleBareCommand fans out verb to all connected lights in sorted port order,
-// collecting their replies. For "toggle": if ANY light is on -> ALL off;
-// else ALL on (unknown counts as off).
-func (mm *MultiManager) handleBareCommand(verb, rest string) string {
-	mm.mu.Lock()
-	if len(mm.sessions) == 0 {
-		mm.mu.Unlock()
+	mm.mu.Unlock()
+	if len(ports) == 0 {
 		return "error: no light"
 	}
-	ports := mm.portsLocked()
-	sessions := make(map[string]*Manager)
-	for _, p := range ports {
-		sessions[p] = mm.sessions[p].m
-	}
-	mm.mu.Unlock()
-
-	// Special handling for toggle: if any light is on -> all off; else all on
-	if verb == "toggle" {
-		anyOn := false
-		for _, m := range sessions {
-			ctx, cancel := context.WithTimeout(context.Background(), lightCallTimeout)
-			reply := m.HandleCommandWithTimeout(ctx, "status")
-			cancel()
-			if strings.HasPrefix(reply, "on") {
-				anyOn = true
+	if cmd == "toggle" {
+		cmd = "on"
+		on := make([]bool, len(ports))
+		var wg sync.WaitGroup
+		for i, p := range ports {
+			wg.Add(1)
+			go func(i int, p string, m *Manager) {
+				defer wg.Done()
+				reply := mm.callLight(p, func() string {
+					if isOn, _ := m.PowerState(); isOn {
+						return "on"
+					}
+					return "off"
+				})
+				on[i] = reply == "on" // "error: timeout" counts as off (logged)
+			}(i, p, managers[p])
+		}
+		wg.Wait()
+		for i := range on {
+			if on[i] {
+				cmd = "off"
 				break
 			}
 		}
-		if anyOn {
-			verb = "off"
-		} else {
-			verb = "on"
-		}
 	}
-
-	// Execute verb on all lights in parallel with timeout, collect results
-	cmd := verb
-	if rest != "" {
-		cmd += " " + rest
-	}
-	results := make(map[string]string)
+	lines := make([]string, len(ports))
 	var wg sync.WaitGroup
-	var mu sync.Mutex
-
-	for port, m := range sessions {
+	for i, p := range ports {
 		wg.Add(1)
-		go func(p string, manager *Manager) {
+		go func(i int, p string, m *Manager) {
 			defer wg.Done()
-			ctx, cancel := context.WithTimeout(context.Background(), lightCallTimeout)
-			defer cancel()
-			reply := manager.HandleCommandWithTimeout(ctx, cmd)
-			mu.Lock()
-			results[p] = reply
-			mu.Unlock()
-		}(port, m)
+			lines[i] = mm.label(p) + ": " + mm.callLight(p, func() string { return m.HandleCommand(cmd) })
+		}(i, p, managers[p])
 	}
 	wg.Wait()
-
-	// Format replies in port order
-	var lines []string
-	for _, port := range ports {
-		reply := results[port]
-		lines = append(lines, fmt.Sprintf("%s: %s", port, reply))
-	}
 	return strings.Join(lines, "\n")
 }
 
-// knownLightsString returns a display of known lights for error messages.
-// Format: "COM4=desk COM7=spare" if includeNames, else "COM4 COM7".
-func (mm *MultiManager) knownLightsString(includeNames, includeConnected bool) string {
+// label renders "COM4 desk" for named lights, bare "COM4" otherwise.
+func (mm *MultiManager) label(port string) string {
+	if name := mm.reg.NameFor(port); name != "" {
+		return port + " " + name
+	}
+	return port
+}
+
+// known renders every addressable light for error messages:
+// "COM4=desk, COM7" (attached ports plus named-but-absent ports).
+func (mm *MultiManager) known() string {
+	set := map[string]bool{}
 	mm.mu.Lock()
-	ports := mm.portsLocked()
+	for p := range mm.sessions {
+		set[p] = true
+	}
 	mm.mu.Unlock()
-
-	// Get all registered names
-	allNames := mm.reg.All()
-
-	// Collect all known ports
-	allPorts := make(map[string]bool)
-	for _, p := range ports {
-		allPorts[p] = true
+	for _, p := range mm.reg.All() {
+		set[p] = true
 	}
-	for _, p := range allNames {
-		allPorts[p] = true
-	}
-
-	if len(allPorts) == 0 {
+	if len(set) == 0 {
 		return "none"
 	}
-
-	sortedPorts := make([]string, 0, len(allPorts))
-	for p := range allPorts {
-		sortedPorts = append(sortedPorts, p)
+	all := make([]string, 0, len(set))
+	for p := range set {
+		all = append(all, p)
 	}
-	sortPorts(sortedPorts)
-
-	var parts []string
-	for _, p := range sortedPorts {
-		if includeNames {
-			if name := mm.reg.NameFor(p); name != "" {
-				parts = append(parts, fmt.Sprintf("%s=%s", p, name))
-			} else {
-				parts = append(parts, p)
-			}
+	sortPorts(all)
+	parts := make([]string, len(all))
+	for i, p := range all {
+		if name := mm.reg.NameFor(p); name != "" {
+			parts[i] = p + "=" + name
 		} else {
-			parts = append(parts, p)
+			parts[i] = p
 		}
 	}
-	return strings.Join(parts, " ")
+	return strings.Join(parts, ", ")
+}
+
+// list renders one line per known light:
+// "<port> <name|-> connected <state>" or "<port> <name|-> disconnected".
+func (mm *MultiManager) list() string {
+	managers := map[string]*Manager{}
+	mm.mu.Lock()
+	for p, s := range mm.sessions {
+		managers[p] = s.m
+	}
+	mm.mu.Unlock()
+	set := map[string]bool{}
+	for p := range managers {
+		set[p] = true
+	}
+	for _, p := range mm.reg.All() {
+		set[p] = true
+	}
+	if len(set) == 0 {
+		return "no lights known"
+	}
+	ports := make([]string, 0, len(set))
+	for p := range set {
+		ports = append(ports, p)
+	}
+	sortPorts(ports)
+	lines := make([]string, len(ports))
+	for i, p := range ports {
+		name := mm.reg.NameFor(p)
+		if name == "" {
+			name = "-"
+		}
+		m, ok := managers[p]
+		if !ok {
+			lines[i] = fmt.Sprintf("%s %s disconnected", p, name)
+			continue
+		}
+		// The probe must be bounded too: Connected() takes m.mu, which an
+		// abandoned timed-out call can hold forever inside a wedged
+		// writeFrame - an unbounded probe here would wedge the UDP loop.
+		lines[i] = fmt.Sprintf("%s %s %s", p, name, mm.callLight(p, func() string {
+			if m.Connected() {
+				return "connected " + m.HandleCommand("status")
+			}
+			return "disconnected"
+		}))
+	}
+	return strings.Join(lines, "\n")
 }
