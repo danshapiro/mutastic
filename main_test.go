@@ -97,3 +97,58 @@ func TestRunClientPassesMultiWordCommandVerbatim(t *testing.T) {
 		t.Fatalf("printed %q, want the reply", got)
 	}
 }
+
+func TestClientCommand(t *testing.T) {
+	cases := []struct {
+		args    []string
+		cmd     string
+		timeout time.Duration
+		ok      bool
+	}{
+		{[]string{"status"}, "status", time.Second, true},
+		{[]string{"toggle"}, "toggle", time.Second, true},
+		{[]string{"mute"}, "mute", time.Second, true},
+		{[]string{"unmute"}, "unmute", time.Second, true},
+		{[]string{"light", "toggle"}, "light toggle", 2 * time.Second, true},
+		{[]string{"light", "list"}, "light list", 2 * time.Second, true},
+		{[]string{"light", "name", "COM4", "desk"}, "light name COM4 desk", 2 * time.Second, true},
+		{[]string{"light@desk", "toggle"}, "light@desk toggle", 2 * time.Second, true},
+		{[]string{"light@COM4", "brightness", "30"}, "light@COM4 brightness 30", 2 * time.Second, true},
+		{[]string{"light"}, "", 0, false},
+		{[]string{"light@desk"}, "", 0, false},
+		{[]string{"frobnicate"}, "", 0, false},
+		{nil, "", 0, false},
+	}
+	for _, c := range cases {
+		cmd, timeout, ok := clientCommand(c.args)
+		if cmd != c.cmd || timeout != c.timeout || ok != c.ok {
+			t.Errorf("clientCommand(%v) = (%q, %v, %v), want (%q, %v, %v)",
+				c.args, cmd, timeout, ok, c.cmd, c.timeout, c.ok)
+		}
+	}
+}
+
+func TestRunClientPrintsLargeReply(t *testing.T) {
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	reply := strings.TrimSpace(strings.Repeat("COM4 desk connected on 30% 2900K\n", 12)) // ~390 bytes, > the old 256
+	go func() {
+		buf := make([]byte, 64)
+		_, addr, err := pc.ReadFrom(buf)
+		if err != nil {
+			return
+		}
+		pc.WriteTo([]byte(reply), addr)
+	}()
+	var out bytes.Buffer
+	code := runClient("light list", pc.LocalAddr().String(), time.Second, &out)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if got := strings.TrimSpace(out.String()); got != reply {
+		t.Fatalf("reply truncated: got %d bytes, want %d", len(got), len(reply))
+	}
+}

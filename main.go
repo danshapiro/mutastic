@@ -28,27 +28,42 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
-	switch os.Args[1] {
-	case "daemon":
+	if os.Args[1] == "daemon" {
 		os.Exit(runDaemon())
-	case "toggle", "mute", "unmute", "status":
-		os.Exit(runClient(os.Args[1], udpAddr, time.Second, os.Stdout))
-	case "light":
-		if len(os.Args) < 3 {
-			usage()
-			os.Exit(2)
-		}
-		os.Exit(runClient(strings.Join(os.Args[1:], " "), udpAddr, 2*time.Second, os.Stdout))
-	default:
+	}
+	cmd, timeout, ok := clientCommand(os.Args[1:])
+	if !ok {
 		usage()
 		os.Exit(2)
 	}
+	os.Exit(runClient(cmd, udpAddr, timeout, os.Stdout))
+}
+
+// clientCommand maps argv (without the program name) to the UDP command
+// string and timeout. ok=false means bad usage. Light commands are a dumb
+// verbatim pass-through - the daemon owns the grammar.
+func clientCommand(args []string) (cmd string, timeout time.Duration, ok bool) {
+	if len(args) == 0 {
+		return "", 0, false
+	}
+	switch {
+	case args[0] == "toggle" || args[0] == "mute" || args[0] == "unmute" || args[0] == "status":
+		return args[0], time.Second, true
+	case args[0] == "light" || strings.HasPrefix(args[0], "light@"):
+		if len(args) < 2 {
+			return "", 0, false
+		}
+		return strings.Join(args, " "), 2 * time.Second, true
+	}
+	return "", 0, false
 }
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: mutastic daemon | toggle | mute | unmute | status")
-	fmt.Fprintln(os.Stderr, "       mutastic light toggle|on|off|status")
+	fmt.Fprintln(os.Stderr, "       mutastic light toggle|on|off|status|list  (bare light commands act on ALL lights)")
 	fmt.Fprintln(os.Stderr, "       mutastic light brightness <0-100> | temp <2900-7000> | preset <cold|sunlight|afternoon|sunset|candle>")
+	fmt.Fprintln(os.Stderr, "       mutastic light name <COMx> <name> | unname <name|COMx>")
+	fmt.Fprintln(os.Stderr, "       mutastic light@<name|COMx> <command>  (one light)")
 }
 
 // runClient sends one UDP command to the daemon and prints the reply.
@@ -65,7 +80,7 @@ func runClient(cmd, addr string, timeout time.Duration, out io.Writer) int {
 		fmt.Fprintln(out, "error: no daemon reachable:", err)
 		return 2
 	}
-	buf := make([]byte, 256)
+	buf := make([]byte, 2048) // multi-light list/fan-out replies exceed 256 bytes
 	n, err := conn.Read(buf)
 	if err != nil {
 		fmt.Fprintln(out, "error: no daemon reachable")
