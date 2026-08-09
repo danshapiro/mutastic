@@ -23,32 +23,58 @@ import (
 
 const udpAddr = "127.0.0.1:42814"
 
+// lightClientTimeout is the client's read budget for light verbs. It MUST
+// exceed the daemon's per-light stall bound (light.CallTimeout) with real
+// headroom: the daemon's timer starts only after it receives the packet,
+// so when a wedged light hits its deadline (the designed degraded mode),
+// the reply - healthy lights' results plus the per-line "error: timeout" -
+// lands just after light.CallTimeout. A client that gives up at or before
+// that point prints "error: no daemon reachable" and masks partial success
+// as total daemon failure. 3x leaves room for fan-out, UDP, and OS
+// scheduling. Mic verbs keep their snappy 1s budget (see clientCommand).
+const lightClientTimeout = 3 * light.CallTimeout
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
 	}
-	switch os.Args[1] {
-	case "daemon":
+	if os.Args[1] == "daemon" {
 		os.Exit(runDaemon())
-	case "toggle", "mute", "unmute", "status":
-		os.Exit(runClient(os.Args[1], udpAddr, time.Second, os.Stdout))
-	case "light":
-		if len(os.Args) < 3 {
-			usage()
-			os.Exit(2)
-		}
-		os.Exit(runClient(strings.Join(os.Args[1:], " "), udpAddr, 2*time.Second, os.Stdout))
-	default:
+	}
+	cmd, timeout, ok := clientCommand(os.Args[1:])
+	if !ok {
 		usage()
 		os.Exit(2)
 	}
+	os.Exit(runClient(cmd, udpAddr, timeout, os.Stdout))
+}
+
+// clientCommand maps argv (without the program name) to the UDP command
+// string and timeout. ok=false means bad usage. Light commands are a dumb
+// verbatim pass-through - the daemon owns the grammar.
+func clientCommand(args []string) (cmd string, timeout time.Duration, ok bool) {
+	if len(args) == 0 {
+		return "", 0, false
+	}
+	switch {
+	case args[0] == "toggle" || args[0] == "mute" || args[0] == "unmute" || args[0] == "status":
+		return args[0], time.Second, true
+	case args[0] == "light" || strings.HasPrefix(args[0], "light@"):
+		if len(args) < 2 {
+			return "", 0, false
+		}
+		return strings.Join(args, " "), lightClientTimeout, true
+	}
+	return "", 0, false
 }
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: mutastic daemon | toggle | mute | unmute | status")
-	fmt.Fprintln(os.Stderr, "       mutastic light toggle|on|off|status")
+	fmt.Fprintln(os.Stderr, "       mutastic light toggle|on|off|status|list  (bare light commands act on ALL lights)")
 	fmt.Fprintln(os.Stderr, "       mutastic light brightness <0-100> | temp <2900-7000> | preset <cold|sunlight|afternoon|sunset|candle>")
+	fmt.Fprintln(os.Stderr, "       mutastic light name <COMx> <name> | unname <name|COMx>")
+	fmt.Fprintln(os.Stderr, "       mutastic light@<name|COMx> <command>  (one light)")
 }
 
 // runClient sends one UDP command to the daemon and prints the reply.
@@ -65,7 +91,7 @@ func runClient(cmd, addr string, timeout time.Duration, out io.Writer) int {
 		fmt.Fprintln(out, "error: no daemon reachable:", err)
 		return 2
 	}
-	buf := make([]byte, 256)
+	buf := make([]byte, 2048) // multi-light list/fan-out replies exceed 256 bytes
 	n, err := conn.Read(buf)
 	if err != nil {
 		fmt.Fprintln(out, "error: no daemon reachable")
@@ -88,7 +114,10 @@ func runDaemon() int {
 		logw = nopWriteCloser{}
 	}
 	defer logw.Close()
-	logger := log.New(io.MultiWriter(os.Stderr, logw), "", log.LstdFlags)
+	// Logfile FIRST: io.MultiWriter aborts on the first destination error,
+	// and stderr can die with a freed console on Windows - it must never be
+	// able to drop logfile lines (the E2E log contract greps the file).
+	logger := log.New(io.MultiWriter(logw, os.Stderr), "", log.LstdFlags)
 	logger.Printf("mutastic daemon starting (log: %s)", logPath)
 
 	pc, err := net.ListenPacket("udp", udpAddr)
@@ -99,10 +128,15 @@ func runDaemon() int {
 	}
 	open := func() (daemon.Device, error) { return openYetiX(logger) }
 	ctx := context.Background()
-	lm := light.NewManager(logger, lightStatePath())
-	lm.Present = pl81Present
-	go lm.Run(ctx, func() (light.Port, error) { return openPL81(logger) })
-	daemon.Run(ctx, open, lm, pc, logger)
+	stateDir := lightStateDir()
+	namesPath := ""
+	if stateDir != "" {
+		namesPath = filepath.Join(stateDir, "light-names.json")
+	}
+	reg := light.NewRegistry(namesPath)
+	lights := light.NewMultiManager(logger, stateDir, reg, enumeratePL81Ports, openPL81Port)
+	go lights.Run(ctx)
+	daemon.Run(ctx, open, lights, pc, logger)
 	return 0
 }
 
@@ -128,15 +162,15 @@ func openLogFile() (io.WriteCloser, string, error) {
 	return f, path, nil
 }
 
-// lightStatePath returns %LOCALAPPDATA%\mutastic\light-state.json (the same
-// directory as mutastic.log). An empty string disables persistence rather
-// than failing the daemon.
-func lightStatePath() string {
+// lightStateDir returns %LOCALAPPDATA%\mutastic (the same directory as
+// mutastic.log); per-light state files and the name registry live here.
+// An empty string disables persistence rather than failing the daemon.
+func lightStateDir() string {
 	dir, err := os.UserCacheDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(dir, "mutastic", "light-state.json")
+	return filepath.Join(dir, "mutastic")
 }
 
 type nopWriteCloser struct{}

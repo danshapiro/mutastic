@@ -275,3 +275,20 @@ func sleepCtx(ctx context.Context, dur time.Duration) {
 	case <-time.After(dur):
 	}
 }
+
+// Connected reports whether a serial port is currently attached to this
+// manager (a live session has completed its wake). Used by the fleet's
+// list command.
+func (m *Manager) Connected() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.port != nil
+}
+
+// PowerState reports the tracked power state. known stays false until the
+// first echo/broadcast or optimistic write; the fleet toggle treats
+// unknown as off.
+func (m *Manager) PowerState() (on, known bool) {
+	on, _, _, known = m.state.Status()
+	return on, known
+}

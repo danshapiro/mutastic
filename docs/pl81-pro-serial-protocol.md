@@ -12,6 +12,17 @@ machine's unit on 2026-08-08 (see "Local probe results" below).
 - On this machine it enumerates as `USB-SERIAL CH340 (COM4)` (driver already
   present; port status OK). Do NOT hardcode COM4 — enumerate by VID/PID
   (go.bug.st/serial/enumerator).
+- With multiple panels, VID/PID no longer discriminates and the CH340
+  exposes **no USB serial number** — measured, not folklore: this unit's
+  Windows instance ID is a machine-generated location ID
+  (`8&39d912e3&0&3`, verified 2026-08-09 — no iSerialNumber, so
+  `SerialNumber` is always empty via go.bug.st). The **COM port name is
+  the light's identity** (this is what
+  `light name`/`light-state-<COMx>.json` key on). Windows keys the COM
+  assignment to the physical-jack location path, and ComDB never recycles
+  released COM numbers — an unplugged device keeps its number reserved.
+  Moving a panel to a different jack gives it a new COM number, i.e. a
+  new identity (re-run `light name`).
 - **115200 baud, 8N1**
 - Open sequence used by working implementations: open, reset buffers, write
   wake bytes `00 00 00 00`, sleep ~80-120ms. Insert ~60ms delay before each
@@ -92,6 +103,33 @@ echo: 3A 02 03 01 00 09 00 49   <- ACK, light turned off
 - The mic (Yeti X) is HID; the light is serial — independent device loops.
 - NEEWER Control Center for Windows exists (v3.5.1) but is unneeded here.
 
+## Multiple panels
+
+- The daemon enumerates ALL VID 1A86 / PID 7523 ports and runs one
+  independent session per port (own state tracker, reconnect loop, and
+  60 ms rate-limited writes). A rescan every 5 s starts sessions for
+  newly plugged-in panels; a session is torn down only after its port is
+  missing from 2 CONSECUTIVE successful scans (debounce — a transient
+  enumeration omission or power blip never kills a session). No daemon
+  restart needed.
+- Identity = COM port name (see Transport). User-facing names map to
+  ports in `%LOCALAPPDATA%\mutastic\light-names.json`; each panel's last
+  look persists in `light-state-<COMx>.json`.
+- Collective toggle: if ANY panel is on, all turn off; otherwise all turn
+  on, each restoring its own persisted look (unknown state counts as
+  off). Bare `light` commands fan out to all panels in PARALLEL (each
+  panel keeps its own ~60 ms write spacing); every per-panel call is
+  deadline-bounded, so one wedged panel yields `error: timeout` on its
+  reply line instead of stalling the fleet (or the mic commands).
+- Power: the panel is USB BUS-POWERED — 5 V / 2 A input, 5 W, no
+  battery; a single Type-C port carries BOTH power and PC control. An
+  under-powered port makes the panel automatically limit its brightness
+  range (documented device behavior), and a port power reset drops its
+  COM port (which looks like port-gone/rescan churn). Three panels can
+  draw up to ~3 A total at 5 V — prefer directly-attached or
+  self-powered hub ports (the current light sits behind a two-tier hub
+  chain).
+
 ## Daemon integration results (2026-08-08)
 
 - Echo-as-ACK confirmed end-to-end from the Go daemon via go.bug.st/serial:
@@ -127,3 +165,16 @@ echo: 3A 02 03 01 00 09 00 49   <- ACK, light turned off
    idle for some hours, press F13 (or run `mutastic light on`) and confirm
    the light actually responds — settles whether wake-once-per-session
    suffices.
+6. When the two additional PL81 PRO panels arrive: plug each in, confirm
+   the daemon discovers it within ~5 s (`light list` gains a row; log
+   shows `light COM<n>: starting session`), name them, confirm which COM
+   maps to which physical light, and verify the mapping survives a
+   replug into the SAME USB jack. Also verify clean teardown on unplug
+   (`light COM<n>: port gone, stopping session` — appears after 2
+   consecutive rescan misses, ~10 s) — untestable today with only the
+   single live light in use.
+7. Power bring-up with all three panels attached: verify each reaches its
+   full target brightness (brightness capping is the documented
+   under-power symptom) and that the port set stays stable in
+   `light list`/the log (no port-gone/rescan churn). If capping or churn
+   appears, move panels to directly-attached or self-powered hub ports.

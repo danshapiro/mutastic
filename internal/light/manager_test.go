@@ -229,13 +229,16 @@ func fastTimings(t *testing.T) {
 	oldSpacing, oldWake := writeSpacing, wakeDelay
 	oldOpen, oldReconnect := openRetryDelay, reconnectDelay
 	oldPresence := presenceInterval
+	oldDrain, oldCall := drainTimeout, lightCallTimeout
 	writeSpacing, wakeDelay = time.Millisecond, time.Millisecond
 	openRetryDelay, reconnectDelay = 10*time.Millisecond, 10*time.Millisecond
 	presenceInterval = time.Millisecond
+	drainTimeout, lightCallTimeout = 50*time.Millisecond, 50*time.Millisecond
 	t.Cleanup(func() {
 		writeSpacing, wakeDelay = oldSpacing, oldWake
 		openRetryDelay, reconnectDelay = oldOpen, oldReconnect
 		presenceInterval = oldPresence
+		drainTimeout, lightCallTimeout = oldDrain, oldCall
 	})
 }
 
@@ -425,4 +428,28 @@ func TestCommandsWorkDuringLiveSession(t *testing.T) {
 
 	cancel()
 	<-done
+}
+
+func TestPowerStateAndConnected(t *testing.T) {
+	setFastWrites(t)
+	m := NewManager(testLogger(), "")
+	if m.Connected() {
+		t.Fatal("Connected = true with no port")
+	}
+	if on, known := m.PowerState(); on || known {
+		t.Fatalf("PowerState = (%v, %v), want (false, false) before any state", on, known)
+	}
+	p := newFakePort()
+	m.setPort(p)
+	if !m.Connected() {
+		t.Fatal("Connected = false with port set")
+	}
+	m.HandleCommand("brightness 40")
+	if on, known := m.PowerState(); !on || !known {
+		t.Fatalf("PowerState = (%v, %v), want (true, true) after brightness 40", on, known)
+	}
+	m.HandleCommand("off")
+	if on, known := m.PowerState(); on || !known {
+		t.Fatalf("PowerState = (%v, %v), want (false, true) after off", on, known)
+	}
 }
