@@ -171,7 +171,20 @@ func TestRescanDiscoversHotPluggedLight(t *testing.T) {
 	fastRescan(t)
 	fleet := newFakeFleet("COM4")
 	mm, ctx := newTestMulti(t, fleet, "")
-	go mm.Run(ctx)
+	runCtx, stopRun := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		mm.Run(runCtx)
+	}()
+	// Run - and the session goroutines it owns - read the package-level
+	// timing vars (drainTimeout, presenceInterval, ...), so it must be
+	// fully stopped BEFORE fastTimings/fastRescan restore them. t.Cleanup
+	// is LIFO and this cleanup is registered last, so it runs first.
+	t.Cleanup(func() {
+		stopRun()
+		<-done
+	})
 	waitConnected(t, mm, "COM4")
 
 	fleet.set("COM4", "COM7") // plug in a second light, no restart
