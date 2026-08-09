@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -506,6 +507,24 @@ func TestMultiListAndNaming(t *testing.T) {
 	want := "COM4 desk connected on 30% 4950K\nCOM9 spare disconnected"
 	if got != want {
 		t.Fatalf("list = %q, want %q", got, want)
+	}
+
+	// Regression 1: fan-out label carries the name via label()
+	got = mm.HandleCommand("status")
+	if !strings.HasPrefix(got, "COM4 desk: ") {
+		t.Fatalf("fan-out status = %q, want to start with 'COM4 desk: '", got)
+	}
+
+	// Regression 2: known-list separator uses ", " (exact substring)
+	got = mm.HandleCommand("@nope status")
+	if !strings.Contains(got, "(known: COM4=desk, COM9=spare)") {
+		t.Fatalf("@nope status = %q, want substring '(known: COM4=desk, COM9=spare)'", got)
+	}
+
+	// Regression 3: unname error propagation
+	got = mm.HandleCommand("unname nope")
+	if !strings.HasPrefix(got, "error: ") {
+		t.Fatalf("unname nope = %q, want to start with 'error: '", got)
 	}
 
 	if got := mm.HandleCommand("unname spare"); got != "unnamed spare" {
