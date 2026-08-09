@@ -7,7 +7,7 @@
 
 **Goal:** Extend mutastic's single NEEWER PL81 PRO light support to multiple lights with hot-plug discovery, persistent user-assigned names, per-light addressing (`light@desk`), and collective control (bare `light toggle` toggles ALL lights — the F13 pedal behavior).
 
-**Architecture:** Keep the existing `light.Manager` as the untouched per-light brick (one session per COM port: state tracker, reconnect loop, rate-limited writes). Add a new `light.MultiManager` that owns `map[COMport]*Manager`, rescans USB enumeration every 5 s to start/stop sessions (hot-plug), and implements the daemon's `CommandHandler` interface with addressing, naming, and collective fan-out. A new `light.Registry` persists name↔port bindings. Discovery stays in `package main` behind injected function types, so all fleet logic is unit-testable against the existing `fakePort`.
+**Architecture:** Keep the existing `light.Manager` as the untouched per-light brick (one session per COM port: state tracker, reconnect loop, rate-limited writes). Add a new `light.MultiManager` that owns `map[COMport]*Manager`, rescans USB enumeration every 5 s to start/stop sessions (hot-plug) — removal is debounced (a session is torn down only after its port is missing from 2 consecutive successful scans), teardown waits are bounded and happen outside the fleet lock, and per-session presence reads the debounced rescan snapshot (no per-session enumeration) — and implements the daemon's `CommandHandler` interface with addressing, naming, and parallel, deadline-bounded collective fan-out (replies assembled in sorted port order). A new `light.Registry` persists name↔port bindings. Discovery stays in `package main` behind injected function types, so all fleet logic is unit-testable against the existing `fakePort`.
 
 **Tech Stack:** Go 1.26.3, `go.bug.st/serial` v1.8.0 (pinned), mingw cross-compile via `build.sh`. No new dependencies.
 
@@ -17,7 +17,9 @@
 - Gate after every task: `go test -race ./... && go vet ./...` clean (run from the repo root `/home/dan/code/mutastic/.worktrees/pl81-multi-light`). All existing mic + single-light tests keep passing.
 - Windows cross-compile must stay green: `./build.sh` produces `bin/mutastic.exe` (mingw + cgo). Any signature change to `light_windows.go` must be mirrored in `light_other.go` (build tags).
 - Persistent files live in `%LOCALAPPDATA%\mutastic\` via `os.UserCacheDir()` + `"mutastic"`: `mutastic.log`, `light-names.json` (new), `light-state-<COMx>.json` (new, replaces `light-state.json`).
-- Light identity = Windows COM port name. CH340 bridges (VID `1A86` PID `7523`) have NO unique USB serial number; the COM port is the only discriminator and is stable per physical USB jack. Never key on anything else.
+- Light identity = Windows COM port name. CH340 bridges (VID `1A86` PID `7523`) expose NO USB serial number — registry-verified on this unit 2026-08-09: the Windows instance ID (`8&39d912e3&0&3`) is a machine-generated location ID, so `SerialNumber` is always empty via go.bug.st. Windows keys the COM assignment to the physical-jack location path; same-jack replug stability is strongly supported by that evidence but physically unverified (remains human question #1). Never key on anything else.
+- No fleet operation may block indefinitely on one light's I/O: teardown waits are bounded (`drainTimeout`) and never occur while holding `mm.mu`; every per-light command call is deadline-bounded (`lightCallTimeout`); collective fan-out is parallel with replies assembled in sorted port order.
+- Session teardown requires the port to be missing from 2 consecutive successful scans (debounce); erroring scans never tear down sessions.
 - Exact reply strings are contract (tests, README, exit codes depend on them). The single-`Manager` reply strings (`on 40% 4950K`, `off`, `unknown`, `error: ...`) are unchanged.
 - Collective toggle semantics: if ANY light is on → turn ALL off; otherwise turn ALL on (each restoring its own persisted brightness/temp). Unknown state counts as off.
 - `internal/daemon` must NOT import `internal/light` — the `CommandHandler` interface seam stays.
@@ -39,17 +41,17 @@ One subsystem: the light control path (CLI → UDP → daemon routing → light 
 | `internal/light/names.go` | Create | Persistent name↔port registry (`light-names.json`) |
 | `internal/light/names_test.go` | Create | Registry unit tests (assign/move/clear/resolve/persist) |
 | `internal/light/manager.go` | Modify | Add `Connected()` + `PowerState()` fleet hooks (nothing else) |
-| `internal/light/manager_test.go` | Modify | Test for the new hooks |
-| `internal/light/multi.go` | Create | `MultiManager`: rescan loop, per-port sessions, state migration, addressing, collective commands |
+| `internal/light/manager_test.go` | Modify | Test for the new hooks; `fastTimings` gains the bounded-wait knobs (Task 3) |
+| `internal/light/multi.go` | Create | `MultiManager`: debounced rescan loop, per-port sessions, bounded out-of-lock teardown, state migration, addressing, parallel deadline-bounded collective commands |
 | `internal/light/multi_test.go` | Create | Fleet lifecycle + command surface tests (fake serial only) |
 | `internal/daemon/daemon.go` | Modify | Route `light@...` to the light handler (one condition) |
 | `internal/daemon/daemon_test.go` | Modify | Routing test for `light@` |
-| `main.go` | Modify | `clientCommand` dispatch helper, `light@` case, 2048-byte reply buffer, `usage()`, `lightStateDir()`, MultiManager wiring |
+| `main.go` | Modify | `clientCommand` dispatch helper, `light@` case, 2048-byte reply buffer, `usage()`, `lightStateDir()`, MultiManager wiring, logfile-first logger |
 | `main_test.go` | Modify | `clientCommand` table test + large-reply test |
-| `light_windows.go` | Modify | `enumeratePL81Ports` / `openPL81Port` / `pl81PortPresent` (replace single-light `openPL81`/`pl81Present`) |
-| `light_other.go` | Modify | Non-Windows stubs for the same three functions |
-| `README.md` | Modify | Command table, multi-light semantics, collective toggle doc, troubleshooting + deploy-hang note |
-| `docs/pl81-pro-serial-protocol.md` | Modify | CH340 no-serial identity note, `## Multiple panels` section, human question |
+| `light_windows.go` | Modify | `enumeratePL81Ports` / `openPL81Port` (replace single-light `openPL81`/`pl81Present`) |
+| `light_other.go` | Modify | Non-Windows stubs for the same two functions |
+| `README.md` | Modify | Command table, multi-light semantics, collective toggle doc, troubleshooting (incl. CH340 auto-adopt warning + power notes) + deploy-hang note |
+| `docs/pl81-pro-serial-protocol.md` | Modify | CH340 no-serial identity evidence, `## Multiple panels` section (incl. power), human questions |
 
 ---
 
@@ -472,21 +474,46 @@ git -C /home/dan/code/mutastic/.worktrees/pl81-multi-light commit -m "feat: Mana
 **Files:**
 - Create: `internal/light/multi.go`
 - Test: `internal/light/multi_test.go`
+- Modify: `internal/light/manager_test.go` (extend `fastTimings` with the new bounded-wait knobs)
 
 **Interfaces:**
 - Consumes: `Manager` (`NewManager(logger *log.Logger, statePath string) *Manager`, `Run(ctx context.Context, open OpenFunc)`, `Present func() bool` field, `Connected() bool`), `Port`, `Registry` (Task 1), test seams `fakePort`/`newFakePort()`/`fastTimings(t)`/`waitFor(t, what, cond)`/`wakeBytes` (all in-package).
 - Produces:
   - `type Enumerate func() ([]string, error)` — lists COM names of attached PL81s.
   - `type OpenPort func(name string) (Port, error)` — opens one specific port.
-  - `func NewMultiManager(logger *log.Logger, stateDir string, reg *Registry, enumerate Enumerate, openPort OpenPort, present func(string) bool) *MultiManager`
+  - `func NewMultiManager(logger *log.Logger, stateDir string, reg *Registry, enumerate Enumerate, openPort OpenPort) *MultiManager` — NO presence callback: sessions never call the enumerator; each session's `Manager.Present` is wired to `mm.stillPresent(port)`, which reads the debounced rescan snapshot under `mm.mu` (fail-open true until ≥2 consecutive misses).
   - `func (mm *MultiManager) Run(ctx context.Context)` — immediate rescan, then every `rescanInterval` (package var, 5 s).
-  - Unexported (used by Task 4 and tests): `rescan(ctx)`, `stopAll()`, `statePath(port) string`, `portsLocked() []string`, `sortPorts([]string)`, `sessions map[string]*lightSession` with `lightSession{m *Manager; cancel context.CancelFunc; done chan struct{}}`.
+  - Package timing knobs (vars, shortened by `fastTimings`): `drainTimeout = 2 * time.Second` bounds every teardown wait; `lightCallTimeout = 2 * time.Second` bounds every per-light command call (declared here, consumed by Task 4's command surface). `const missThreshold = 2` is the teardown debounce.
+  - Teardown policy: a session is stopped only after its port is absent from `missThreshold` (2) CONSECUTIVE SUCCESSFUL scans (per-port miss counter in `misses map[string]int`, reset whenever the port is seen); erroring scans keep all sessions and reset nothing (existing fail-open). Under `mm.mu`, teardown only cancels + removes from the sessions map; the `<-s.done` wait runs OUTSIDE `mm.mu`, bounded by `drainTimeout` (`drain`). `stopAll()` gets the same bounded-outside-lock treatment.
+  - Unexported (used by Task 4 and tests): `rescan(ctx)`, `stopAll()`, `drain(*lightSession)`, `stillPresent(port) bool`, `statePath(port) string`, `portsLocked() []string`, `sortPorts([]string)`, `sessions map[string]*lightSession` with `lightSession{port string; m *Manager; cancel context.CancelFunc; done chan struct{}}`.
   - Per-port state file: `<stateDir>/light-state-<COMx>.json`. Legacy migration: when a session starts for a port, the scan saw exactly ONE port, and no per-port file exists, `light-state.json` is renamed to the per-port file (a one-light setup keeps its remembered settings across the upgrade; multi-port upgrades fall back to defaults — documented in Task 8).
-  - Log lines (E2E depends on these): `"light %s: starting session"`, `"light %s: port gone, stopping session"`, `"light: rescan: ports now [%s]"` (only when the set changes), `"light: rescan: %v (keeping current sessions)"`, `"light %s: migrated legacy light-state.json"`. Per-session Manager logs gain a `"<PORT> "` message prefix (e.g. `COM4 light: port opened`).
+  - Log lines (E2E depends on these): `"light %s: starting session"`, `"light %s: port gone, stopping session"`, `"light: rescan: ports now [%s]"` (only when the set changes), `"light: rescan: %v (keeping current sessions)"`, `"light %s: migrated legacy light-state.json"`. Per-session Manager logs gain a `"<PORT> "` message prefix (e.g. `COM4 light: port opened`). Additive (new, not depended on by E2E): `"light %s: session still draining"` when a teardown wait hits `drainTimeout`.
 
 - [ ] **Step 1: Write the failing tests**
 
-Create `internal/light/multi_test.go`:
+First, in `internal/light/manager_test.go`, replace `fastTimings` (line 227) so it also shrinks the new bounded-wait knobs (`drainTimeout` now; `lightCallTimeout` is declared alongside it in Step 3 and consumed by Task 4):
+
+```go
+func fastTimings(t *testing.T) {
+	t.Helper()
+	oldSpacing, oldWake := writeSpacing, wakeDelay
+	oldOpen, oldReconnect := openRetryDelay, reconnectDelay
+	oldPresence := presenceInterval
+	oldDrain, oldCall := drainTimeout, lightCallTimeout
+	writeSpacing, wakeDelay = time.Millisecond, time.Millisecond
+	openRetryDelay, reconnectDelay = 10*time.Millisecond, 10*time.Millisecond
+	presenceInterval = time.Millisecond
+	drainTimeout, lightCallTimeout = 50*time.Millisecond, 50*time.Millisecond
+	t.Cleanup(func() {
+		writeSpacing, wakeDelay = oldSpacing, oldWake
+		openRetryDelay, reconnectDelay = oldOpen, oldReconnect
+		presenceInterval = oldPresence
+		drainTimeout, lightCallTimeout = oldDrain, oldCall
+	})
+}
+```
+
+Then create `internal/light/multi_test.go`:
 
 ```go
 package light
@@ -587,7 +614,7 @@ func newTestMulti(t *testing.T, fleet *fakeFleet, stateDir string) (*MultiManage
 	if stateDir != "" {
 		regPath = filepath.Join(stateDir, "light-names.json")
 	}
-	mm := NewMultiManager(testLogger(), stateDir, NewRegistry(regPath), fleet.enumerate, fleet.open, nil)
+	mm := NewMultiManager(testLogger(), stateDir, NewRegistry(regPath), fleet.enumerate, fleet.open)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {
 		cancel()
@@ -672,22 +699,50 @@ func TestRescanDiscoversHotPluggedLight(t *testing.T) {
 	}
 }
 
-func TestRescanStopsRemovedLight(t *testing.T) {
+func TestRescanStopsRemovedLightAfterTwoMisses(t *testing.T) {
 	fastTimings(t)
-	fastRescan(t)
 	fleet := newFakeFleet("COM4", "COM7")
 	mm, ctx := newTestMulti(t, fleet, "")
-	go mm.Run(ctx)
+	mm.rescan(ctx)
 	waitConnected(t, mm, "COM4", "COM7")
 
 	fleet.set("COM4") // unplug COM7
-	waitFor(t, "COM7 torn down", func() bool {
-		mm.mu.Lock()
-		defer mm.mu.Unlock()
-		_, ok := mm.sessions["COM7"]
-		return !ok
-	})
+	mm.rescan(ctx)    // first successful miss: debounced, session must survive
+	mm.mu.Lock()
+	_, still := mm.sessions["COM7"]
+	mm.mu.Unlock()
+	if !still {
+		t.Fatal("COM7 torn down after ONE missing scan; want 2-miss debounce")
+	}
+	mm.rescan(ctx) // second consecutive miss: teardown
+	mm.mu.Lock()
+	_, still = mm.sessions["COM7"]
+	mm.mu.Unlock()
+	if still {
+		t.Fatal("COM7 session still tracked after two consecutive missing scans")
+	}
 	waitConnected(t, mm, "COM4") // survivor untouched
+}
+
+func TestRescanMissCounterResetsWhenPortReappears(t *testing.T) {
+	fastTimings(t)
+	fleet := newFakeFleet("COM4")
+	mm, ctx := newTestMulti(t, fleet, "")
+	mm.rescan(ctx)
+	waitConnected(t, mm, "COM4")
+
+	fleet.set() // one scan misses COM4...
+	mm.rescan(ctx)
+	fleet.set("COM4") // ...but it reappears: the miss counter must reset
+	mm.rescan(ctx)
+	fleet.set()
+	mm.rescan(ctx) // a NEW first miss: still debounced
+	mm.mu.Lock()
+	_, still := mm.sessions["COM4"]
+	mm.mu.Unlock()
+	if !still {
+		t.Fatal("session torn down on non-consecutive misses; counter must reset when seen")
+	}
 }
 
 func TestRescanSurvivesEnumerateError(t *testing.T) {
@@ -699,6 +754,66 @@ func TestRescanSurvivesEnumerateError(t *testing.T) {
 	fleet.setFail(true)
 	mm.rescan(ctx) // fail open: keep current sessions
 	waitConnected(t, mm, "COM4")
+}
+
+// wedgedPort blocks forever in Write/Read, simulating a serial stack that
+// never completes I/O after surprise removal (the unprovable CH340 driver
+// property the teardown design must not depend on). Closing block releases
+// the leaked goroutine at test end.
+type wedgedPort struct{ block chan struct{} }
+
+func newWedgedPort() *wedgedPort { return &wedgedPort{block: make(chan struct{})} }
+
+func (w *wedgedPort) Write(p []byte) (int, error) { <-w.block; return 0, errors.New("gone") }
+func (w *wedgedPort) Read(p []byte) (int, error)  { <-w.block; return 0, errors.New("gone") }
+func (w *wedgedPort) Close() error                { return nil }
+
+func TestRescanUnblockedByWedgedPort(t *testing.T) {
+	fastTimings(t) // shrinks drainTimeout to 50ms - the bound under test
+	wedged := newWedgedPort()
+	defer close(wedged.block) // release the leaked goroutine at test end
+	healthy := newFakePort()
+	var mu sync.Mutex
+	ports := []string{"COM4", "COM7"}
+	enumerate := func() ([]string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), ports...), nil
+	}
+	open := func(name string) (Port, error) {
+		if name == "COM7" {
+			return wedged, nil // COM7's wake Write wedges forever
+		}
+		return healthy, nil
+	}
+	mm := NewMultiManager(testLogger(), "", NewRegistry(""), enumerate, open)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel()
+		mm.stopAll()
+	})
+	mm.rescan(ctx)
+	waitConnected(t, mm, "COM4") // COM7 never connects: it is stuck in its wake Write
+
+	mu.Lock()
+	ports = []string{"COM4"} // unplug the wedged COM7
+	mu.Unlock()
+	start := time.Now()
+	mm.rescan(ctx) // miss 1: debounced
+	mm.rescan(ctx) // miss 2: teardown - the drain must time out, not hang
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("rescan blocked %v on a wedged session; want bounded drain", elapsed)
+	}
+	mm.mu.Lock()
+	_, still := mm.sessions["COM7"]
+	mm.mu.Unlock()
+	if still {
+		t.Fatal("wedged COM7 session still tracked after two misses")
+	}
+	// The fleet lock is free and the survivor keeps working.
+	if got := sessionManager(t, mm, "COM4").HandleCommand("brightness 40"); got != "on 40% 4950K" {
+		t.Fatalf("survivor reply = %q, want %q", got, "on 40% 4950K")
+	}
 }
 
 func TestPerPortStateFiles(t *testing.T) {
@@ -771,7 +886,7 @@ func TestLegacyStateKeptWhenTwoPortsPresent(t *testing.T) {
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `go test ./internal/light/`
-Expected: FAIL — build error `undefined: NewMultiManager` (and `rescanInterval`, `MultiManager`).
+Expected: FAIL — build error `undefined: NewMultiManager` (and `MultiManager`, `rescanInterval`, `drainTimeout`, `lightCallTimeout`).
 
 - [ ] **Step 3: Write the implementation**
 
@@ -797,6 +912,29 @@ import (
 // shrink it.
 var rescanInterval = 5 * time.Second
 
+// missThreshold: a session is torn down only after its port is absent
+// from this many CONSECUTIVE SUCCESSFUL scans. A successful enumeration
+// can transiently omit a present device (the churn window is unverifiable
+// here), so a single missing scan is never trusted; erroring scans keep
+// all sessions and reset nothing.
+const missThreshold = 2
+
+// Bounded-wait knobs. Vars so fastTimings can shrink them. Nothing in the
+// fleet may block indefinitely on one light's I/O: the CH340 driver's
+// surprise-removal I/O promptness is unprovable, so it is never relied on.
+var (
+	// drainTimeout bounds how long teardown waits for a cancelled session
+	// goroutine to exit. On expiry the goroutine (and its port handle) is
+	// abandoned: a truly wedged write leaks one goroutine + handle -
+	// degraded, never wedged; same-COM re-adoption self-heals via the
+	// open-retry loop once the driver completes the I/O.
+	drainTimeout = 2 * time.Second
+	// lightCallTimeout bounds every per-light command/poll call (consumed
+	// by the Task 4 command surface; declared here so fastTimings covers
+	// both knobs in one edit).
+	lightCallTimeout = 2 * time.Second
+)
+
 // Enumerate lists the COM port names of every PL81 currently attached.
 type Enumerate func() ([]string, error)
 
@@ -813,13 +951,14 @@ type MultiManager struct {
 	stateDir  string // per-port state files live here; "" disables persistence
 	enumerate Enumerate
 	openPort  OpenPort
-	present   func(name string) bool // per-port USB presence; nil disables
 
 	mu       sync.Mutex
 	sessions map[string]*lightSession // key: canonical port name ("COM4")
+	misses   map[string]int           // consecutive successful scans missing each port
 }
 
 type lightSession struct {
+	port   string
 	m      *Manager
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -827,15 +966,15 @@ type lightSession struct {
 
 // NewMultiManager wires the discovery/open callbacks; Run starts the
 // rescan loop.
-func NewMultiManager(logger *log.Logger, stateDir string, reg *Registry, enumerate Enumerate, openPort OpenPort, present func(string) bool) *MultiManager {
+func NewMultiManager(logger *log.Logger, stateDir string, reg *Registry, enumerate Enumerate, openPort OpenPort) *MultiManager {
 	return &MultiManager{
 		logger:    logger,
 		reg:       reg,
 		stateDir:  stateDir,
 		enumerate: enumerate,
 		openPort:  openPort,
-		present:   present,
 		sessions:  map[string]*lightSession{},
+		misses:    map[string]int{},
 	}
 }
 
@@ -857,9 +996,13 @@ func (mm *MultiManager) Run(ctx context.Context) {
 }
 
 // rescan diffs the enumerated port set against running sessions: new
-// ports get a session (with one-time legacy state migration), vanished
-// ports are torn down. Enumeration errors keep the current set (fail
-// open - never kill sessions on an enumerator glitch).
+// ports get a session (with one-time legacy state migration); vanished
+// ports are torn down only after missThreshold CONSECUTIVE successful
+// misses (debounce - a successful scan can transiently omit a present
+// device). Enumeration errors keep the current set and reset nothing
+// (fail open - never kill sessions on an enumerator glitch). Teardown
+// waits run OUTSIDE mm.mu and are bounded by drainTimeout: one light's
+// wedged I/O must never block the fleet lock.
 func (mm *MultiManager) rescan(ctx context.Context) {
 	raw, err := mm.enumerate()
 	if err != nil {
@@ -872,12 +1015,13 @@ func (mm *MultiManager) rescan(ctx context.Context) {
 			ports = append(ports, p)
 		}
 	}
+	var doomed []*lightSession
 	mm.mu.Lock()
-	defer mm.mu.Unlock()
 	seen := map[string]bool{}
 	changed := false
 	for _, port := range ports {
 		seen[port] = true
+		delete(mm.misses, port) // seen: reset the miss counter
 		if _, ok := mm.sessions[port]; !ok {
 			mm.startSessionLocked(ctx, port, len(ports))
 			changed = true
@@ -887,15 +1031,48 @@ func (mm *MultiManager) rescan(ctx context.Context) {
 		if seen[port] {
 			continue
 		}
+		mm.misses[port]++
+		if mm.misses[port] < missThreshold {
+			continue // debounce: one missing scan is not trusted
+		}
 		mm.logger.Printf("light %s: port gone, stopping session", port)
 		s.cancel()
-		<-s.done
 		delete(mm.sessions, port)
+		delete(mm.misses, port)
+		doomed = append(doomed, s)
 		changed = true
 	}
 	if changed {
 		mm.logger.Printf("light: rescan: ports now [%s]", strings.Join(mm.portsLocked(), " "))
 	}
+	mm.mu.Unlock()
+	for _, s := range doomed {
+		mm.drain(s)
+	}
+}
+
+// drain waits (bounded) for one cancelled session goroutine to exit,
+// NEVER while holding mm.mu. On timeout the goroutine and its port handle
+// are abandoned: a truly wedged write leaks one goroutine + handle -
+// degraded, never wedged; same-COM re-adoption self-heals via the
+// open-retry loop once the driver completes the I/O.
+func (mm *MultiManager) drain(s *lightSession) {
+	select {
+	case <-s.done:
+	case <-time.After(drainTimeout):
+		mm.logger.Printf("light %s: session still draining", s.port)
+	}
+}
+
+// stillPresent is every session's Manager.Present: it consults the
+// debounced rescan snapshot instead of re-enumerating (sessions never
+// call the enumerator - one shared view of the bus). A port counts as
+// present until missThreshold consecutive successful scans omitted it;
+// with no fresh successful-scan data this fails open (zero misses).
+func (mm *MultiManager) stillPresent(port string) bool {
+	mm.mu.Lock()
+	defer mm.mu.Unlock()
+	return mm.misses[port] < missThreshold
 }
 
 // startSessionLocked creates and launches the per-port Manager. When this
@@ -914,17 +1091,16 @@ func (mm *MultiManager) startSessionLocked(ctx context.Context, port string, sca
 	}
 	logger := log.New(mm.logger.Writer(), port+" ", mm.logger.Flags()|log.Lmsgprefix)
 	m := NewManager(logger, statePath)
-	if mm.present != nil {
-		p := port
-		m.Present = func() bool { return mm.present(p) }
-	}
+	p := port
+	// Presence reads the debounced rescan snapshot - sessions never call
+	// the enumerator directly (one shared, rate-limited view of the bus).
+	m.Present = func() bool { return mm.stillPresent(p) }
 	sessCtx, cancel := context.WithCancel(ctx)
-	s := &lightSession{m: m, cancel: cancel, done: make(chan struct{})}
+	s := &lightSession{port: port, m: m, cancel: cancel, done: make(chan struct{})}
 	mm.sessions[port] = s
 	mm.logger.Printf("light %s: starting session", port)
 	go func() {
 		defer close(s.done)
-		p := port
 		m.Run(sessCtx, func() (Port, error) { return mm.openPort(p) })
 	}()
 }
@@ -959,14 +1135,20 @@ func sortPorts(ports []string) {
 	})
 }
 
-// stopAll cancels every session and waits for each to exit.
+// stopAll cancels every session and waits for each to exit - bounded by
+// drainTimeout and outside mm.mu, exactly like rescan's teardown.
 func (mm *MultiManager) stopAll() {
 	mm.mu.Lock()
-	defer mm.mu.Unlock()
+	var doomed []*lightSession
 	for port, s := range mm.sessions {
 		s.cancel()
-		<-s.done
 		delete(mm.sessions, port)
+		doomed = append(doomed, s)
+	}
+	mm.misses = map[string]int{}
+	mm.mu.Unlock()
+	for _, s := range doomed {
+		mm.drain(s)
 	}
 }
 
@@ -980,7 +1162,7 @@ Note: the `var _ = fmt.Sprintf` line is scaffolding for this task only; Task 4 r
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `go test ./internal/light/ -run 'TestRescan|TestPerPortStateFiles|TestLegacyState' -v`
-Expected: PASS (7 tests).
+Expected: PASS (9 tests, including `TestRescanUnblockedByWedgedPort`, whose two teardown rescans finish well inside its own 1 s assertion thanks to the fastTimings-shortened 50 ms `drainTimeout`).
 
 - [ ] **Step 5: Gate**
 
@@ -990,7 +1172,7 @@ Expected: clean. The race detector matters here: rescan vs session goroutines.
 - [ ] **Step 6: Commit**
 
 ```bash
-git -C /home/dan/code/mutastic/.worktrees/pl81-multi-light add internal/light/multi.go internal/light/multi_test.go
+git -C /home/dan/code/mutastic/.worktrees/pl81-multi-light add internal/light/multi.go internal/light/multi_test.go internal/light/manager_test.go
 git -C /home/dan/code/mutastic/.worktrees/pl81-multi-light commit -m "feat: MultiManager with 5s rescan, per-port sessions and state migration"
 ```
 
@@ -1003,14 +1185,14 @@ git -C /home/dan/code/mutastic/.worktrees/pl81-multi-light commit -m "feat: Mult
 - Test: `internal/light/multi_test.go` (append tests)
 
 **Interfaces:**
-- Consumes: Task 1 `Registry`, Task 2 `PowerState`/`Connected`, Task 3 `MultiManager` internals, existing `Manager.HandleCommand` verb table (`status|on|off|toggle|brightness N|temp K|preset name`).
+- Consumes: Task 1 `Registry`, Task 2 `PowerState`/`Connected`, Task 3 `MultiManager` internals (incl. the `lightCallTimeout` deadline var), existing `Manager.HandleCommand` verb table (`status|on|off|toggle|brightness N|temp K|preset name`).
 - Produces: `func (mm *MultiManager) HandleCommand(cmd string) string` — satisfies `daemon.CommandHandler` (`internal/daemon/daemon.go:28`). Input is the daemon-trimmed remainder after the `light` prefix. Grammar and exact reply formats (contract for Tasks 5/6/8/9):
-  - `@<name|COMx> <verb...>` → single light, reply is the bare `Manager` reply (`on 30% 2900K`). Unresolved target → `error: unknown light "<target>" (known: COM4=desk, COM7)`; resolved port with no session → `error: light COM9 not connected (known: ...)`; `known:` is `none` when nothing is known.
+  - `@<name|COMx> <verb...>` → single light, reply is the bare `Manager` reply (`on 30% 2900K`). The resolved call is a single deadline-bounded call (`lightCallTimeout`): a wedged light replies `error: timeout`. Unresolved target → `error: unknown light "<target>" (known: COM4=desk, COM7)`; resolved port with no session → `error: light COM9 not connected (known: ...)`; `known:` is `none` when nothing is known.
   - `name <COMx> <name>` → `named COM4 desk` (naming a not-yet-attached port is allowed).
   - `unname <name|COMx>` → `unnamed desk`.
-  - `list` → one line per known light (sessions ∪ named ports), port order: `COM4 desk connected on 30% 2900K` / `COM9 spare disconnected` / name placeholder `-`; zero known → `no lights known`.
-  - Bare verb → fan out to every tracked session in port order, one line per light: `COM4 desk: on 30% 2900K\nCOM7: off`. Zero sessions → `error: no light`.
-  - Bare `toggle` → fleet decision: if ANY light reports on, send `off` to all; otherwise send `on` to all (each restores its own persisted look). Unknown counts as off.
+  - `list` → one line per known light (sessions ∪ named ports), port order: `COM4 desk connected on 30% 2900K` / `COM9 spare disconnected` / name placeholder `-`; zero known → `no lights known`. Each attached light's probe (`Connected()` + status) is ONE bounded `callLight` call — `Connected()` takes `m.mu`, which an abandoned timed-out call can hold forever inside a wedged `writeFrame` — so a timed-out light's row reads `COM7 - error: timeout`; healthy rows are byte-identical to the format above.
+  - Bare verb → fan out to every tracked session IN PARALLEL (one goroutine per light, each call bounded by `lightCallTimeout`), reply lines assembled in sorted port order — byte-identical to serial output for healthy lights: `COM4 desk: on 30% 2900K\nCOM7: off`. A light exceeding the deadline gets the reply line `error: timeout` (e.g. `COM7: error: timeout`). Zero sessions → `error: no light`.
+  - Bare `toggle` → fleet decision: the `PowerState()` polls run in parallel per-light goroutines, each bounded by `lightCallTimeout`; if ANY light reports on, send `off` to all; otherwise send `on` to all (each restores its own persisted look). Unknown counts as off; a timed-out poll counts as off (and is logged).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1167,6 +1349,80 @@ func TestMultiUsageErrors(t *testing.T) {
 		}
 	}
 }
+
+// stuckPort completes the first Write (the wake, so the session connects)
+// then blocks forever on every later Write and on Read - a light that
+// wedges mid-session. Intentionally distinct from Task 3's wedgedPort
+// (which blocks even the wake): here the session must CONNECT first so
+// the fan-out reaches its Write. Closing block releases the leaked
+// goroutines.
+type stuckPort struct {
+	mu     sync.Mutex
+	writes int
+	block  chan struct{}
+}
+
+func newStuckPort() *stuckPort { return &stuckPort{block: make(chan struct{})} }
+
+func (s *stuckPort) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	s.writes++
+	first := s.writes == 1
+	s.mu.Unlock()
+	if first {
+		return len(p), nil // wake succeeds; the session connects
+	}
+	<-s.block
+	return 0, errors.New("gone")
+}
+
+func (s *stuckPort) Read(p []byte) (int, error) { <-s.block; return 0, errors.New("gone") }
+func (s *stuckPort) Close() error               { return nil }
+
+func TestMultiFanOutBoundedByWedgedLight(t *testing.T) {
+	fastTimings(t) // shrinks lightCallTimeout to 50ms - the bound under test
+	stuck := newStuckPort()
+	defer close(stuck.block) // release the leaked goroutines at test end
+	healthy := newFakePort()
+	enumerate := func() ([]string, error) { return []string{"COM4", "COM7"}, nil }
+	open := func(name string) (Port, error) {
+		if name == "COM7" {
+			return stuck, nil
+		}
+		return healthy, nil
+	}
+	mm := NewMultiManager(testLogger(), "", NewRegistry(""), enumerate, open)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel()
+		mm.stopAll()
+	})
+	mm.rescan(ctx)
+	waitConnected(t, mm, "COM4", "COM7") // both wakes succeeded
+
+	start := time.Now()
+	got := mm.HandleCommand("brightness 40")
+	want := "COM4: on 40% 4950K\nCOM7: error: timeout"
+	if got != want {
+		t.Fatalf("fan-out = %q, want %q", got, want)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("fan-out took %v; want bounded by lightCallTimeout", elapsed)
+	}
+
+	// list must be bounded too: the abandoned fan-out goroutine is parked
+	// inside writeFrame HOLDING COM7's m.mu, so an unbounded Connected()
+	// probe would block forever.
+	start = time.Now()
+	got = mm.HandleCommand("list")
+	want = "COM4 - connected on 40% 4950K\nCOM7 - error: timeout"
+	if got != want {
+		t.Fatalf("list = %q, want %q", got, want)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("list took %v; want bounded by lightCallTimeout", elapsed)
+	}
+}
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1239,13 +1495,34 @@ func (mm *MultiManager) handleTargeted(cmd string) string {
 	if !ok {
 		return fmt.Sprintf("error: light %s not connected (known: %s)", port, mm.known())
 	}
-	return s.m.HandleCommand(rest)
+	// One bounded call: a wedged light must not stall the UDP loop.
+	return mm.callLight(port, func() string { return s.m.HandleCommand(rest) })
 }
 
-// handleAll fans a bare verb out to every tracked light, one reply line
-// per light in port order. "toggle" is fleet-level: if ANY light is on,
-// all go off; otherwise all go on (each restoring its own persisted
-// look; unknown counts as off).
+// callLight runs one per-light call with a deadline. A light exceeding
+// lightCallTimeout (wedged serial I/O) yields "error: timeout"; the
+// abandoned call finishes on its own goroutine and its result is
+// discarded (buffered channel - nothing leaks beyond the wedged serial
+// write itself, which is unavoidable: the library has no write timeout).
+func (mm *MultiManager) callLight(port string, call func() string) string {
+	ch := make(chan string, 1)
+	go func() { ch <- call() }()
+	select {
+	case reply := <-ch:
+		return reply
+	case <-time.After(lightCallTimeout):
+		mm.logger.Printf("light %s: call timed out after %v", port, lightCallTimeout)
+		return "error: timeout"
+	}
+}
+
+// handleAll fans a bare verb out to every tracked light IN PARALLEL, one
+// reply line per light assembled in sorted port order (stable output,
+// byte-identical to serial fan-out for healthy lights). Every per-light
+// call is bounded by lightCallTimeout so one wedged light cannot stall
+// the fleet or the daemon's UDP loop. "toggle" is fleet-level: if ANY
+// light is on, all go off; otherwise all go on (each restoring its own
+// persisted look; unknown - or timed out - counts as off).
 func (mm *MultiManager) handleAll(cmd string) string {
 	mm.mu.Lock()
 	ports := mm.portsLocked()
@@ -1259,17 +1536,39 @@ func (mm *MultiManager) handleAll(cmd string) string {
 	}
 	if cmd == "toggle" {
 		cmd = "on"
-		for _, m := range managers {
-			if on, _ := m.PowerState(); on {
+		on := make([]bool, len(ports))
+		var wg sync.WaitGroup
+		for i, p := range ports {
+			wg.Add(1)
+			go func(i int, p string, m *Manager) {
+				defer wg.Done()
+				reply := mm.callLight(p, func() string {
+					if isOn, _ := m.PowerState(); isOn {
+						return "on"
+					}
+					return "off"
+				})
+				on[i] = reply == "on" // "error: timeout" counts as off (logged)
+			}(i, p, managers[p])
+		}
+		wg.Wait()
+		for i := range on {
+			if on[i] {
 				cmd = "off"
 				break
 			}
 		}
 	}
 	lines := make([]string, len(ports))
+	var wg sync.WaitGroup
 	for i, p := range ports {
-		lines[i] = mm.label(p) + ": " + managers[p].HandleCommand(cmd)
+		wg.Add(1)
+		go func(i int, p string, m *Manager) {
+			defer wg.Done()
+			lines[i] = mm.label(p) + ": " + mm.callLight(p, func() string { return m.HandleCommand(cmd) })
+		}(i, p, managers[p])
 	}
+	wg.Wait()
 	return strings.Join(lines, "\n")
 }
 
@@ -1342,11 +1641,20 @@ func (mm *MultiManager) list() string {
 		if name == "" {
 			name = "-"
 		}
-		if m, ok := managers[p]; ok && m.Connected() {
-			lines[i] = fmt.Sprintf("%s %s connected %s", p, name, m.HandleCommand("status"))
-		} else {
+		m, ok := managers[p]
+		if !ok {
 			lines[i] = fmt.Sprintf("%s %s disconnected", p, name)
+			continue
 		}
+		// The probe must be bounded too: Connected() takes m.mu, which an
+		// abandoned timed-out call can hold forever inside a wedged
+		// writeFrame - an unbounded probe here would wedge the UDP loop.
+		lines[i] = fmt.Sprintf("%s %s %s", p, name, mm.callLight(p, func() string {
+			if m.Connected() {
+				return "connected " + m.HandleCommand("status")
+			}
+			return "disconnected"
+		}))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -1355,7 +1663,7 @@ func (mm *MultiManager) list() string {
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `go test ./internal/light/ -run TestMulti -v`
-Expected: PASS (7 `TestMulti*` tests).
+Expected: PASS (8 `TestMulti*` tests, `TestMultiFanOutBoundedByWedgedLight` completing well inside a second).
 
 - [ ] **Step 5: Gate**
 
@@ -1594,16 +1902,16 @@ git -C /home/dan/code/mutastic/.worktrees/pl81-multi-light commit -m "feat: CLI 
 ### Task 7: Windows discovery refactor + daemon wiring
 
 **Files:**
-- Modify: `light_windows.go` (replace `openPL81`/`pl81Present` with `enumeratePL81Ports`/`openPL81Port`/`pl81PortPresent`)
-- Modify: `light_other.go` (mirror the three signatures)
-- Modify: `main.go` (replace `lightStatePath()` with `lightStateDir()`; rewire `runDaemon`'s light block, `main.go:100-105`)
+- Modify: `light_windows.go` (replace `openPL81`/`pl81Present` with `enumeratePL81Ports`/`openPL81Port` — nothing else; presence now lives in the MultiManager's debounced rescan snapshot)
+- Modify: `light_other.go` (mirror the two signatures)
+- Modify: `main.go` (replace `lightStatePath()` with `lightStateDir()`; rewire `runDaemon`'s light block, `main.go:100-105`; logfile-first logger, `main.go:91`)
 
 **Interfaces:**
 - Consumes: Task 3/4 `light.NewMultiManager` + `light.NewRegistry`, `go.bug.st/serial` + `enumerator` (already imported by `light_windows.go`).
 - Produces:
   - `func enumeratePL81Ports() ([]string, error)` — matches `light.Enumerate`.
   - `func openPL81Port(name string) (light.Port, error)` — matches `light.OpenPort`.
-  - `func pl81PortPresent(name string) bool` — per-port presence for `Manager.Present`.
+  - (There is deliberately NO `pl81PortPresent`: per-port presence is answered by the MultiManager's debounced rescan snapshot — `mm.stillPresent`, Task 3 — so sessions never call the enumerator.)
   - `func lightStateDir() string` — `%LOCALAPPDATA%\mutastic` (or `""` to disable persistence).
 
 **TDD note:** `light_windows.go` is build-tagged `windows` and cannot be unit-tested from WSL; `light_other.go` stubs are exercised by the existing Linux test run. The verification gates for this task are the full Linux test suite plus the Windows cross-compile (`./build.sh`); behavior is proven live in Task 9. All fleet logic was already TDD'd in Tasks 3-4 behind the injected function types — this task is pure wiring.
@@ -1615,7 +1923,7 @@ Expected: builds `bin/mutastic.exe` (this is the pre-change baseline).
 
 - [ ] **Step 2: Rewrite `light_windows.go`**
 
-Replace the functions `openPL81` and `pl81Present` with the three functions below (keep the file header, build tag, `pl81VID`/`pl81PID` consts, and the `serialPort` adapter exactly as they are; drop the `log` and `errors` imports if they become unused):
+Replace the functions `openPL81` and `pl81Present` with the two functions below (keep the file header, build tag, `pl81VID`/`pl81PID` consts, and the `serialPort` adapter exactly as they are; drop the `log` and `errors` imports if they become unused):
 
 ```go
 // enumeratePL81Ports lists the COM name of every CH340 bridge currently
@@ -1675,23 +1983,6 @@ func openPL81Port(name string) (light.Port, error) {
 	}
 	return serialPort{port}, nil
 }
-
-// pl81PortPresent reports whether the specific COM port is still
-// enumerated as a PL81. The session loop uses it as its liveness fallback
-// during long read silences. Enumeration failures count as present (fail
-// open - never kill a session on an enumerator glitch).
-func pl81PortPresent(name string) bool {
-	ports, err := enumeratePL81Ports()
-	if err != nil {
-		return true
-	}
-	for _, p := range ports {
-		if strings.EqualFold(p, name) {
-			return true
-		}
-	}
-	return false
-}
 ```
 
 (Note the per-candidate `light: serial port: ...` log line goes away with `openPL81` — the MultiManager's `light: rescan: ports now [...]` line replaces it as the discovery diagnostic. Task 8 updates the README troubleshooting text accordingly.)
@@ -1721,9 +2012,6 @@ func enumeratePL81Ports() ([]string, error) {
 func openPL81Port(_ string) (light.Port, error) {
 	return nil, errors.New("the mutastic daemon only supports Windows")
 }
-
-// pl81PortPresent is never consulted off-Windows (no session can start).
-func pl81PortPresent(_ string) bool { return false }
 ```
 
 - [ ] **Step 4: Rewire `main.go`**
@@ -1765,12 +2053,27 @@ with:
 		namesPath = filepath.Join(stateDir, "light-names.json")
 	}
 	reg := light.NewRegistry(namesPath)
-	lights := light.NewMultiManager(logger, stateDir, reg, enumeratePL81Ports, openPL81Port, pl81PortPresent)
+	lights := light.NewMultiManager(logger, stateDir, reg, enumeratePL81Ports, openPL81Port)
 	go lights.Run(ctx)
 	daemon.Run(ctx, open, lights, pc, logger)
 ```
 
 (Everything before/after the block — including how `daemon.Run`'s return feeds `runDaemon`'s exit path — stays byte-identical.)
+
+3. In `runDaemon`, fix the logger construction (`main.go:91` — verify the anchor against the real file) so the LOGFILE is the FIRST MultiWriter destination. Replace:
+
+```go
+	logger := log.New(io.MultiWriter(os.Stderr, logw), "", log.LstdFlags)
+```
+
+with:
+
+```go
+	// Logfile FIRST: io.MultiWriter aborts on the first destination error,
+	// and stderr can die with a freed console on Windows - it must never be
+	// able to drop logfile lines (the E2E log contract greps the file).
+	logger := log.New(io.MultiWriter(logw, os.Stderr), "", log.LstdFlags)
+```
 
 - [ ] **Step 5: Gate (Linux tests + vet)**
 
@@ -1878,7 +2181,27 @@ with:
   ambiguous and defaults apply.
 ```
 
-3. In `## Troubleshooting` (`README.md:81-` region): the old diagnostic string `light: serial port:` no longer exists. Replace any mention of it with the new discovery diagnostics: `light: rescan: ports now [COM4]`, `light COM4: starting session`, and per-light prefixed session lines like `COM4 light: port opened`. Keep the `light: session ended` guidance, noting it is now prefixed per light (`COM4 light: session ended: ...`).
+3. In `## Troubleshooting` (`README.md:81-` region): the old diagnostic string `light: serial port:` no longer exists. Replace any mention of it with the new discovery diagnostics: `light: rescan: ports now [COM4]`, `light COM4: starting session`, and per-light prefixed session lines like `COM4 light: port opened`. Keep the `light: session ended` guidance, noting it is now prefixed per light (`COM4 light: session ended: ...`). Then append these bullets to the section:
+
+```markdown
+- The daemon auto-adopts EVERY VID 1A86 / PID 7523 (CH340) serial device
+  as a light and writes control frames to it. Do not leave non-light
+  CH340 devices (Arduino clones, USB-serial dongles) attached while the
+  daemon runs.
+- If a newly plugged panel NEVER appears in `light list`, check Device
+  Manager: newer panels could carry a CH343 bridge (VID 1A86 PID 55D3),
+  which the installed CH340 INF does not bind - no COM port appears at
+  all. Supporting one would need a driver install plus a code change
+  (new PID).
+- PL81 PRO panels are USB BUS-POWERED - 5 V / 2 A input, 5 W, no
+  battery; the single Type-C port carries BOTH power and PC control. An
+  under-powered port makes the panel auto-limit its brightness range
+  (documented device behavior), and a port power reset drops its COM
+  port - which shows up as port-gone/rescan churn in the log. Three
+  panels can draw up to ~3 A total at 5 V: prefer directly-attached or
+  self-powered hub ports (the current light sits behind a two-tier hub
+  chain).
+```
 
 4. In `## Deploy (on Windows)` (`README.md:62-`), append this note:
 
@@ -1904,14 +2227,19 @@ with:
 
 ```markdown
 - With multiple panels, VID/PID no longer discriminates and the CH340
-  exposes **no USB serial number** — the **COM port name is the light's
-  identity** (this is what `light name`/`light-state-<COMx>.json` key on).
-  Windows keeps the COM assignment stable per physical USB jack; moving a
-  panel to a different jack gives it a new COM number, i.e. a new
-  identity (re-run `light name`).
+  exposes **no USB serial number** — measured, not folklore: this unit's
+  Windows instance ID is a machine-generated location ID
+  (`8&39d912e3&0&3`, verified 2026-08-09 — no iSerialNumber, so
+  `SerialNumber` is always empty via go.bug.st). The **COM port name is
+  the light's identity** (this is what
+  `light name`/`light-state-<COMx>.json` key on). Windows keys the COM
+  assignment to the physical-jack location path, and ComDB never recycles
+  released COM numbers — an unplugged device keeps its number reserved.
+  Moving a panel to a different jack gives it a new COM number, i.e. a
+  new identity (re-run `light name`).
 ```
 
-2. Insert a new section after `## Practical notes` (line 94) and before `## Daemon integration results` (line 95):
+2. Insert a new section after `## Practical notes` (heading at line 88; section ends at line 94) and before `## Daemon integration results` (line 95):
 
 ```markdown
 ## Multiple panels
@@ -1919,18 +2247,30 @@ with:
 - The daemon enumerates ALL VID 1A86 / PID 7523 ports and runs one
   independent session per port (own state tracker, reconnect loop, and
   60 ms rate-limited writes). A rescan every 5 s starts sessions for
-  newly plugged-in panels and tears down sessions whose port vanished —
-  no daemon restart needed.
+  newly plugged-in panels; a session is torn down only after its port is
+  missing from 2 CONSECUTIVE successful scans (debounce — a transient
+  enumeration omission or power blip never kills a session). No daemon
+  restart needed.
 - Identity = COM port name (see Transport). User-facing names map to
   ports in `%LOCALAPPDATA%\mutastic\light-names.json`; each panel's last
   look persists in `light-state-<COMx>.json`.
 - Collective toggle: if ANY panel is on, all turn off; otherwise all turn
   on, each restoring its own persisted look (unknown state counts as
-  off). Bare `light` commands fan out serially (~60 ms/panel minimum
-  write spacing per panel, independent clocks).
+  off). Bare `light` commands fan out to all panels in PARALLEL (each
+  panel keeps its own ~60 ms write spacing); every per-panel call is
+  deadline-bounded, so one wedged panel yields `error: timeout` on its
+  reply line instead of stalling the fleet (or the mic commands).
+- Power: the panel is USB BUS-POWERED — 5 V / 2 A input, 5 W, no
+  battery; a single Type-C port carries BOTH power and PC control. An
+  under-powered port makes the panel automatically limit its brightness
+  range (documented device behavior), and a port power reset drops its
+  COM port (which looks like port-gone/rescan churn). Three panels can
+  draw up to ~3 A total at 5 V — prefer directly-attached or
+  self-powered hub ports (the current light sits behind a two-tier hub
+  chain).
 ```
 
-3. In `## Recorded human questions` (line 107, currently 5 numbered items), append:
+3. In `## Recorded human questions` (line 107, currently 5 numbered items), append two items:
 
 ```markdown
 6. When the two additional PL81 PRO panels arrive: plug each in, confirm
@@ -1938,8 +2278,14 @@ with:
    shows `light COM<n>: starting session`), name them, confirm which COM
    maps to which physical light, and verify the mapping survives a
    replug into the SAME USB jack. Also verify clean teardown on unplug
-   (`light COM<n>: port gone, stopping session`) — untestable today with
-   only the single live light in use.
+   (`light COM<n>: port gone, stopping session` — appears after 2
+   consecutive rescan misses, ~10 s) — untestable today with only the
+   single live light in use.
+7. Power bring-up with all three panels attached: verify each reaches its
+   full target brightness (brightness capping is the documented
+   under-power symptom) and that the port set stays stable in
+   `light list`/the log (no port-gone/rescan churn). If capping or churn
+   appears, move panels to directly-attached or self-powered hub ports.
 ```
 
 - [ ] **Step 4: Gate**
@@ -2015,7 +2361,7 @@ The light's echo frames are the state authority; ask the user to eyeball only if
 
 - [ ] **Step 5: Rescan stability (no churn with a stable port set)**
 
-Physical hot-plug is NOT tested now — the only attached device is the user's live light; do NOT unplug anything. Hot-plug add/remove behavior is proven by `TestRescanDiscoversHotPluggedLight` / `TestRescanStopsRemovedLight` (ticker-driven), and the physical test is recorded as a human question. Live evidence here is stability:
+Physical hot-plug is NOT tested now — the only attached device is the user's live light; do NOT unplug anything. Hot-plug add/remove behavior is proven by `TestRescanDiscoversHotPluggedLight` / `TestRescanStopsRemovedLightAfterTwoMisses` (debounced) plus `TestRescanUnblockedByWedgedPort` (bounded teardown), and the physical test is recorded as a human question. The new `session still draining` log line is additive and appears only on a wedged teardown — never in this stable run; the grep contracts below are unchanged. Live evidence here is stability:
 
 ```bash
 sleep 45
@@ -2053,5 +2399,6 @@ Expected: empty (this task changes no tracked files; nothing to commit).
 
 ## Recorded human questions (surface to the user at the end of the run)
 
-1. **When the two new PL81 PRO panels arrive:** plug each into its permanent USB jack; within ~5 s `mutastic light list` should gain a `COM<n> - connected` row with no restart (log: `light COM<n>: starting session`). Name them (`mutastic light name COM<n> <name>`), note which COM belongs to which physical light, and confirm the mapping survives a replug into the SAME jack. Unplug one to confirm clean teardown (`light COM<n>: port gone, stopping session`). Physical hot-plug could not be exercised during implementation — the only attached device was the live COM4 light, which must not be unplugged.
+1. **When the two new PL81 PRO panels arrive:** plug each into its permanent USB jack; within ~5 s `mutastic light list` should gain a `COM<n> - connected` row with no restart (log: `light COM<n>: starting session`). Name them (`mutastic light name COM<n> <name>`), note which COM belongs to which physical light, and confirm the mapping survives a replug into the SAME jack. Unplug one to confirm clean teardown (`light COM<n>: port gone, stopping session` — appears after 2 consecutive rescan misses, ~10 s). Physical hot-plug could not be exercised during implementation — the only attached device was the live COM4 light, which must not be unplugged.
 2. **Pedal check with multiple lights:** once ≥2 lights are attached, press the left pedal (F13) and confirm all lights toggle together with the any-on→all-off rule.
+3. **Power bring-up with all three panels:** PL81 PRO panels are USB bus-powered (5 V / 2 A in, 5 W, no battery; the one Type-C port carries both power and PC control). With all three attached, verify each reaches its full target brightness (brightness capping is the documented under-power symptom) and that the port set stays stable (no port-gone/rescan churn in the log). If capping or churn appears, move panels to directly-attached or self-powered hub ports.
