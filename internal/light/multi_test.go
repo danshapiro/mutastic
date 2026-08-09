@@ -120,10 +120,18 @@ func waitConnected(t *testing.T, mm *MultiManager, ports ...string) {
 	t.Helper()
 	waitFor(t, "sessions connected", func() bool {
 		mm.mu.Lock()
-		defer mm.mu.Unlock()
+		sessions := make([]*lightSession, 0, len(ports))
 		for _, p := range ports {
 			s, ok := mm.sessions[p]
-			if !ok || !s.m.Connected() {
+			if !ok {
+				mm.mu.Unlock()
+				return false
+			}
+			sessions = append(sessions, s)
+		}
+		mm.mu.Unlock()
+		for _, s := range sessions {
+			if !s.m.Connected() {
 				return false
 			}
 		}
@@ -361,5 +369,42 @@ func TestLegacyStateKeptWhenTwoPortsPresent(t *testing.T) {
 	}
 	if got := sessionManager(t, mm, "COM4").HandleCommand("on"); got != "on 100% 4950K" {
 		t.Fatalf("on = %q, want defaults %q", got, "on 100% 4950K")
+	}
+}
+
+func TestStillPresentObservesFalseMiss(t *testing.T) {
+	fastTimings(t)
+	fleet := newFakeFleet("COM4")
+	mm, ctx := newTestMulti(t, fleet, "")
+	mm.rescan(ctx)
+	waitConnected(t, mm, "COM4")
+
+	// First successful miss: debounce - stillPresent must be true
+	fleet.set()
+	mm.rescan(ctx)
+	if !mm.stillPresent("COM4") {
+		t.Fatal("stillPresent = false after one miss; want debounce true")
+	}
+
+	// Second consecutive miss: teardown - stillPresent must be false
+	mm.rescan(ctx)
+	if mm.stillPresent("COM4") {
+		t.Fatal("stillPresent = true after two consecutive misses; want false to signal torn-down session")
+	}
+
+	// Verify session is actually torn down
+	mm.mu.Lock()
+	_, still := mm.sessions["COM4"]
+	mm.mu.Unlock()
+	if still {
+		t.Fatal("session still tracked after two misses")
+	}
+
+	// Port reappears: stillPresent returns true and session restarts
+	fleet.set("COM4")
+	mm.rescan(ctx)
+	waitConnected(t, mm, "COM4")
+	if !mm.stillPresent("COM4") {
+		t.Fatal("stillPresent = false after port reappears and counter resets; want true")
 	}
 }

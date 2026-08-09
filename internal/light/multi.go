@@ -143,7 +143,9 @@ func (mm *MultiManager) rescan(ctx context.Context) {
 		mm.logger.Printf("light %s: port gone, stopping session", port)
 		s.cancel()
 		delete(mm.sessions, port)
-		delete(mm.misses, port)
+		// Note: do NOT delete mm.misses[port] here - leave it >= missThreshold
+		// so in-flight or later stillPresent() calls observe false.
+		// The counter resets when the port reappears (delete in seen loop above).
 		doomed = append(doomed, s)
 		changed = true
 	}
