@@ -116,7 +116,11 @@ func (d *Daemon) setMute(muted bool) string {
 	if err := d.WriteReport(proto.EncodeCommand(proto.OpMute, payload)); err != nil {
 		return "error: " + err.Error()
 	}
-	d.Track.Set(muted) // optimistic; the 0x20 echo confirms it
+	// Optimistic: this firmware's 0x20 echo only confirms receipt of the
+	// command (a zero-payload ack with a garbage value byte) and carries no
+	// state -- see Tracker.Apply. Tracked state also follows real 0x21
+	// DeviceMute events (physical button presses).
+	d.Track.Set(muted)
 	if muted {
 		return "muted"
 	}

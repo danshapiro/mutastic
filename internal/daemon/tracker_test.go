@@ -24,13 +24,25 @@ func TestTrackerAppliesDeviceMuteBinary(t *testing.T) {
 	}
 }
 
-func TestTrackerAppliesSoftwareUnmuteASCII(t *testing.T) {
+func TestTrackerIgnoresSoftwareMuteEvenWithDecodableValue(t *testing.T) {
 	var tr Tracker
-	tr.Apply(proto.Event{Op: proto.EvtSoftwareMute, Value: '1'})
-	tr.Apply(proto.Event{Op: proto.EvtSoftwareMute, Value: '0'})
+	if tr.Apply(proto.Event{Op: proto.EvtSoftwareMute, Value: '1'}) {
+		t.Fatal("Apply should return false for a 0x20 SoftwareMute echo, even with a decodable-looking value")
+	}
+	if _, known := tr.Status(); known {
+		t.Fatal("0x20 SoftwareMute echo must never set known state")
+	}
+}
+
+func TestTrackerIgnoresSoftwareMuteGarbageValue(t *testing.T) {
+	var tr Tracker
+	tr.Set(true) // simulate optimistic state set after an outbound mute command
+	if tr.Apply(proto.Event{Op: proto.EvtSoftwareMute, Value: 0x0b}) {
+		t.Fatal("Apply should return false for the production garbage tag byte 0x0b")
+	}
 	muted, known := tr.Status()
-	if !known || muted {
-		t.Fatalf("Status() = %v, %v; want false, true", muted, known)
+	if !known || !muted {
+		t.Fatalf("Status() after 0x20 garbage echo = %v, %v; want true, true (must not reset optimistic state)", muted, known)
 	}
 }
 

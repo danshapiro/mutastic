@@ -16,11 +16,23 @@ type Tracker struct {
 	muted bool
 }
 
-// Apply updates the state from a mute event (0x20 SoftwareMute or
-// 0x21 DeviceMute). It returns true iff the event was a mute event with a
-// decodable value byte.
+// Apply updates the state from a physical mute-button event
+// (0x21 DeviceMute only). It returns true iff the event mutated tracked
+// state.
+//
+// 0x20 SoftwareMute events are deliberately NOT applied here, even though
+// their value byte can look decodable. On this firmware, 0x20 is a
+// zero-payload command echo: the byte at offset 9 is a constant tag, not
+// state (docs/yeti-x-hid-protocol.md open question 2). That tag has been
+// observed as both 0x0b (undecodable, harmlessly ignored) and 0x00 (which
+// decodes as "unmuted") across firmware/log samples. Trusting it resets
+// the optimistically-tracked state to unmuted right after every outbound
+// mute command, so consecutive pedal toggles all send "mute" and the mic
+// can never be unmuted from the pedal -- a production regression this
+// fixes. Do not "fix" this by decoding 0x20 more cleverly: the byte
+// carries no state at all, on any firmware revision observed so far.
 func (t *Tracker) Apply(e proto.Event) bool {
-	if e.Op != proto.EvtSoftwareMute && e.Op != proto.EvtDeviceMute {
+	if e.Op != proto.EvtDeviceMute {
 		return false
 	}
 	muted, ok := proto.MutedFromValue(e.Value)

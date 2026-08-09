@@ -262,12 +262,14 @@ func TestDeviceEventsDriveStatusOverUDP(t *testing.T) {
 	_, ask := startDaemon(t, func() (Device, error) { return dev, nil })
 	waitFor(t, "handshake", func() bool { return dev.writeCount() >= 2 })
 
-	// Physical button press (binary value).
+	// Physical button press (binary value) drives status.
 	dev.events <- inputReport(0x21, 0x01)
 	waitFor(t, "muted status", func() bool { return ask("status") == "muted" })
 
-	// Software echo with ASCII value.
-	dev.events <- inputReport(0x20, '0')
+	// A second physical button press (binary value) drives status again.
+	// (0x20 SoftwareMute echoes must NOT drive status -- covered separately
+	// by TestSoftwareMuteEchoDoesNotResetOptimisticState.)
+	dev.events <- inputReport(0x21, 0x00)
 	waitFor(t, "unmuted status", func() bool { return ask("status") == "unmuted" })
 }
 
@@ -506,12 +508,45 @@ func TestSoftwareMuteEchoDoesNotInject(t *testing.T) {
 	_, ask := startDaemonInject(t, func() (Device, error) { return dev, nil }, inj)
 	waitFor(t, "handshake", func() bool { return dev.writeCount() >= 2 })
 
-	// Decodable host-echo shape (ASCII value); the status round-trip
-	// proves the event was consumed before we assert zero injections.
+	// The 0x20 echo must not change status (fixed regression) and must
+	// never inject. A genuine 0x21 device event, sent right after, is the
+	// synchronization barrier: events are read off one channel in order by
+	// a single goroutine, so once the 0x21's effect (status == "muted") is
+	// visible over UDP, the 0x20 ahead of it has already been fully
+	// processed (Apply + the injection check, both no-ops for op 0x20).
 	dev.events <- inputReport(0x20, '1')
-	waitFor(t, "echo tracked", func() bool { return ask("status") == "muted" })
-	if got := inj.calls.Load(); got != 0 {
-		t.Fatalf("software echo injected: calls = %d, want 0", got)
+	dev.events <- inputReport(0x21, 0x01)
+	waitFor(t, "device event tracked", func() bool { return ask("status") == "muted" })
+
+	// The 0x21 barrier is itself a real physical-press event, so it fires
+	// the injector exactly once. Asserting the count stops at exactly 1 --
+	// not 0, since a real device event legitimately injects -- proves the
+	// preceding 0x20 echo contributed no extra (spurious) injection.
+	if got := inj.calls.Load(); got != 1 {
+		t.Fatalf("injector calls = %d, want 1 (only the 0x21 barrier should inject; the 0x20 echo must not)", got)
+	}
+}
+
+func TestSoftwareMuteEchoDoesNotResetOptimisticState(t *testing.T) {
+	dev := newFakeDevice()
+	_, ask := startDaemon(t, func() (Device, error) { return dev, nil })
+	waitFor(t, "handshake", func() bool { return dev.writeCount() >= 2 })
+
+	if got := ask("mute"); got != "muted" {
+		t.Fatalf("mute = %q, want muted", got)
+	}
+	waitFor(t, "optimistic state set", func() bool { return ask("status") == "muted" })
+
+	// Exact production garbage shape (13:36 incident logs): a 0x20 echo
+	// with value byte 0x00, which decodes as "unmuted" if it were ever
+	// (wrongly) trusted. A brief wait gives the session goroutine time to
+	// consume it off the fake device's buffered event channel (read within
+	// its 10ms poll loop) before we check that nothing changed.
+	dev.events <- inputReport(0x20, 0x00)
+	time.Sleep(50 * time.Millisecond)
+
+	if got := ask("status"); got != "muted" {
+		t.Fatalf("status after 0x20 garbage echo = %q, want %q (echo must not reset optimistic state)", got, "muted")
 	}
 }
 
