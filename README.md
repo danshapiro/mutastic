@@ -1,6 +1,7 @@
 # mutastic
 
-One pedal press mutes everything: meeting apps AND the microphone itself.
+One press mutes everything — foot pedal or the mic's own mute button:
+meeting apps AND the microphone itself.
 
 The middle pedal of an iKKEGOL USB triple foot pedal (firmware-programmed to
 send `F14`) triggers:
@@ -18,12 +19,32 @@ The left pedal (`F13`) toggles a NEEWER PL81 PRO LED streaming light: the
 AHK script runs `mutastic.exe light toggle`, and the same daemon drives the
 light over its CH340 USB-serial port.
 
+Pressing the **mute button on the Yeti X itself** keeps the meeting apps
+in sync too: the daemon sees the mic's `0x21` DeviceMute event (emitted
+only for physical presses — host-initiated commands echo `0x20` instead)
+and injects a synthetic `F24` keystroke; the AHK script's `*F24::` hotkey
+(the `*` lets it fire even while modifier keys are held)
+runs the same meeting-app sweep, but does NOT run `mutastic toggle` — the
+mic has already toggled its own hardware mute. Both directions are
+loop-free:
+
+- **Pedal (`F14`):** AHK sweeps the apps and runs `mutastic toggle` → the
+  daemon writes a `0x20` mute command → the mic echoes `0x20` (stateless,
+  ignored) → no `0x21` is emitted → nothing re-triggers.
+- **Mic button:** the firmware toggles the mic and emits `0x21` → the
+  daemon injects `F24` (debounced, 400 ms) → AHK sweeps the apps only →
+  nothing runs `mutastic toggle` → no further events.
+
 ## Components
 
 - **`mutastic daemon`** — owns the Yeti X HID connection (VID 046D, vendor
   collection with `Usage == 1`), performs the init handshake, tracks mute
   state from the mic's events, and serves plain-text commands on UDP
   `127.0.0.1:42814`. Reconnects automatically if the mic disappears.
+  On a physical mute-button press (`0x21` DeviceMute event), it injects a
+  synthetic `F24` keystroke via `SendInput` so the AHK script sweeps the
+  meeting apps; injections are debounced (400 ms) and logged as
+  `mic button -> F24 app sweep`.
   Also owns every attached NEEWER PL81 PRO light (CH340 serial, VID 1A86
   PID 7523, 115200 8N1): a rescan every 5 s discovers newly plugged-in
   lights and tears down removed ones (no restart needed), with one
@@ -72,6 +93,9 @@ light over its CH340 USB-serial port.
   `mutastic.exe toggle` (hidden, non-blocking) and then toggles the meeting
   apps as before; the F13 handler runs `mutastic.exe light toggle` the same
   way.
+  The F24 handler — triggered only by the daemon's synthetic keystroke on
+  a physical mic-button press — runs the meeting-app sweep alone, with no
+  `mutastic.exe` call, so nothing loops back.
 
 ## Build (from WSL)
 
@@ -139,6 +163,18 @@ The script:
   resets the defaults (100% / 5000 K). The old single-light
   `light-state.json` is auto-migrated on first multi-light startup with
   exactly one light attached.
+- **Mic button mutes the mic but the meeting apps don't follow:** check
+  the log right after the press's `event op=0x21 ...` line. No line at
+  all → the daemon didn't see the event. `mic button ignored (debounce)`
+  → the 400 ms debounce suppressed a double-fire.
+  `mic button -> F24 app sweep` present but the apps didn't toggle →
+  either the AHK script isn't running (`SendInput` succeeds regardless;
+  relaunch it via its Startup shortcut), or an **elevated (admin) window
+  was focused** → UIPI
+  silently discards injected keystrokes with no error anywhere (OS
+  design); refocus a normal window and press again.
+  `mutastic.exe daemon --test-inject` fires one synthetic F24 to exercise
+  the injection path without touching the mic.
 - The daemon auto-adopts EVERY VID 1A86 / PID 7523 (CH340) serial device
   as a light and writes control frames to it. Do not leave non-light
   CH340 devices (Arduino clones, USB-serial dongles) attached while the

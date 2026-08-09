@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"net"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -200,5 +201,18 @@ func TestRunClientReceivesStalledLightReply(t *testing.T) {
 	got := strings.TrimSpace(out.String())
 	if code != 0 || got != reply {
 		t.Fatalf("exit = %d, output = %q; want 0 and the daemon's per-light reply %q (a masked 'no daemon reachable' means the client budget does not cover the daemon's stall bound)", code, got, reply)
+	}
+}
+
+func TestRunTestInjectUnsupportedOffWindows(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("exercises the non-Windows stub")
+	}
+	var out bytes.Buffer
+	if got := runTestInject(&out); got != 1 {
+		t.Fatalf("runTestInject() = %d, want 1 on non-Windows builds", got)
+	}
+	if !strings.Contains(out.String(), "only supported on Windows") {
+		t.Fatalf("runTestInject() output = %q, want the platform error", out.String())
 	}
 }

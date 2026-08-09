@@ -40,6 +40,9 @@ func main() {
 		os.Exit(2)
 	}
 	if os.Args[1] == "daemon" {
+		if len(os.Args) > 2 && os.Args[2] == "--test-inject" {
+			os.Exit(runTestInject(os.Stdout))
+		}
 		os.Exit(runDaemon())
 	}
 	cmd, timeout, ok := clientCommand(os.Args[1:])
@@ -105,6 +108,25 @@ func runClient(cmd, addr string, timeout time.Duration, out io.Writer) int {
 	return 0
 }
 
+// runTestInject exercises the SendInput plumbing once and exits: a hidden
+// smoke command for live verification (`mutastic daemon --test-inject`).
+// With the AHK script running, this fires the F24 meeting-app sweep
+// exactly as a physical mic-button press would (harmless when no meeting
+// windows are open: the sweep finds nothing).
+func runTestInject(out io.Writer) int {
+	inj := newKeyInjector()
+	if inj == nil {
+		fmt.Fprintln(out, "error: key injection is only supported on Windows")
+		return 1
+	}
+	if err := inj.Inject(); err != nil {
+		fmt.Fprintln(out, "error:", err)
+		return 1
+	}
+	fmt.Fprintln(out, "injected F24")
+	return 0
+}
+
 func runDaemon() int {
 	hideConsoleIfOwned()
 
@@ -136,7 +158,7 @@ func runDaemon() int {
 	reg := light.NewRegistry(namesPath)
 	lights := light.NewMultiManager(logger, stateDir, reg, enumeratePL81Ports, openPL81Port)
 	go lights.Run(ctx)
-	daemon.Run(ctx, open, lights, pc, logger)
+	daemon.Run(ctx, open, lights, newKeyInjector(), pc, logger)
 	return 0
 }
 

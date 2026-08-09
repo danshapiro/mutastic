@@ -200,6 +200,14 @@ func inputReport(op, value byte) []byte {
 // and returns the UDP address plus a UDP request helper.
 func startDaemon(t *testing.T, open OpenFunc) (addr string, ask func(cmd string) string) {
 	t.Helper()
+	return startDaemonInject(t, open, nil)
+}
+
+// startDaemonInject is startDaemon with a KeyInjector wired into Run.
+// It is startDaemon's previous body moved verbatim; the ONLY change is
+// the added inject argument in the Run call.
+func startDaemonInject(t *testing.T, open OpenFunc, inject KeyInjector) (addr string, ask func(cmd string) string) {
+	t.Helper()
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -207,7 +215,7 @@ func startDaemon(t *testing.T, open OpenFunc) (addr string, ask func(cmd string)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		Run(ctx, open, nil, pc, testLogger())
+		Run(ctx, open, nil, inject, pc, testLogger())
 		close(done)
 	}()
 	t.Cleanup(func() {
@@ -467,4 +475,95 @@ func TestHandleCommandRoutesLightAtPrefix(t *testing.T) {
 	if len(f.got) != 1 || f.got[0] != "@desk toggle" {
 		t.Fatalf("handler received %v, want [\"@desk toggle\"]", f.got)
 	}
+}
+
+// --- physical mute-button -> key injection (fake HID + fake injector) ---
+
+// fakeInjector implements KeyInjector: counts calls, returns err.
+type fakeInjector struct {
+	calls atomic.Int32
+	err   error
+}
+
+func (f *fakeInjector) Inject() error {
+	f.calls.Add(1)
+	return f.err
+}
+
+func TestDeviceMuteEventInjectsSweepKey(t *testing.T) {
+	dev := newFakeDevice()
+	inj := &fakeInjector{}
+	_, _ = startDaemonInject(t, func() (Device, error) { return dev, nil }, inj)
+	waitFor(t, "handshake", func() bool { return dev.writeCount() >= 2 })
+
+	dev.events <- inputReport(0x21, 0x01)
+	waitFor(t, "one injection", func() bool { return inj.calls.Load() == 1 })
+}
+
+func TestSoftwareMuteEchoDoesNotInject(t *testing.T) {
+	dev := newFakeDevice()
+	inj := &fakeInjector{}
+	_, ask := startDaemonInject(t, func() (Device, error) { return dev, nil }, inj)
+	waitFor(t, "handshake", func() bool { return dev.writeCount() >= 2 })
+
+	// Decodable host-echo shape (ASCII value); the status round-trip
+	// proves the event was consumed before we assert zero injections.
+	dev.events <- inputReport(0x20, '1')
+	waitFor(t, "echo tracked", func() bool { return ask("status") == "muted" })
+	if got := inj.calls.Load(); got != 0 {
+		t.Fatalf("software echo injected: calls = %d, want 0", got)
+	}
+}
+
+func TestDeviceMuteChatterIsDebounced(t *testing.T) {
+	// Registered BEFORE startDaemonInject: t.Cleanup is LIFO, so the
+	// harness's stop-and-join cleanup runs first and Run's goroutine is
+	// gone before the var is restored (commit eebd6c7 discipline).
+	old := muteInjectDebounce
+	muteInjectDebounce = time.Hour // the window cannot lapse mid-test
+	t.Cleanup(func() { muteInjectDebounce = old })
+
+	dev := newFakeDevice()
+	inj := &fakeInjector{}
+	_, ask := startDaemonInject(t, func() (Device, error) { return dev, nil }, inj)
+	waitFor(t, "handshake", func() bool { return dev.writeCount() >= 2 })
+
+	dev.events <- inputReport(0x21, 0x01)
+	waitFor(t, "first injection", func() bool { return inj.calls.Load() == 1 })
+
+	dev.events <- inputReport(0x21, 0x00) // chatter, inside the window
+	waitFor(t, "chatter tracked", func() bool { return ask("status") == "unmuted" })
+	if got := inj.calls.Load(); got != 1 {
+		t.Fatalf("chatter injected: calls = %d, want 1", got)
+	}
+}
+
+func TestDeviceMuteFiresAgainAfterDebounceWindow(t *testing.T) {
+	old := muteInjectDebounce
+	muteInjectDebounce = time.Millisecond
+	t.Cleanup(func() { muteInjectDebounce = old })
+
+	dev := newFakeDevice()
+	inj := &fakeInjector{}
+	_, _ = startDaemonInject(t, func() (Device, error) { return dev, nil }, inj)
+	waitFor(t, "handshake", func() bool { return dev.writeCount() >= 2 })
+
+	dev.events <- inputReport(0x21, 0x01)
+	waitFor(t, "first injection", func() bool { return inj.calls.Load() == 1 })
+
+	time.Sleep(5 * time.Millisecond) // let the 1ms window lapse
+	dev.events <- inputReport(0x21, 0x00)
+	waitFor(t, "second injection", func() bool { return inj.calls.Load() == 2 })
+}
+
+func TestInjectFailureIsNonFatal(t *testing.T) {
+	dev := newFakeDevice()
+	inj := &fakeInjector{err: errors.New("sendinput exploded")}
+	_, ask := startDaemonInject(t, func() (Device, error) { return dev, nil }, inj)
+	waitFor(t, "handshake", func() bool { return dev.writeCount() >= 2 })
+
+	dev.events <- inputReport(0x21, 0x01)
+	waitFor(t, "failed injection attempted", func() bool { return inj.calls.Load() == 1 })
+	// The daemon must keep tracking and serving after the failure.
+	waitFor(t, "daemon still serves status", func() bool { return ask("status") == "muted" })
 }
