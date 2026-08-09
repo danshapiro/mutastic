@@ -1,0 +1,226 @@
+package daemon
+
+import (
+	"context"
+	"errors"
+	"log"
+	"net"
+	"strings"
+	"sync"
+	"time"
+
+	"mutastic/internal/proto"
+)
+
+// Device is the minimal HID handle the daemon needs. Implementations must
+// return (0, nil) from ReadWithTimeout when the timeout elapses with no
+// data; any non-nil error is treated as "device gone" and triggers a
+// reconnect.
+type Device interface {
+	Write(p []byte) (int, error)
+	ReadWithTimeout(p []byte, timeout time.Duration) (int, error)
+	Close() error
+}
+
+var errNoDevice = errors.New("no device")
+
+// Daemon holds shared daemon state: the tracked mute state, the current
+// device handle, and the logger.
+type Daemon struct {
+	Track  Tracker
+	Logger *log.Logger
+
+	mu  sync.Mutex
+	dev Device
+}
+
+// New returns a Daemon that logs to logger.
+func New(logger *log.Logger) *Daemon {
+	return &Daemon{Logger: logger}
+}
+
+// SetDevice installs the current device handle (nil while disconnected).
+func (d *Daemon) SetDevice(dev Device) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.dev = dev
+}
+
+// WriteReport sends one output report. Writes are serialized by the mutex;
+// per the protocol doc, the returned byte count is NOT asserted on (Windows
+// hidapi reports 64 for a 65-byte buffer).
+func (d *Daemon) WriteReport(report []byte) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.dev == nil {
+		return errNoDevice
+	}
+	_, err := d.dev.Write(report)
+	return err
+}
+
+// HandleCommand executes one UDP text command and returns the reply.
+// Replies are exactly: "muted", "unmuted", "unknown", or "error: <reason>".
+func (d *Daemon) HandleCommand(cmd string) string {
+	switch cmd {
+	case "status":
+		muted, known := d.Track.Status()
+		if !known {
+			return "unknown"
+		}
+		if muted {
+			return "muted"
+		}
+		return "unmuted"
+	case "mute":
+		return d.setMute(true)
+	case "unmute":
+		return d.setMute(false)
+	case "toggle":
+		muted, known := d.Track.Status()
+		target := true // unknown state: default to mute (safe for a pedal press)
+		if known {
+			target = !muted
+		}
+		return d.setMute(target)
+	default:
+		return "error: unknown command"
+	}
+}
+
+func (d *Daemon) setMute(muted bool) string {
+	payload := []byte("0")
+	if muted {
+		payload = []byte("1")
+	}
+	if err := d.WriteReport(proto.EncodeCommand(proto.OpMute, payload)); err != nil {
+		return "error: " + err.Error()
+	}
+	d.Track.Set(muted) // optimistic; the 0x20 echo confirms it
+	if muted {
+		return "muted"
+	}
+	return "unmuted"
+}
+
+// OpenFunc opens the Yeti X HID control interface.
+type OpenFunc func() (Device, error)
+
+// Run serves UDP commands on pc and maintains the device session until ctx
+// is cancelled. The caller owns pc; binding the production port
+// (127.0.0.1:42814) doubles as a single-instance lock.
+func Run(ctx context.Context, open OpenFunc, pc net.PacketConn, logger *log.Logger) error {
+	d := New(logger)
+	go func() {
+		<-ctx.Done()
+		pc.Close()
+	}()
+	go d.serveUDP(pc)
+
+	for ctx.Err() == nil {
+		dev, err := open()
+		if err != nil {
+			logger.Printf("open device: %v (retrying in 3s)", err)
+			sleepCtx(ctx, 3*time.Second)
+			continue
+		}
+		logger.Printf("device opened")
+		d.SetDevice(dev)
+		err = d.session(ctx, dev)
+		d.SetDevice(nil)
+		dev.Close()
+		if ctx.Err() != nil {
+			break
+		}
+		logger.Printf("device session ended: %v (reconnecting in 2s)", err)
+		sleepCtx(ctx, 2*time.Second)
+	}
+	return nil
+}
+
+// handshakeLiveness bounds how long a fresh session may stay silent after the
+// handshake. The protocol doc calls the handshake "somewhat flaky": writes can
+// succeed yet the event stream never comes up, which would leave the daemon
+// deaf with no error to trigger a reconnect. The GetVolume request sent during
+// the handshake provokes a reply, so a live session always produces at least
+// one input report quickly. Var (not const) so tests can shorten it.
+var handshakeLiveness = 5 * time.Second
+
+var errHandshakeSilence = errors.New("no input report within the handshake liveness window (flaky handshake); reinitializing")
+
+// session performs the init handshake then reads input reports until the
+// device errors (unplug), the handshake proves dead (liveness gate), or ctx
+// is cancelled.
+func (d *Daemon) session(ctx context.Context, dev Device) error {
+	if err := d.WriteReport(proto.EncodeCommand(proto.OpInit, nil)); err != nil {
+		return err
+	}
+	if err := d.WriteReport(proto.EncodeCommand(proto.OpGetVolume, nil)); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(handshakeLiveness)
+	live := false // becomes true on the first input report of this session
+	buf := make([]byte, 128)
+	for ctx.Err() == nil {
+		n, err := dev.ReadWithTimeout(buf, time.Second)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			if !live && time.Now().After(deadline) {
+				return errHandshakeSilence
+			}
+			continue // timeout, no data
+		}
+		live = true
+		ev, ok := proto.DecodeEvent(buf[:n])
+		if !ok {
+			continue
+		}
+		if d.Track.Apply(ev) {
+			muted, _ := d.Track.Status()
+			d.Logger.Printf("event op=0x%02x value=0x%02x -> muted=%v", ev.Op, ev.Value, muted)
+		} else {
+			d.Logger.Printf("event op=0x%02x value=0x%02x (ignored)", ev.Op, ev.Value)
+		}
+	}
+	return ctx.Err()
+}
+
+// serveUDP answers commands until pc is closed. Transient socket errors must
+// NOT kill this loop: on Windows (the production platform), a reply that
+// lands after a one-shot client already closed its socket elicits ICMP Port
+// Unreachable, which poisons the socket so the next ReadFrom fails with
+// WSAECONNRESET — Go's net package never disables SIO_UDP_CONNRESET
+// (golang/go#5834). Because the bound port doubles as the single-instance
+// lock, a dead loop here would leave a healthy-looking daemon that can never
+// answer another command and blocks any replacement from starting. Only
+// net.ErrClosed (the shutdown path: Run's goroutine closing pc) ends the
+// loop; every other error is logged and survived.
+func (d *Daemon) serveUDP(pc net.PacketConn) {
+	buf := make([]byte, 64)
+	for {
+		n, addr, err := pc.ReadFrom(buf)
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return // listener closed on shutdown
+			}
+			d.Logger.Printf("udp read: %v (continuing)", err)
+			time.Sleep(100 * time.Millisecond) // don't spin if the error repeats
+			continue
+		}
+		cmd := strings.TrimSpace(string(buf[:n]))
+		reply := d.HandleCommand(cmd)
+		d.Logger.Printf("command %q -> %q", cmd, reply)
+		if _, err := pc.WriteTo([]byte(reply), addr); err != nil {
+			d.Logger.Printf("udp write to %s: %v (continuing)", addr, err)
+		}
+	}
+}
+
+func sleepCtx(ctx context.Context, dur time.Duration) {
+	select {
+	case <-ctx.Done():
+	case <-time.After(dur):
+	}
+}
