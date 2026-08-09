@@ -21,12 +21,16 @@ SetWorkingDir %A_ScriptDir%
 DetectHiddenWindows, Off
 
 Menu, Tray, Icon, %A_ScriptDir%\mic_mute_light.ico
-Menu, Tray, Tip, MuteAllMeetings - F14 mutes meetings+mic`, F13 toggles light
+Menu, Tray, Tip, MuteAllMeetings - F13 toggles light (F14 pedal disabled)
 
-F14::
-Run, "%A_ScriptDir%\mutastic.exe" toggle, %A_ScriptDir%, Hide UseErrorLevel
-ToggleAllMeetings()
-return
+; F14 (middle pedal) DISABLED 2026-08-09 by request - accidental presses.
+; The mic's physical mute button still does the full flow (hardware mute
+; via firmware + app sweep via daemon-injected F24). To re-enable the
+; pedal, uncomment these four lines and redeploy.
+;F14::
+;Run, "%A_ScriptDir%\mutastic.exe" toggle, %A_ScriptDir%, Hide UseErrorLevel
+;ToggleAllMeetings()
+;return
 
 F13::
 Run, "%A_ScriptDir%\mutastic.exe" light toggle, %A_ScriptDir%, Hide UseErrorLevel
