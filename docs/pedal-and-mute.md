@@ -4,7 +4,7 @@
 
 | Pedal | Key | Used by |
 |-------|-----|---------|
-| Left | `F13` | (unassigned as of 2026-08-08) |
+| Left | `F13` | mutastic light toggle (NEEWER PL81 PRO streaming light) |
 | Center | `F14` | MuteMeetings AHK script (mic mute/unmute toggle) |
 | Right | `F15` | Winpepper push-to-talk hold hotkey |
 
