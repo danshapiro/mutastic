@@ -32,6 +32,16 @@ F13::
 Run, "%A_ScriptDir%\mutastic.exe" light toggle, %A_ScriptDir%, Hide UseErrorLevel
 return
 
+; F24 is injected by the mutastic daemon when the mic's own mute
+; button is pressed (0x21 DeviceMute event). Sweep the meeting apps
+; only - the mic has already toggled its own hardware mute, so
+; running mutastic.exe toggle here would undo it. The * prefix
+; fires the hotkey even while Ctrl/Shift/Alt/Win are held - an
+; injected press must never be swallowed mid-chord.
+*F24::
+ToggleAllMeetings()
+return
+
 ToggleAllMeetings() {
     prev := WinExist("A")
     report := ""
