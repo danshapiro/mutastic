@@ -19,6 +19,8 @@ echo == Copying files from %SRC% ==
 if not exist "%DEST%" mkdir "%DEST%"
 copy /Y "%SRC%\bin\mutastic.exe" "%DEST%\mutastic.exe" >nul || goto :fail
 copy /Y "%SRC%\ahk\MuteAllMeetings.ahk" "%DEST%\MuteAllMeetings.ahk" >nul || goto :fail
+copy /Y "%SRC%\ahk\SendF24.ahk" "%DEST%\SendF24.ahk" >nul || goto :fail
+copy /Y "%SRC%\deploy\mutastic-daemon.vbs" "%DEST%\mutastic-daemon.vbs" >nul || goto :fail
 if exist "%SRC%\ahk\mic_mute_light.ico" copy /Y "%SRC%\ahk\mic_mute_light.ico" "%DEST%\" >nul
 if not exist "%DEST%\mic_mute_light.ico" if exist "%OLD_DEPLOY%\mic_mute_light.ico" copy /Y "%OLD_DEPLOY%\mic_mute_light.ico" "%DEST%\" >nul
 if not exist "%DEST%\mic_mute_light.ico" echo WARNING: mic_mute_light.ico not found - tray icon will be missing
@@ -26,10 +28,10 @@ if not exist "%DEST%\mic_mute_light.ico" echo WARNING: mic_mute_light.ico not fo
 echo == Replacing startup shortcuts ==
 if exist "%STARTUP%\MuteAllMeetings.lnk" del /F "%STARTUP%\MuteAllMeetings.lnk"
 powershell -NoProfile -Command "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut('%STARTUP%\MuteAllMeetings.lnk'); $s.TargetPath = '%AHK_EXE%'; $s.Arguments = '%DEST%\MuteAllMeetings.ahk'; $s.WorkingDirectory = '%DEST%'; $s.Save()" || goto :fail
-powershell -NoProfile -Command "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut('%STARTUP%\Mutastic Daemon.lnk'); $s.TargetPath = '%DEST%\mutastic.exe'; $s.Arguments = 'daemon'; $s.WorkingDirectory = '%DEST%'; $s.Save()" || goto :fail
+powershell -NoProfile -Command "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut('%STARTUP%\Mutastic Daemon.lnk'); $s.TargetPath = 'C:\Windows\System32\wscript.exe'; $s.Arguments = '"%DEST%\mutastic-daemon.vbs"'; $s.WorkingDirectory = '%DEST%'; $s.Save()" || goto :fail
 
 echo == Relaunching ==
-start "" "%DEST%\mutastic.exe" daemon
+start "" wscript.exe "%DEST%\mutastic-daemon.vbs"
 start "" "%AHK_EXE%" "%DEST%\MuteAllMeetings.ahk"
 
 echo Deploy complete.
