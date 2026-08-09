@@ -2,6 +2,8 @@ package light
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"io"
 	"log"
 	"path/filepath"
@@ -220,4 +222,207 @@ func TestHandleCommandOnUsesPersistedLook(t *testing.T) {
 	if !bytes.Equal(p2.write(0), want) {
 		t.Fatalf("restored frame = % x, want % x", p2.write(0), want)
 	}
+}
+
+func fastTimings(t *testing.T) {
+	t.Helper()
+	oldSpacing, oldWake := writeSpacing, wakeDelay
+	oldOpen, oldReconnect := openRetryDelay, reconnectDelay
+	oldPresence := presenceInterval
+	writeSpacing, wakeDelay = time.Millisecond, time.Millisecond
+	openRetryDelay, reconnectDelay = 10*time.Millisecond, 10*time.Millisecond
+	presenceInterval = time.Millisecond
+	t.Cleanup(func() {
+		writeSpacing, wakeDelay = oldSpacing, oldWake
+		openRetryDelay, reconnectDelay = oldOpen, oldReconnect
+		presenceInterval = oldPresence
+	})
+}
+
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+func TestSessionWakesThenAppliesInboundFrames(t *testing.T) {
+	fastTimings(t)
+	m := NewManager(testLogger(), "")
+	p := newFakePort()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		m.session(ctx, p)
+		close(done)
+	}()
+
+	waitFor(t, "wake write", func() bool { return p.writeCount() >= 1 })
+	if !bytes.Equal(p.write(0), []byte{0x00, 0x00, 0x00, 0x00}) {
+		t.Fatalf("first write = % x, want the 00 00 00 00 wake bytes", p.write(0))
+	}
+
+	// A knob-style broadcast (50%, temp 0x0C) must update the state.
+	p.reads <- []byte{0x3A, 0x02, 0x03, 0x01, 0x32, 0x0C, 0x00, 0x7E}
+	waitFor(t, "state from broadcast", func() bool {
+		return m.HandleCommand("status") == "on 50% 5633K"
+	})
+
+	cancel()
+	<-done
+}
+
+func TestSessionReturnsOnReadError(t *testing.T) {
+	fastTimings(t)
+	m := NewManager(testLogger(), "")
+	p := newFakePort()
+	p.readErr <- errors.New("unplugged")
+	err := m.session(context.Background(), p)
+	if err == nil || err.Error() != "unplugged" {
+		t.Fatalf("session err = %v, want unplugged", err)
+	}
+	if got := m.HandleCommand("on"); got != "error: no light" {
+		t.Fatalf("port must be cleared after session ends; got %q", got)
+	}
+}
+
+func TestSessionMapsNonOnPwrByteToOff(t *testing.T) {
+	fastTimings(t)
+	m := NewManager(testLogger(), "")
+	p := newFakePort()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		m.session(ctx, p)
+		close(done)
+	}()
+
+	waitFor(t, "wake write", func() bool { return p.writeCount() >= 1 })
+	// Panel-off style frame: pwr=0x02 with a non-zero brightness field (the
+	// official app and non-Pro broadcasts carry off-state in the pwr byte).
+	// Must land as "off", never "on 50%".
+	p.reads <- []byte{0x3A, 0x02, 0x03, 0x02, 0x32, 0x0C, 0x00, 0x7F}
+	waitFor(t, "off state from pwr byte", func() bool {
+		return m.HandleCommand("status") == "off"
+	})
+
+	cancel()
+	<-done
+}
+
+func TestSessionEndsWhenDeviceGoesAbsent(t *testing.T) {
+	fastTimings(t)
+	m := NewManager(testLogger(), "")
+	m.Present = func() bool { return false }
+	p := newFakePort()
+	err := m.session(context.Background(), p)
+	if err == nil || err.Error() != "device no longer present" {
+		t.Fatalf("session err = %v, want device-absent error", err)
+	}
+}
+
+func TestRunReconnectsAfterSessionError(t *testing.T) {
+	fastTimings(t)
+	m := NewManager(testLogger(), "")
+	ports := []*fakePort{newFakePort(), newFakePort()}
+	var mu sync.Mutex
+	opened := 0
+	open := func() (Port, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if opened >= len(ports) {
+			return nil, errors.New("gone")
+		}
+		p := ports[opened]
+		opened++
+		return p, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		m.Run(ctx, open)
+		close(done)
+	}()
+
+	waitFor(t, "first port woken", func() bool { return ports[0].writeCount() >= 1 })
+	ports[0].readErr <- errors.New("unplugged")
+	waitFor(t, "second port opened and woken", func() bool { return ports[1].writeCount() >= 1 })
+
+	cancel()
+	<-done
+}
+
+func TestRunRetriesWhenOpenFails(t *testing.T) {
+	fastTimings(t)
+	m := NewManager(testLogger(), "")
+	p := newFakePort()
+	var mu sync.Mutex
+	failFirst := true
+	open := func() (Port, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if failFirst {
+			failFirst = false
+			return nil, errors.New("not present")
+		}
+		return p, nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		m.Run(ctx, open)
+		close(done)
+	}()
+
+	waitFor(t, "port opened after a failed attempt", func() bool { return p.writeCount() >= 1 })
+
+	cancel()
+	<-done
+}
+
+func TestCommandsWorkDuringLiveSession(t *testing.T) {
+	fastTimings(t)
+	m := NewManager(testLogger(), "")
+	p := newFakePort()
+	open := func() (Port, error) { return p, nil }
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		m.Run(ctx, open)
+		close(done)
+	}()
+
+	waitFor(t, "wake", func() bool { return p.writeCount() >= 1 })
+	// setPort runs only after the wake write AND the wakeDelay sleep, so
+	// gating on the wake write alone races it: HandleCommand could hit a
+	// nil port and return "error: no light". Poll until the live session
+	// accepts the command instead (the first accepted call writes the one
+	// command frame checked below).
+	var got string
+	waitFor(t, "command accepted by live session", func() bool {
+		got = m.HandleCommand("on")
+		return got != "error: no light"
+	})
+	if got != "on 100% 4950K" {
+		t.Fatalf("on during live session = %q", got)
+	}
+	want := []byte{0x3A, 0x02, 0x03, 0x01, 0x64, 0x09, 0x00, 0xAD}
+	waitFor(t, "command frame written", func() bool { return p.writeCount() >= 2 })
+	if !bytes.Equal(p.write(1), want) {
+		t.Fatalf("frame = % x, want % x", p.write(1), want)
+	}
+
+	// The echo arrives; state stays consistent.
+	p.reads <- want
+	waitFor(t, "echo folded into state", func() bool {
+		return m.HandleCommand("status") == "on 100% 4950K"
+	})
+
+	cancel()
+	<-done
 }

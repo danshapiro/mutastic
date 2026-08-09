@@ -1,6 +1,7 @@
 package light
 
 import (
+	"context"
 	"errors"
 	"log"
 	"strconv"
@@ -164,4 +165,113 @@ func (m *Manager) apply(brightness int, temp byte) string {
 		m.Logger.Printf("light: persist state: %v", err)
 	}
 	return m.state.StatusString()
+}
+
+// OpenFunc opens the PL81's serial port (enumerated by VID/PID).
+type OpenFunc func() (Port, error)
+
+// Timing knobs, vars so tests can shrink them.
+var (
+	wakeDelay      = 100 * time.Millisecond // settle time after the wake bytes
+	openRetryDelay = 3 * time.Second        // "not present yet" backoff
+	reconnectDelay = 2 * time.Second        // "was here, went away" backoff
+	// presenceInterval is how long the session tolerates continuous read
+	// silence before consulting Manager.Present (nil = never). A silent
+	// idle light is normal (no status stream), but the CH340 driver's
+	// surprise-removal error behavior is unverified - so during long
+	// silences the device's continued USB presence is checked directly.
+	presenceInterval = 10 * time.Second
+)
+
+// wakeBytes is the raw wake sequence (not a frame - no header/checksum).
+var wakeBytes = []byte{0x00, 0x00, 0x00, 0x00}
+
+// Run maintains the light session until ctx is cancelled: open, wake, read
+// continuously, reconnect on any error. Mirrors the mic's reconnect loop in
+// internal/daemon.
+func (m *Manager) Run(ctx context.Context, open OpenFunc) {
+	for ctx.Err() == nil {
+		port, err := open()
+		if err != nil {
+			m.Logger.Printf("light: open: %v (retrying in %v)", err, openRetryDelay)
+			sleepCtx(ctx, openRetryDelay)
+			continue
+		}
+		m.Logger.Printf("light: port opened")
+		err = m.session(ctx, port)
+		// Close only after session has returned: reader and closer are the
+		// same goroutine, so Close never races a pending Read (go.bug.st
+		// issue #219).
+		port.Close()
+		if ctx.Err() != nil {
+			break
+		}
+		m.Logger.Printf("light: session ended: %v (reconnecting in %v)", err, reconnectDelay)
+		sleepCtx(ctx, reconnectDelay)
+	}
+}
+
+// session wakes the device then reads frames until the port errors
+// (unplug) or ctx is cancelled. Echoes of our own commands and unprompted
+// knob broadcasts look identical and both simply update the state.
+//
+// Unlike the mic session there is deliberately NO query-based liveness
+// gate: the PL81 has no query command, so a healthy idle light is silent
+// and cannot be distinguished from a dead one by silence alone. Instead,
+// during long silences the loop re-checks that the device is still
+// enumerated (Manager.Present) - the CH340 driver is not trusted to
+// surface an unplug as a read error.
+func (m *Manager) session(ctx context.Context, port Port) error {
+	if _, err := port.Write(wakeBytes); err != nil {
+		return err
+	}
+	time.Sleep(wakeDelay)
+	m.setPort(port)
+	defer m.setPort(nil)
+
+	var parser Parser
+	buf := make([]byte, 64)
+	lastData := time.Now()
+	for ctx.Err() == nil {
+		n, err := port.Read(buf) // 1 s poll timeout, fixed at open
+		if err != nil {
+			return err
+		}
+		if n == 0 { // timeout, no data
+			if m.Present != nil && time.Since(lastData) >= presenceInterval {
+				if !m.Present() {
+					return errors.New("device no longer present")
+				}
+				lastData = time.Now() // present; recheck one interval from now
+			}
+			continue
+		}
+		lastData = time.Now()
+		for _, fr := range parser.Feed(buf[:n]) {
+			if fr.Tag == TagCCT && len(fr.Payload) == 3 {
+				// Upstream captures show the pwr byte can carry panel-off
+				// state (0x00/0x02) with a non-zero brightness field; treat
+				// anything but 0x01 as OFF so status never lies "on".
+				b := int(fr.Payload[1])
+				if fr.Payload[0] != 0x01 {
+					b = 0
+				}
+				if err := m.state.Set(b, fr.Payload[2]); err != nil {
+					m.Logger.Printf("light: persist state: %v", err)
+				}
+				m.Logger.Printf("light: frame pwr=0x%02x brightness=%d temp=0x%02x -> %s",
+					fr.Payload[0], fr.Payload[1], fr.Payload[2], m.state.StatusString())
+			} else {
+				m.Logger.Printf("light: frame tag=0x%02x payload=% x (ignored)", fr.Tag, fr.Payload)
+			}
+		}
+	}
+	return ctx.Err()
+}
+
+func sleepCtx(ctx context.Context, dur time.Duration) {
+	select {
+	case <-ctx.Done():
+	case <-time.After(dur):
+	}
 }
