@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"mutastic/internal/light"
 )
 
 func TestRunClientRoundTrip(t *testing.T) {
@@ -109,11 +111,11 @@ func TestClientCommand(t *testing.T) {
 		{[]string{"toggle"}, "toggle", time.Second, true},
 		{[]string{"mute"}, "mute", time.Second, true},
 		{[]string{"unmute"}, "unmute", time.Second, true},
-		{[]string{"light", "toggle"}, "light toggle", 2 * time.Second, true},
-		{[]string{"light", "list"}, "light list", 2 * time.Second, true},
-		{[]string{"light", "name", "COM4", "desk"}, "light name COM4 desk", 2 * time.Second, true},
-		{[]string{"light@desk", "toggle"}, "light@desk toggle", 2 * time.Second, true},
-		{[]string{"light@COM4", "brightness", "30"}, "light@COM4 brightness 30", 2 * time.Second, true},
+		{[]string{"light", "toggle"}, "light toggle", lightClientTimeout, true},
+		{[]string{"light", "list"}, "light list", lightClientTimeout, true},
+		{[]string{"light", "name", "COM4", "desk"}, "light name COM4 desk", lightClientTimeout, true},
+		{[]string{"light@desk", "toggle"}, "light@desk toggle", lightClientTimeout, true},
+		{[]string{"light@COM4", "brightness", "30"}, "light@COM4 brightness 30", lightClientTimeout, true},
 		{[]string{"light"}, "", 0, false},
 		{[]string{"light@desk"}, "", 0, false},
 		{[]string{"frobnicate"}, "", 0, false},
@@ -150,5 +152,53 @@ func TestRunClientPrintsLargeReply(t *testing.T) {
 	}
 	if got := strings.TrimSpace(out.String()); got != reply {
 		t.Fatalf("reply truncated: got %d bytes, want %d", len(got), len(reply))
+	}
+}
+
+// TestLightClientTimeoutExceedsDaemonStallBound pins the timeout invariant
+// from the wedged-light degraded mode: the daemon's per-light stall bound
+// (light.CallTimeout) starts ticking only after the packet arrives, so the
+// client's light budget must exceed it by a REAL margin or the daemon's
+// reply (healthy lights' results + the per-line "error: timeout") arrives
+// after the client already printed "error: no daemon reachable".
+func TestLightClientTimeoutExceedsDaemonStallBound(t *testing.T) {
+	if lightClientTimeout < 2*light.CallTimeout {
+		t.Fatalf("lightClientTimeout = %v, want >= 2x light.CallTimeout (%v): without real headroom over the daemon's per-light stall bound, degraded-mode replies are masked as total daemon failure", lightClientTimeout, light.CallTimeout)
+	}
+}
+
+// TestRunClientReceivesStalledLightReply exercises the client-timeout /
+// daemon-stall interplay end to end at the UDP layer: the fake daemon
+// answers a light verb only after light.CallTimeout has fully elapsed
+// (exactly what a wedged light causes), and the client - using the real
+// budget clientCommand assigns to light verbs - must still print the
+// per-light reply lines instead of "no daemon reachable".
+func TestRunClientReceivesStalledLightReply(t *testing.T) {
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	reply := "COM4: on 30% 2900K\nCOM7: error: timeout"
+	go func() {
+		buf := make([]byte, 64)
+		_, addr, err := pc.ReadFrom(buf)
+		if err != nil {
+			return
+		}
+		// The daemon's per-light timer starts AFTER the packet arrives.
+		time.Sleep(light.CallTimeout + 100*time.Millisecond)
+		pc.WriteTo([]byte(reply), addr)
+	}()
+
+	cmd, timeout, ok := clientCommand([]string{"light", "on"})
+	if !ok {
+		t.Fatal("clientCommand rejected 'light on'")
+	}
+	var out bytes.Buffer
+	code := runClient(cmd, pc.LocalAddr().String(), timeout, &out)
+	got := strings.TrimSpace(out.String())
+	if code != 0 || got != reply {
+		t.Fatalf("exit = %d, output = %q; want 0 and the daemon's per-light reply %q (a masked 'no daemon reachable' means the client budget does not cover the daemon's stall bound)", code, got, reply)
 	}
 }

@@ -23,6 +23,17 @@ import (
 
 const udpAddr = "127.0.0.1:42814"
 
+// lightClientTimeout is the client's read budget for light verbs. It MUST
+// exceed the daemon's per-light stall bound (light.CallTimeout) with real
+// headroom: the daemon's timer starts only after it receives the packet,
+// so when a wedged light hits its deadline (the designed degraded mode),
+// the reply - healthy lights' results plus the per-line "error: timeout" -
+// lands just after light.CallTimeout. A client that gives up at or before
+// that point prints "error: no daemon reachable" and masks partial success
+// as total daemon failure. 3x leaves room for fan-out, UDP, and OS
+// scheduling. Mic verbs keep their snappy 1s budget (see clientCommand).
+const lightClientTimeout = 3 * light.CallTimeout
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -53,7 +64,7 @@ func clientCommand(args []string) (cmd string, timeout time.Duration, ok bool) {
 		if len(args) < 2 {
 			return "", 0, false
 		}
-		return strings.Join(args, " "), 2 * time.Second, true
+		return strings.Join(args, " "), lightClientTimeout, true
 	}
 	return "", 0, false
 }

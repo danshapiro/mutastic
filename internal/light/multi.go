@@ -24,6 +24,14 @@ var rescanInterval = 5 * time.Second
 // all sessions and reset nothing.
 const missThreshold = 2
 
+// CallTimeout is the production bound on every per-light command/poll
+// call: a light exceeding it yields a per-line "error: timeout" while the
+// rest of the fleet still answers. Exported so the CLI client can size its
+// read budget ABOVE it - the daemon's timer starts only after the packet
+// arrives, so a client budget <= CallTimeout deterministically misses the
+// degraded-mode reply and masks partial success as "no daemon reachable".
+const CallTimeout = 2 * time.Second
+
 // Bounded-wait knobs. Vars so fastTimings can shrink them. Nothing in the
 // fleet may block indefinitely on one light's I/O: the CH340 driver's
 // surprise-removal I/O promptness is unprovable, so it is never relied on.
@@ -36,8 +44,8 @@ var (
 	drainTimeout = 2 * time.Second
 	// lightCallTimeout bounds every per-light command/poll call (consumed
 	// by the Task 4 command surface; declared here so fastTimings covers
-	// both knobs in one edit).
-	lightCallTimeout = 2 * time.Second
+	// both knobs in one edit). Production value is CallTimeout.
+	lightCallTimeout = CallTimeout
 )
 
 // Enumerate lists the COM port names of every PL81 currently attached.
