@@ -5,5 +5,9 @@
 ; mic-button injection, proven live).
 #NoEnv
 SendMode Input
+; SendLevel 1 is REQUIRED: AHK-injected input is tagged and ignored by
+; other AHK scripts' hotkeys at the default level 0. Without this, the
+; *F24 hotkey in MuteAllMeetings.ahk never fires (observed live).
+SendLevel, 1
 Send {F24}
 ExitApp
