@@ -22,7 +22,9 @@ DetectHiddenWindows, Off
 Menu, Tray, Icon, %A_ScriptDir%\mic_mute_light.ico
 Menu, Tray, Tip, MuteAllMeetings - F14 toggles mute in all meetings
 
-F14::ToggleAllMeetings()
+F14::
+Run, "%A_ScriptDir%\mutastic.exe" toggle, %A_ScriptDir%, Hide UseErrorLevel
+ToggleAllMeetings()
 return
 
 ToggleAllMeetings() {
