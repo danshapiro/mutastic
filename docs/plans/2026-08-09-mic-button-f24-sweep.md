@@ -838,10 +838,11 @@ loop-free:
 - **Mic button mutes the mic but the meeting apps don't follow:** check
   the log right after the press's `event op=0x21 ...` line. No line at
   all → the daemon didn't see the event. `mic button ignored (debounce)`
-  → the 400 ms debounce suppressed a double-fire. `mic button -> F24 app
-  sweep` present but the apps didn't toggle → either the AHK script isn't
-  running (`SendInput` succeeds regardless; relaunch it via its Startup
-  shortcut), or an **elevated (admin) window was focused** → UIPI
+  → the 400 ms debounce suppressed a double-fire.
+  `mic button -> F24 app sweep` present but the apps didn't toggle →
+  either the AHK script isn't running (`SendInput` succeeds regardless;
+  relaunch it via its Startup shortcut), or an **elevated (admin) window
+  was focused** → UIPI
   silently discards injected keystrokes with no error anywhere (OS
   design); refocus a normal window and press again.
   `mutastic.exe daemon --test-inject` fires one synthetic F24 to exercise
