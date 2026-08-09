@@ -15,7 +15,9 @@ machine's unit on 2026-08-08 (see "Local probe results" below).
 - **115200 baud, 8N1**
 - Open sequence used by working implementations: open, reset buffers, write
   wake bytes `00 00 00 00`, sleep ~80-120ms. Insert ~60ms delay before each
-  write; the device streams status at 60-80ms intervals and is rate-sensitive.
+  write; idle connections are silent; unprompted frames occur only while a
+  physical control is being adjusted (repeating at ~60–80 ms on the non-Pro
+  during adjustment).
 
 ## Frame format (VERIFIED locally)
 
@@ -89,3 +91,39 @@ echo: 3A 02 03 01 00 09 00 49   <- ACK, light turned off
   Control Center cannot run at the same time.
 - The mic (Yeti X) is HID; the light is serial — independent device loops.
 - NEEWER Control Center for Windows exists (v3.5.1) but is unneeded here.
+
+## Daemon integration results (2026-08-08)
+
+- Echo-as-ACK confirmed end-to-end from the Go daemon via go.bug.st/serial:
+  every CCT frame written by `mutastic light on|off|...` came back
+  byte-for-byte and was logged by the read loop (`light: frame ...` lines
+  in `%LOCALAPPDATA%\mutastic\mutastic.log`).
+- OFF-as-brightness-0 re-confirmed through the daemon (light off,
+  echo `pwr=0x01 brightness=0`).
+- Knob broadcasts were NOT exercised (no human at the desk during the
+  automated run); their exact format remains uncaptured — see human
+  follow-ups.
+
+## Recorded human questions (follow-ups needing eyes/feet)
+
+1. **Temperature-sweep calibration:** with the daemon running, sweep
+   `mutastic light temp 2900` → `7000` in ~228 K steps at fixed brightness
+   and watch where visible change stops, to confirm the 19-step clamp
+   (byte 0x12) on this unit. (Pre-existing TODO, still open.)
+2. **Real pedal press:** press the LEFT pedal (F13) and confirm the light
+   toggles; confirm F14 (mute) and F15 (Winpepper) still behave.
+3. **Knob broadcast + panel-off capture:** touch the physical knob while
+   the daemon runs, then check the log for `light: frame` lines to finally
+   capture a broadcast transcript (expected: CCT-shaped 8-byte frames).
+   Also turn the panel off/on with its own physical control and check what
+   the log records — this settles whether the pwr byte carries off-state
+   (`0x00`/`0x02`), which the daemon already tolerates defensively.
+4. **Unplug/replug:** with the daemon running, unplug the light's USB
+   cable; confirm the log shows `light: session ended` within ~15 s (read
+   error or the presence check), then replug and confirm `light: port
+   opened` returns. This settles the CH340 surprise-removal behavior,
+   which was validated only at source level.
+5. **Long-idle re-sleep check:** after the daemon has been connected and
+   idle for some hours, press F13 (or run `mutastic light on`) and confirm
+   the light actually responds — settles whether wake-once-per-session
+   suffices.
