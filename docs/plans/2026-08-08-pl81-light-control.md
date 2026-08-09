@@ -1380,7 +1380,17 @@ func TestCommandsWorkDuringLiveSession(t *testing.T) {
 	}()
 
 	waitFor(t, "wake", func() bool { return p.writeCount() >= 1 })
-	if got := m.HandleCommand("on"); got != "on 100% 4950K" {
+	// setPort runs only after the wake write AND the wakeDelay sleep, so
+	// gating on the wake write alone races it: HandleCommand could hit a
+	// nil port and return "error: no light". Poll until the live session
+	// accepts the command instead (the first accepted call writes the one
+	// command frame checked below).
+	var got string
+	waitFor(t, "command accepted by live session", func() bool {
+		got = m.HandleCommand("on")
+		return got != "error: no light"
+	})
+	if got != "on 100% 4950K" {
 		t.Fatalf("on during live session = %q", got)
 	}
 	want := []byte{0x3A, 0x02, 0x03, 0x01, 0x64, 0x09, 0x00, 0xAD}
@@ -1744,10 +1754,11 @@ git commit -m "feat: route light-prefixed UDP commands via CommandHandler"
 ```bash
 cd /home/dan/code/mutastic/.worktrees/pl81-light-control
 go get go.bug.st/serial@v1.8.0
-go mod tidy
 ```
 
-Expected: `go.mod` gains `go.bug.st/serial v1.8.0` (plus indirect deps, e.g. `github.com/creack/goselect`, `golang.org/x/sys`); `go build ./...` still succeeds. v1.8.0 is pinned deliberately — it is the version validated on 2026-08-08 (cross-compiles under this repo's exact cgo/mingw env AND with `CGO_ENABLED=0`; API surface confirmed against module source). Do not float to `@latest`.
+Do NOT run `go mod tidy` in this step: nothing imports the package until Steps 3–4 create `light_windows.go`/`light_other.go`, and tidy removes unused requirements — it would strip the line just added. Tidy runs in Step 6, after the importing files exist.
+
+Expected: `go.mod` gains `go.bug.st/serial v1.8.0` and `go.sum` gains its hashes (the indirect requirements, e.g. `github.com/creack/goselect`, `golang.org/x/sys`, are finalized by tidy in Step 6); `go build ./...` still succeeds. v1.8.0 is pinned deliberately — it is the version validated on 2026-08-08 (cross-compiles under this repo's exact cgo/mingw env AND with `CGO_ENABLED=0`; API surface confirmed against module source). Do not float to `@latest`.
 
 - [ ] **Step 2: Write the client test**
 
@@ -2004,13 +2015,13 @@ func lightStatePath() string {
 
 - [ ] **Step 6: Run the full gate**
 
-Run: `go test -race ./... && go vet ./...`
-Expected: clean (on Linux the windows file is excluded by the build tag; the stub keeps package main compiling).
+Run: `go mod tidy && go test -race ./... && go vet ./...`
+Expected: clean (on Linux the windows file is excluded by the build tag; the stub keeps package main compiling). `go mod tidy` runs here — deliberately not in Step 1 — because it needs the Step 3–4 files that import `go.bug.st/serial` to exist (tidy considers all GOOS, so the windows-only import counts even on Linux); it keeps the Step 1 requirement and records the indirect deps (e.g. `github.com/creack/goselect`, `golang.org/x/sys`) in `go.mod`/`go.sum`.
 
 - [ ] **Step 7: Cross-compile for Windows**
 
 Run: `./build.sh`
-Expected: `built bin/mutastic.exe` — this is the ONLY step that compiles `light_windows.go`, so treat a failure here as a Task 7 failure (fix the windows file, not the gate).
+Expected: `built bin/mutastic.exe` — this is the ONLY step that compiles `light_windows.go`. A compile error inside `light_windows.go` is a Task 7 failure: fix that file, not the gate. A `no required module provides package go.bug.st/serial` error instead means the dependency sequence broke (tidy ran before the importing files existed) — re-run `go get go.bug.st/serial@v1.8.0 && go mod tidy` now that they do, then rebuild.
 
 - [ ] **Step 8: Commit**
 
