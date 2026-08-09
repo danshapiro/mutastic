@@ -44,10 +44,16 @@ func NewRegistry(path string) *Registry {
 	if json.Unmarshal(data, &m) != nil {
 		return r
 	}
+	seen := map[string]bool{}
 	for name, port := range m {
-		if namePattern.MatchString(name) && portPattern.MatchString(port) {
-			r.names[name] = port
+		if !namePattern.MatchString(name) || !portPattern.MatchString(port) {
+			continue
 		}
+		if portPattern.MatchString(strings.ToUpper(name)) || seen[port] {
+			continue
+		}
+		seen[port] = true
+		r.names[name] = port
 	}
 	return r
 }
