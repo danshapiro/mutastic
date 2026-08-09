@@ -127,7 +127,7 @@ The script:
 - **Mic unplugged/replugged:** the daemon logs the session ending and
   reopens the device automatically.
 - **Light unplugged/replugged:** same as the mic — the daemon logs
-  `light: session ended` and reopens the port automatically.
+  `COM4 light: session ended` (prefixed per light) and reopens that port automatically.
 - **`light ...` says `error: no light`:** the CH340 port wasn't found or
   couldn't be opened. The COM port is exclusive — close NEEWER Control
   Center (or anything else holding the port). New per-light diagnostics:
