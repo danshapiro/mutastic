@@ -73,7 +73,7 @@ func (d *Daemon) WriteReport(report []byte) error {
 // d.Light, whose replies are the light's status strings ("on 64% 4950K",
 // "off", "unknown") or "error: <reason>".
 func (d *Daemon) HandleCommand(cmd string) string {
-	if rest, ok := strings.CutPrefix(cmd, "light"); ok && (rest == "" || rest[0] == ' ') {
+	if rest, ok := strings.CutPrefix(cmd, "light"); ok && (rest == "" || rest[0] == ' ' || rest[0] == '@') {
 		if d.Light == nil {
 			return "error: no light support"
 		}

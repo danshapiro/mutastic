@@ -456,3 +456,15 @@ func TestServeUDPSurvivesTransientErrors(t *testing.T) {
 		t.Fatal("serveUDP did not exit after the listener closed")
 	}
 }
+
+func TestHandleCommandRoutesLightAtPrefix(t *testing.T) {
+	f := &fakeLightHandler{reply: "on 40% 4950K"}
+	d := New(testLogger())
+	d.Light = f
+	if got := d.HandleCommand("light@desk toggle"); got != "on 40% 4950K" {
+		t.Fatalf("reply = %q, want pass-through of handler reply", got)
+	}
+	if len(f.got) != 1 || f.got[0] != "@desk toggle" {
+		t.Fatalf("handler received %v, want [\"@desk toggle\"]", f.got)
+	}
+}
