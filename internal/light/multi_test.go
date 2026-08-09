@@ -408,3 +408,228 @@ func TestStillPresentObservesFalseMiss(t *testing.T) {
 		t.Fatal("stillPresent = false after port reappears and counter resets; want true")
 	}
 }
+
+func TestMultiTargetedAddressing(t *testing.T) {
+	fastTimings(t)
+	fleet := newFakeFleet("COM4")
+	mm, ctx := newTestMulti(t, fleet, t.TempDir())
+	mm.rescan(ctx)
+	waitConnected(t, mm, "COM4")
+
+	if got := mm.HandleCommand("name COM4 desk"); got != "named COM4 desk" {
+		t.Fatalf("name reply = %q", got)
+	}
+	if got := mm.HandleCommand("@desk brightness 40"); got != "on 40% 4950K" {
+		t.Fatalf("@desk brightness = %q", got)
+	}
+	for _, target := range []string{"@COM4 status", "@com4 status", "@DESK status"} {
+		if got := mm.HandleCommand(target); got != "on 40% 4950K" {
+			t.Fatalf("%q = %q, want on 40%% 4950K", target, got)
+		}
+	}
+	got := mm.HandleCommand("@nope status")
+	want := `error: unknown light "nope" (known: COM4=desk)`
+	if got != want {
+		t.Fatalf("@nope = %q, want %q", got, want)
+	}
+	got = mm.HandleCommand("@COM9 status")
+	want = "error: light COM9 not connected (known: COM4=desk)"
+	if got != want {
+		t.Fatalf("@COM9 = %q, want %q", got, want)
+	}
+}
+
+func TestMultiBareFansOutInPortOrder(t *testing.T) {
+	fastTimings(t)
+	fleet := newFakeFleet("COM7", "COM12", "COM4")
+	mm, ctx := newTestMulti(t, fleet, "")
+	mm.rescan(ctx)
+	waitConnected(t, mm, "COM4", "COM7", "COM12")
+	got := mm.HandleCommand("brightness 50")
+	want := "COM4: on 50% 4950K\nCOM7: on 50% 4950K\nCOM12: on 50% 4950K"
+	if got != want {
+		t.Fatalf("fan-out = %q, want %q", got, want)
+	}
+	for _, p := range []string{"COM4", "COM7", "COM12"} {
+		if fleet.port(p).writeCount() < 2 { // wake + CCT frame
+			t.Fatalf("%s got no frame after wake", p)
+		}
+	}
+}
+
+func TestMultiToggleAnyOnTurnsAllOff(t *testing.T) {
+	fastTimings(t)
+	fleet := newFakeFleet("COM4", "COM7")
+	mm, ctx := newTestMulti(t, fleet, "")
+	mm.rescan(ctx)
+	waitConnected(t, mm, "COM4", "COM7")
+	// COM4 on; COM7 stays unknown (counts as off).
+	if got := sessionManager(t, mm, "COM4").HandleCommand("brightness 60"); got != "on 60% 4950K" {
+		t.Fatalf("setup: %q", got)
+	}
+	got := mm.HandleCommand("toggle")
+	want := "COM4: off\nCOM7: off"
+	if got != want {
+		t.Fatalf("toggle = %q, want %q", got, want)
+	}
+}
+
+func TestMultiToggleAllOffTurnsAllOnRestoringLooks(t *testing.T) {
+	fastTimings(t)
+	fleet := newFakeFleet("COM4", "COM7")
+	mm, ctx := newTestMulti(t, fleet, "")
+	mm.rescan(ctx)
+	waitConnected(t, mm, "COM4", "COM7")
+	sessionManager(t, mm, "COM4").HandleCommand("brightness 30")
+	sessionManager(t, mm, "COM4").HandleCommand("temp 2900")
+	sessionManager(t, mm, "COM7").HandleCommand("brightness 80")
+	mm.HandleCommand("off")
+	got := mm.HandleCommand("toggle")
+	want := "COM4: on 30% 2900K\nCOM7: on 80% 4950K"
+	if got != want {
+		t.Fatalf("toggle = %q, want %q", got, want)
+	}
+}
+
+func TestMultiListAndNaming(t *testing.T) {
+	fastTimings(t)
+	dir := t.TempDir()
+	fleet := newFakeFleet("COM4")
+	mm, ctx := newTestMulti(t, fleet, dir)
+	mm.rescan(ctx)
+	waitConnected(t, mm, "COM4")
+	sessionManager(t, mm, "COM4").HandleCommand("brightness 30")
+
+	mm.HandleCommand("name COM4 desk")
+	mm.HandleCommand("name COM9 spare") // naming a not-yet-attached port is allowed
+	got := mm.HandleCommand("list")
+	want := "COM4 desk connected on 30% 4950K\nCOM9 spare disconnected"
+	if got != want {
+		t.Fatalf("list = %q, want %q", got, want)
+	}
+
+	if got := mm.HandleCommand("unname spare"); got != "unnamed spare" {
+		t.Fatalf("unname = %q", got)
+	}
+	if got := mm.HandleCommand("list"); got != "COM4 desk connected on 30% 4950K" {
+		t.Fatalf("list after unname = %q", got)
+	}
+
+	// Names persist: a fresh Registry over the same file still resolves.
+	reg2 := NewRegistry(filepath.Join(dir, "light-names.json"))
+	if p, ok := reg2.Resolve("desk"); !ok || p != "COM4" {
+		t.Fatalf("persisted Resolve(desk) = %q, %v; want COM4, true", p, ok)
+	}
+}
+
+func TestMultiNoLights(t *testing.T) {
+	fleet := newFakeFleet()
+	mm, ctx := newTestMulti(t, fleet, "")
+	mm.rescan(ctx)
+	if got := mm.HandleCommand("toggle"); got != "error: no light" {
+		t.Fatalf("toggle = %q, want error: no light", got)
+	}
+	if got := mm.HandleCommand("list"); got != "no lights known" {
+		t.Fatalf("list = %q, want no lights known", got)
+	}
+	got := mm.HandleCommand("@desk status")
+	want := `error: unknown light "desk" (known: none)`
+	if got != want {
+		t.Fatalf("@desk = %q, want %q", got, want)
+	}
+}
+
+func TestMultiUsageErrors(t *testing.T) {
+	fleet := newFakeFleet()
+	mm, ctx := newTestMulti(t, fleet, "")
+	mm.rescan(ctx)
+	cases := map[string]string{
+		"@desk":         "error: usage: light@<name|COMx> <command>",
+		"@ toggle":      "error: usage: light@<name|COMx> <command>",
+		"name COM4":     "error: usage: light name <COMx> <name>",
+		"name COM4 a b": "error: usage: light name <COMx> <name>",
+		"name COM4 no!": "error: invalid name: want 1-16 chars of a-z 0-9 '-', starting with a letter",
+		"unname":        "error: usage: light unname <name|COMx>",
+		"":              "error: unknown light command",
+		"list extra":    "error: unknown light command",
+	}
+	for cmd, want := range cases {
+		if got := mm.HandleCommand(cmd); got != want {
+			t.Errorf("HandleCommand(%q) = %q, want %q", cmd, got, want)
+		}
+	}
+}
+
+// stuckPort completes the first Write (the wake, so the session connects)
+// then blocks forever on every later Write and on Read - a light that
+// wedges mid-session. Intentionally distinct from Task 3's wedgedPort
+// (which blocks even the wake): here the session must CONNECT first so
+// the fan-out reaches its Write. Closing block releases the leaked
+// goroutines.
+type stuckPort struct {
+	mu     sync.Mutex
+	writes int
+	block  chan struct{}
+}
+
+func newStuckPort() *stuckPort { return &stuckPort{block: make(chan struct{})} }
+
+func (s *stuckPort) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	s.writes++
+	first := s.writes == 1
+	s.mu.Unlock()
+	if first {
+		return len(p), nil // wake succeeds; the session connects
+	}
+	<-s.block
+	return 0, errors.New("gone")
+}
+
+func (s *stuckPort) Read(p []byte) (int, error) { <-s.block; return 0, errors.New("gone") }
+func (s *stuckPort) Close() error               { return nil }
+
+func TestMultiFanOutBoundedByWedgedLight(t *testing.T) {
+	fastTimings(t) // shrinks lightCallTimeout to 50ms - the bound under test
+	stuck := newStuckPort()
+	defer close(stuck.block) // release the leaked goroutines at test end
+	healthy := newFakePort()
+	enumerate := func() ([]string, error) { return []string{"COM4", "COM7"}, nil }
+	open := func(name string) (Port, error) {
+		if name == "COM7" {
+			return stuck, nil
+		}
+		return healthy, nil
+	}
+	mm := NewMultiManager(testLogger(), "", NewRegistry(""), enumerate, open)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel()
+		mm.stopAll()
+	})
+	mm.rescan(ctx)
+	waitConnected(t, mm, "COM4", "COM7") // both wakes succeeded
+
+	start := time.Now()
+	got := mm.HandleCommand("brightness 40")
+	want := "COM4: on 40% 4950K\nCOM7: error: timeout"
+	if got != want {
+		t.Fatalf("fan-out = %q, want %q", got, want)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("fan-out took %v; want bounded by lightCallTimeout", elapsed)
+	}
+
+	// list must be bounded too: the abandoned fan-out goroutine is parked
+	// inside writeFrame HOLDING COM7's m.mu, so an unbounded Connected()
+	// probe would block forever.
+	start = time.Now()
+	got = mm.HandleCommand("list")
+	want = "COM4 - connected on 40% 4950K\nCOM7 - error: timeout"
+	if got != want {
+		t.Fatalf("list = %q, want %q", got, want)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("list took %v; want bounded by lightCallTimeout", elapsed)
+	}
+}
