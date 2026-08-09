@@ -87,7 +87,7 @@ func runDaemon() int {
 		return 1
 	}
 	open := func() (daemon.Device, error) { return openYetiX(logger) }
-	daemon.Run(context.Background(), open, pc, logger)
+	daemon.Run(context.Background(), open, nil, pc, logger)
 	return 0
 }
 

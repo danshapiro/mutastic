@@ -22,6 +22,13 @@ type Device interface {
 	Close() error
 }
 
+// CommandHandler answers one already-trimmed command string. It is how
+// device managers other than the mic (today: the PL81 light) plug their
+// verbs into the UDP surface without this package importing them.
+type CommandHandler interface {
+	HandleCommand(cmd string) string
+}
+
 var errNoDevice = errors.New("no device")
 
 // Daemon holds shared daemon state: the tracked mute state, the current
@@ -29,6 +36,7 @@ var errNoDevice = errors.New("no device")
 type Daemon struct {
 	Track  Tracker
 	Logger *log.Logger
+	Light  CommandHandler // nil when no light support is wired in
 
 	mu  sync.Mutex
 	dev Device
@@ -60,8 +68,17 @@ func (d *Daemon) WriteReport(report []byte) error {
 }
 
 // HandleCommand executes one UDP text command and returns the reply.
-// Replies are exactly: "muted", "unmuted", "unknown", or "error: <reason>".
+// Mic replies are exactly: "muted", "unmuted", "unknown", or
+// "error: <reason>". Commands starting with "light" are delegated to
+// d.Light, whose replies are the light's status strings ("on 64% 4950K",
+// "off", "unknown") or "error: <reason>".
 func (d *Daemon) HandleCommand(cmd string) string {
+	if rest, ok := strings.CutPrefix(cmd, "light"); ok && (rest == "" || rest[0] == ' ') {
+		if d.Light == nil {
+			return "error: no light support"
+		}
+		return d.Light.HandleCommand(strings.TrimSpace(rest))
+	}
 	switch cmd {
 	case "status":
 		muted, known := d.Track.Status()
@@ -109,8 +126,9 @@ type OpenFunc func() (Device, error)
 // Run serves UDP commands on pc and maintains the device session until ctx
 // is cancelled. The caller owns pc; binding the production port
 // (127.0.0.1:42814) doubles as a single-instance lock.
-func Run(ctx context.Context, open OpenFunc, pc net.PacketConn, logger *log.Logger) error {
+func Run(ctx context.Context, open OpenFunc, light CommandHandler, pc net.PacketConn, logger *log.Logger) error {
 	d := New(logger)
+	d.Light = light
 	go func() {
 		<-ctx.Done()
 		pc.Close()
