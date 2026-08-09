@@ -7,7 +7,7 @@
 
 **Goal:** Make the Yeti X microphone's physical mute button trigger the same meeting-app mute sweep as the middle foot pedal, with no double-toggling in either direction.
 
-**Architecture:** The daemon already decodes the mic's `0x21` DeviceMute HID event, which fires ONLY on physical button presses (host-initiated mute commands echo `0x20` instead, and those echoes carry no state). We add a debounced hook in the daemon's session loop that, on `0x21`, injects a synthetic `F24` keystroke via user32 `SendInput`; the AHK script gets a new `F24::` hotkey that runs only the meeting-app sweep (no `mutastic toggle` — the mic already toggled its own hardware mute). The pedal path (`F14`) is untouched.
+**Architecture:** The daemon already decodes the mic's `0x21` DeviceMute HID event, which fires ONLY on physical button presses (host-initiated mute commands echo `0x20` instead, and those echoes carry no state). We add a debounced hook in the daemon's session loop that, on `0x21`, injects a synthetic `F24` keystroke via user32 `SendInput`; the AHK script gets a new `*F24::` hotkey (wildcard prefix — a held modifier must never swallow the injected press) that runs only the meeting-app sweep (no `mutastic toggle` — the mic already toggled its own hardware mute). The pedal path (`F14`) is untouched.
 
 **Tech Stack:** Go 1.26 (stdlib `syscall.NewLazyDLL` — no new deps), AutoHotkey v1.1 script, WSL2 cross-compile via mingw (`build.sh`), Windows deployment via `deploy/deploy.cmd` over WSL interop.
 
@@ -15,13 +15,13 @@
 
 - **Worktree root:** `/home/dan/code/mutastic/.worktrees/mic-button-f24-sweep` — run every command from there (or `git -C` / absolute paths). Never rely on cwd.
 - `ahk/MuteAllMeetings.ahk` is **UTF-8 with BOM (`EF BB BF`) + CRLF line endings, AHK v1.1 syntax**. Every edit must preserve both (verify with `file` + `git diff`). Edit via byte-level Python (`read_bytes`/`replace`/`write_bytes` with count==1 asserts). **Never hand-rewrite the file.**
-- **F14 behavior stays exactly as-is** (sweep + `mutastic toggle`). F13 untouched. **F15 belongs to Winpepper — never touch it.** F24 is confirmed unused on this machine (pedal firmware emits only F13/F14/F15; winpepper uses F15 and RightCtrl+RightShift+Space).
+- **F14 behavior stays exactly as-is** (sweep + `mutastic toggle`). F13 untouched. **F15 belongs to Winpepper — never touch it.** F24 is confirmed unused on this machine (pedal firmware emits only F13/F14/F15; winpepper uses F15 and RightCtrl+RightShift+Space). A 2026-08-09 machine-wide read-only sweep (Startup items, Run keys, user `.ahk` files, running hotkey tools, PowerToys/winpepper/OBS configs) found no other F24 consumer or emitter; PowerToys KBM claims F21, so F23 is the preferred fallback key if F24 is ever contended.
 - `internal/daemon`, `internal/light`, `internal/proto` stay platform-free (zero build tags). All OS-specific code lives in package `main` at the repo root as `<concern>_windows.go` + `<concern>_other.go` pairs, each with BOTH the filename suffix AND an explicit `//go:build` line.
 - No new direct dependencies: `go.mod` stays `module mutastic / go 1.26.3` with only `go-hid v0.15.0` + `go.bug.st/serial v1.8.0`. Use raw `syscall.NewLazyDLL` (house precedent: `hideConsoleIfOwned`, `hid_windows.go:77-93`), not `golang.org/x/sys/windows`.
 - No `flag` package anywhere — argument handling is manual `os.Args` slicing (house style).
 - The injection trigger must gate on `ev.Op == proto.EvtDeviceMute` (0x21) **independently of `Tracker.Apply`'s result** — `docs/yeti-x-hid-protocol.md:109-115` flags the 0x21 value byte as unverified on some firmware, and `Tracker.Apply` erases the op.
 - Debounce: ignore further 0x21 events within **400 ms** of the last one acted on; implement as a package-level `var muteInjectDebounce = 400 * time.Millisecond` with a comment justifying the value (house convention). Timing-var hazard (commit `eebd6c7`): the session goroutine reads the var, so tests must register the shrink/restore `t.Cleanup` BEFORE calling the daemon harness (t.Cleanup is LIFO — the harness's stop-and-join cleanup must run first).
-- Log lines: stdlib `*log.Logger`, `Printf`, lowercase, no prefix. Each injection logs `mic button -> F24 app sweep`; failures log the error and are non-fatal.
+- Log lines: stdlib `*log.Logger`, `Printf`, lowercase, no prefix. Each injection logs `mic button -> F24 app sweep`; a 0x21 suppressed by the debounce logs `mic button ignored (debounce)`; failures log the error and are non-fatal. The injection hook logs AFTER the `event op=...` line so the README triage ("sweep line right after the event line") holds.
 - Gates for every code task: `go test -race ./... && go vet ./...` clean; `./build.sh` green before any deploy. All existing mic + light tests keep passing.
 - UDP inbound buffer stays 64 bytes; do not change unrelated daemon behavior.
 - WSL→Windows interop is intermittently flaky (vsock errors): retry any `cmd.exe`/`powershell.exe`/`*.exe` invocation up to 3 times over ~2 minutes before surfacing a blocker. Pre-flight with `cmd.exe /c echo interop-ok`.
@@ -47,12 +47,18 @@ Single subsystem: one repo, one trigger→effect flow, touching the AHK script, 
 - `daemon.Run` signature today: `Run(ctx context.Context, open OpenFunc, light CommandHandler, pc net.PacketConn, logger *log.Logger) error` — exactly two call sites: `main.go:139` and `startDaemon` in `internal/daemon/daemon_test.go`.
 - Fake-HID test infra (`internal/daemon/daemon_test.go`, internal test package): `newFakeDevice()`, `inputReport(op, value byte) []byte`, `startDaemon(t, open) (addr, ask)`, `waitFor(t, what, cond)`, `testLogger()`. Events are fed with `dev.events <- inputReport(0x21, 0x01)`.
 - SendInput succeeds whether or not the AHK script is running — absence of a listener is undetectable and harmless by design.
+- Validated 2026-08-09 (load-bearing sweep; raw evidence in `.the-usual-logs/mic-button-f24-sweep/reports/`, ledger in `load-bearing-ledger.md` there):
+  - An injected scan-code-less VK_F24 pair (SendInput, this plan's exact `input` struct) fired a live AHK v1.1 `F24::` hotkey 10/10 times on this machine, and the 40-byte struct's field offsets match mingw-w64 `<windows.h>` exactly (compile-time `_Static_assert` probe). Do not re-derive either.
+  - SendInput latency under the real resident hook chain (MuteAllMeetings + Winpepper): 0.5–4.5 ms per down+up pair — synchronous `Inject()` in the session loop is safe. Documented tail risk: a hung third-party hook can stall input dispatch up to ~1 s; the consequence is a delayed sweep only.
+  - WSL-interop-launched processes run in the deployed daemon's context (session 1, same user, medium IL) — `--test-inject` over interop is valid evidence for the daemon's injection path.
+  - AHK v1 hotkeys written without `*` do NOT fire while extraneous modifiers are held (AHK docs) — hence `*F24::`. UIPI blocks of SendInput are SILENT — MS Learn: "neither GetLastError nor the return value will indicate the failure was caused by UIPI blocking" — hence the elevated-window troubleshooting class.
+  - Debounce reality check: zero chatter has ever been observed (all 4 historical 0x21 events arrived one per press, min intentional gap ~1 s); the 400 ms debounce is unvalidated insurance, kept behind its timing var, with suppressions logged so the final human live test settles it.
 
 ## File Structure
 
 | File | Action | Responsibility |
 |---|---|---|
-| `ahk/MuteAllMeetings.ahk` | Modify (byte-level) | New `F24::` hotkey → `ToggleAllMeetings()` only |
+| `ahk/MuteAllMeetings.ahk` | Modify (byte-level) | New `*F24::` hotkey → `ToggleAllMeetings()` only |
 | `internal/daemon/inject.go` | Create | `KeyInjector` interface, `muteInjectDebounce` var, `injectGate` debounce/decision logic (platform-free) |
 | `internal/daemon/inject_test.go` | Create | Pure unit tests for the gate (explicit `now`, no timing races) |
 | `internal/daemon/daemon.go` | Modify | `Daemon.Inject` field + `gate`, `Run` signature gains `inject KeyInjector`, session-loop hook + logging |
@@ -72,7 +78,7 @@ Single subsystem: one repo, one trigger→effect flow, touching the AHK script, 
 
 **Interfaces:**
 - Consumes: existing `ToggleAllMeetings()` function (`ahk/MuteAllMeetings.ahk:35-70`).
-- Produces: an `F24::` hotkey that runs ONLY the meeting-app sweep. The daemon (Task 4) sends VK_F24 (0x87). F14/F13 byte-for-byte unchanged.
+- Produces: an `*F24::` hotkey (wildcard: fires even while Ctrl/Shift/Alt/Win are physically held — AHK v1's default would silently swallow the injected press mid-chord, per the AHK Hotkeys docs) that runs ONLY the meeting-app sweep. The daemon (Task 4) sends VK_F24 (0x87). F14/F13 byte-for-byte unchanged.
 
 - [ ] **Step 1: Record pre-edit byte facts**
 
@@ -104,8 +110,10 @@ new = old + (b"\r\n"
        b"; F24 is injected by the mutastic daemon when the mic's own mute\r\n"
        b"; button is pressed (0x21 DeviceMute event). Sweep the meeting apps\r\n"
        b"; only - the mic has already toggled its own hardware mute, so\r\n"
-       b"; running mutastic.exe toggle here would undo it.\r\n"
-       b"F24::\r\n"
+       b"; running mutastic.exe toggle here would undo it. The * prefix\r\n"
+       b"; fires the hotkey even while Ctrl/Shift/Alt/Win are held - an\r\n"
+       b"; injected press must never be swallowed mid-chord.\r\n"
+       b"*F24::\r\n"
        b"ToggleAllMeetings()\r\n"
        b"return\r\n")
 assert data.count(old) == 1, "F13 block not found exactly once"
@@ -129,7 +137,7 @@ grep -a -A2 'F24::' ahk/MuteAllMeetings.ahk
 grep -a -A3 'F14::' ahk/MuteAllMeetings.ahk
 ```
 
-Expected: `file` still reports `UTF-8 (with BOM) ... CRLF`; both counts `106` (98 + 8 inserted lines); diff stat shows ~8 insertions, 0 deletions in 1 file (if EVERY line shows changed, line endings were destroyed — `git checkout -- ahk/MuteAllMeetings.ahk` and redo); `F24::` is followed by `ToggleAllMeetings()` and `return`; the F14 block still shows `Run, "%A_ScriptDir%\mutastic.exe" toggle ...` then `ToggleAllMeetings()` then `return` (unchanged). Note the `-a` flag — grep may treat the BOM'd file as binary without it.
+Expected: `file` still reports `UTF-8 (with BOM) ... CRLF`; both counts `108` (98 + 10 inserted lines); diff stat shows ~10 insertions, 0 deletions in 1 file (if EVERY line shows changed, line endings were destroyed — `git checkout -- ahk/MuteAllMeetings.ahk` and redo); `*F24::` is followed by `ToggleAllMeetings()` and `return`; the F14 block still shows `Run, "%A_ScriptDir%\mutastic.exe" toggle ...` then `ToggleAllMeetings()` then `return` (unchanged). Note the `-a` flag — grep may treat the BOM'd file as binary without it.
 
 - [ ] **Step 4: Syntax-check with the real AHK v1 interpreter (parse-only, WSL interop)**
 
@@ -258,9 +266,12 @@ type KeyInjector interface {
 }
 
 // muteInjectDebounce is how long after an acted-on 0x21 DeviceMute event
-// further 0x21 events are ignored. The mic's capacitive button can
-// chatter; 400ms comfortably outlasts chatter while staying shorter than
-// any intentional repeat press. Var (not const) so tests can shrink it.
+// further 0x21 events are ignored. Chatter has never been observed (all
+// logged presses arrive one event apiece), so this is cheap insurance,
+// not a measured fix: 400ms would outlast plausible chatter while staying
+// shorter than the fastest observed intentional repeat press (~1s). Var
+// (not const) so tests can shrink it — and a one-line change to disable
+// if live use proves it unnecessary.
 var muteInjectDebounce = 400 * time.Millisecond
 
 // injectGate decides whether a decoded event should trigger a keystroke
@@ -321,7 +332,7 @@ git commit -m "feat: add debounced injection gate for physical mute-button event
 - Produces (Task 4 relies on these):
   - `func Run(ctx context.Context, open OpenFunc, light CommandHandler, inject KeyInjector, pc net.PacketConn, logger *log.Logger) error` (param added between `light` and `pc`)
   - `Daemon.Inject KeyInjector` exported field (nil = no injection wired)
-  - Log lines: `mic button -> F24 app sweep` on success, `mic button -> F24 app sweep: inject failed: <err>` on error
+  - Log lines: `mic button -> F24 app sweep` on success, `mic button -> F24 app sweep: inject failed: <err>` on error, `mic button ignored (debounce)` when a 0x21 is suppressed inside the debounce window; all emitted AFTER the `event op=...` line
   - Test helper: `startDaemonInject(t *testing.T, open OpenFunc, inject KeyInjector) (addr string, ask func(cmd string) string)`
 
 - [ ] **Step 1: Write the failing integration tests**
@@ -454,28 +465,33 @@ func Run(ctx context.Context, open OpenFunc, light CommandHandler, inject KeyInj
 	// ... rest of Run unchanged ...
 ```
 
-(c) In `session`, insert the hook between the `DecodeEvent` ok-check and the `d.Track.Apply(ev)` branch, so the region reads:
+(c) In `session`, insert the hook AFTER the `d.Track.Apply(ev)` if/else — the injection log line must land right after the `event op=...` line to match the README triage — so the region reads:
 
 ```go
 		ev, ok := proto.DecodeEvent(buf[:n])
 		if !ok {
 			continue
 		}
-		// Physical mute-button press: fire the AHK meeting-app sweep.
-		// Gated on the op (0x21) alone, NOT on Apply's result — see
-		// injectGate's doc comment.
-		if d.Inject != nil && d.gate.shouldInject(ev, time.Now()) {
-			if err := d.Inject.Inject(); err != nil {
-				d.Logger.Printf("mic button -> F24 app sweep: inject failed: %v", err)
-			} else {
-				d.Logger.Printf("mic button -> F24 app sweep")
-			}
-		}
 		if d.Track.Apply(ev) {
 			muted, _ := d.Track.Status()
 			d.Logger.Printf("event op=0x%02x value=0x%02x -> muted=%v", ev.Op, ev.Value, muted)
 		} else {
 			d.Logger.Printf("event op=0x%02x value=0x%02x (ignored)", ev.Op, ev.Value)
+		}
+		// Physical mute-button press: fire the AHK meeting-app sweep.
+		// Gated on the op (0x21) alone, NOT on Apply's result — see
+		// injectGate's doc comment. Suppressed presses are logged so the
+		// live double-press test can observe the debounce working.
+		if d.Inject != nil && ev.Op == proto.EvtDeviceMute {
+			if d.gate.shouldInject(ev, time.Now()) {
+				if err := d.Inject.Inject(); err != nil {
+					d.Logger.Printf("mic button -> F24 app sweep: inject failed: %v", err)
+				} else {
+					d.Logger.Printf("mic button -> F24 app sweep")
+				}
+			} else {
+				d.Logger.Printf("mic button ignored (debounce)")
+			}
 		}
 ```
 
@@ -633,7 +649,9 @@ const (
 // input mirrors the Win32 INPUT struct carrying a KEYBDINPUT on 64-bit
 // Windows: DWORD type at offset 0, 4 bytes padding (the union is 8-byte
 // aligned), KEYBDINPUT at offset 8, then trailing padding out to the
-// union's largest member (MOUSEINPUT, 32 bytes). Total: 40 bytes.
+// union's largest member (MOUSEINPUT, 32 bytes). Total: 40 bytes. Field
+// offsets verified against mingw-w64 <windows.h> by a compile-time
+// _Static_assert probe (2026-08-09 load-bearing sweep).
 type input struct {
 	inputType   uint32  // INPUT.type
 	_           uint32  // padding before the 8-aligned union
@@ -657,10 +675,12 @@ const (
 var procSendInput = syscall.NewLazyDLL("user32.dll").NewProc("SendInput")
 
 // f24Injector delivers a synthetic F24 press (down then up) to the active
-// desktop via user32 SendInput, firing the AHK script's F24:: meeting-app
+// desktop via user32 SendInput, firing the AHK script's *F24:: meeting-app
 // sweep. SendInput succeeds whether or not the AHK script is running —
 // with no listener the keystroke lands nowhere, which is harmless by
-// design.
+// design. It also reports success when UIPI silently discards the input
+// (elevated foreground window) — documented, undetectable; see the
+// README troubleshooting entry.
 type f24Injector struct{}
 
 func (f24Injector) Inject() error {
@@ -781,7 +801,8 @@ meeting apps AND the microphone itself.
 Pressing the **mute button on the Yeti X itself** keeps the meeting apps
 in sync too: the daemon sees the mic's `0x21` DeviceMute event (emitted
 only for physical presses — host-initiated commands echo `0x20` instead)
-and injects a synthetic `F24` keystroke; the AHK script's `F24::` hotkey
+and injects a synthetic `F24` keystroke; the AHK script's `*F24::` hotkey
+(the `*` lets it fire even while modifier keys are held)
 runs the same meeting-app sweep, but does NOT run `mutastic toggle` — the
 mic has already toggled its own hardware mute. Both directions are
 loop-free:
@@ -815,11 +836,14 @@ loop-free:
 
 ```markdown
 - **Mic button mutes the mic but the meeting apps don't follow:** check
-  the log for `mic button -> F24 app sweep` right after the press's
-  `event op=0x21 ...` line. Line absent → the daemon didn't see the event
-  (or the 400 ms debounce suppressed a double-fire). Line present but the
-  apps didn't toggle → the AHK script isn't running (`SendInput` succeeds
-  regardless); relaunch it via its Startup shortcut.
+  the log right after the press's `event op=0x21 ...` line. No line at
+  all → the daemon didn't see the event. `mic button ignored (debounce)`
+  → the 400 ms debounce suppressed a double-fire. `mic button -> F24 app
+  sweep` present but the apps didn't toggle → either the AHK script isn't
+  running (`SendInput` succeeds regardless; relaunch it via its Startup
+  shortcut), or an **elevated (admin) window was focused** → UIPI
+  silently discards injected keystrokes with no error anywhere (OS
+  design); refocus a normal window and press again.
   `mutastic.exe daemon --test-inject` fires one synthetic F24 to exercise
   the injection path without touching the mic.
 ```
@@ -886,7 +910,7 @@ Expected: the invocation MAY hit the 90 s timeout (normal — the started daemon
 grep -a -A2 'F24::' /mnt/c/Users/dan/code/mutastic-deploy/MuteAllMeetings.ahk
 ```
 
-Expected: `F24::` followed by `ToggleAllMeetings()` and `return`.
+Expected: `*F24::` followed by `ToggleAllMeetings()` and `return`.
 
 - [ ] **Step 5: Verify the daemon log — fresh start, mic opened, COM4 light session up**
 
@@ -936,6 +960,6 @@ Then write `/home/dan/code/mutastic/.worktrees/.the-usual-logs/mic-button-f24-sw
 
 The physical mute button cannot be pressed by software — `0x21` events only come from hardware. The following require the human:
 
-1. **Physical press, live:** press the Yeti X's mute button (ideally during a real meeting, or with a test meeting window open). Expected: the mic's own mute LED toggles once (firmware), every meeting app's mute follows within ~a second, and the daemon log shows `event op=0x21 ... -> muted=...` immediately followed by `mic button -> F24 app sweep`. Nothing double-toggles: the mic toggles exactly once per press, each app exactly once.
-2. **Debounce, live:** two very fast presses (within 400 ms). Expected: the log shows two `op=0x21` events but only ONE `mic button -> F24 app sweep` line (note: the firmware itself still toggles the mic per press — the debounce guards only the app sweep).
+1. **Physical press, live:** press the Yeti X's mute button (ideally during a real meeting, or with a test meeting window open). Expected: the mic's own mute LED toggles once (firmware), every meeting app's mute follows within ~a second, and the daemon log shows `event op=0x21 ... -> muted=...` immediately followed by `mic button -> F24 app sweep`. Nothing double-toggles: the mic toggles exactly once per press, each app exactly once. (Avoid testing while an elevated/admin window is focused — UIPI silently discards injected keystrokes; see Troubleshooting.)
+2. **Debounce, live:** two very fast presses (within 400 ms). Expected: the log shows two `op=0x21` events, ONE `mic button -> F24 app sweep` line, and ONE `mic button ignored (debounce)` line for the suppressed press (note: the firmware itself still toggles the mic per press — the debounce guards only the app sweep). This test also settles whether the 400 ms window is right — report what you observe.
 3. **Pedal regression:** press the middle pedal (F14) during the same meeting. Expected: unchanged behavior — apps sweep AND the mic hardware toggles, log shows the `command "toggle"` line and a `0x20` echo on the `(ignored)` branch, and NO `mic button -> F24 app sweep` line.
