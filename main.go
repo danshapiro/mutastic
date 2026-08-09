@@ -103,7 +103,10 @@ func runDaemon() int {
 		logw = nopWriteCloser{}
 	}
 	defer logw.Close()
-	logger := log.New(io.MultiWriter(os.Stderr, logw), "", log.LstdFlags)
+	// Logfile FIRST: io.MultiWriter aborts on the first destination error,
+	// and stderr can die with a freed console on Windows - it must never be
+	// able to drop logfile lines (the E2E log contract greps the file).
+	logger := log.New(io.MultiWriter(logw, os.Stderr), "", log.LstdFlags)
 	logger.Printf("mutastic daemon starting (log: %s)", logPath)
 
 	pc, err := net.ListenPacket("udp", udpAddr)
@@ -114,10 +117,15 @@ func runDaemon() int {
 	}
 	open := func() (daemon.Device, error) { return openYetiX(logger) }
 	ctx := context.Background()
-	lm := light.NewManager(logger, lightStatePath())
-	lm.Present = pl81Present
-	go lm.Run(ctx, func() (light.Port, error) { return openPL81(logger) })
-	daemon.Run(ctx, open, lm, pc, logger)
+	stateDir := lightStateDir()
+	namesPath := ""
+	if stateDir != "" {
+		namesPath = filepath.Join(stateDir, "light-names.json")
+	}
+	reg := light.NewRegistry(namesPath)
+	lights := light.NewMultiManager(logger, stateDir, reg, enumeratePL81Ports, openPL81Port)
+	go lights.Run(ctx)
+	daemon.Run(ctx, open, lights, pc, logger)
 	return 0
 }
 
@@ -143,15 +151,15 @@ func openLogFile() (io.WriteCloser, string, error) {
 	return f, path, nil
 }
 
-// lightStatePath returns %LOCALAPPDATA%\mutastic\light-state.json (the same
-// directory as mutastic.log). An empty string disables persistence rather
-// than failing the daemon.
-func lightStatePath() string {
+// lightStateDir returns %LOCALAPPDATA%\mutastic (the same directory as
+// mutastic.log); per-light state files and the name registry live here.
+// An empty string disables persistence rather than failing the daemon.
+func lightStateDir() string {
 	dir, err := os.UserCacheDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(dir, "mutastic", "light-state.json")
+	return filepath.Join(dir, "mutastic")
 }
 
 type nopWriteCloser struct{}

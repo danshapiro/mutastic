@@ -3,9 +3,7 @@
 package main
 
 import (
-	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -22,26 +20,29 @@ const (
 	pl81PID = "7523"
 )
 
-// openPL81 finds the CH340 bridge by USB VID/PID - NEVER by COM number, the
-// port name can change - and opens it at 115200 8N1 with both buffers
-// flushed. The wake sequence is the session's job, not this function's.
-// Every candidate port is logged so the log file doubles as a diagnostic
-// record, mirroring openYetiX.
-func openPL81(logger *log.Logger) (light.Port, error) {
+// enumeratePL81Ports lists the COM name of every CH340 bridge currently
+// attached (VID 1A86 PID 7523). Two identical panels are distinguished
+// ONLY by COM name - CH340s expose no USB serial number - so the COM port
+// is a light's identity (stable per physical USB jack; see
+// docs/pl81-pro-serial-protocol.md).
+func enumeratePL81Ports() ([]string, error) {
 	ports, err := enumerator.GetDetailedPortsList()
 	if err != nil {
 		return nil, err
 	}
-	var name string
+	var names []string
 	for _, p := range ports {
-		logger.Printf("light: serial port: %s usb=%v vid=%s pid=%s", p.Name, p.IsUSB, p.VID, p.PID)
-		if name == "" && p.IsUSB && strings.EqualFold(p.VID, pl81VID) && strings.EqualFold(p.PID, pl81PID) {
-			name = p.Name
+		if p.IsUSB && strings.EqualFold(p.VID, pl81VID) && strings.EqualFold(p.PID, pl81PID) {
+			names = append(names, p.Name)
 		}
 	}
-	if name == "" {
-		return nil, errors.New("PL81 (CH340, VID 1A86 PID 7523) not found")
-	}
+	return names, nil
+}
+
+// openPL81Port opens one specific PL81 serial port at 115200 8N1 with
+// both buffers flushed. The wake sequence is the session's job, not this
+// function's.
+func openPL81Port(name string) (light.Port, error) {
 	mode := &serial.Mode{
 		BaudRate: 115200,
 		DataBits: 8,
@@ -78,7 +79,7 @@ func openPL81(logger *log.Logger) (light.Port, error) {
 }
 
 // serialPort adapts go.bug.st/serial to light.Port. The 1 s read timeout
-// was fixed once in openPL81, so a Read that returns (0, nil) on expiry
+// was fixed once in openPL81Port, so a Read that returns (0, nil) on expiry
 // matches the Port contract exactly - no per-read SetReadTimeout (which
 // could race an in-flight Write via SetCommTimeouts).
 type serialPort struct {
@@ -90,22 +91,3 @@ func (s serialPort) Write(b []byte) (int, error) { return s.p.Write(b) }
 func (s serialPort) Read(b []byte) (int, error) { return s.p.Read(b) }
 
 func (s serialPort) Close() error { return s.p.Close() }
-
-// pl81Present reports whether a 1A86:7523 device is currently enumerated
-// (SetupAPI, present devices only). The session loop uses it as its
-// liveness fallback during long read silences, because the CH340 driver's
-// surprise-removal error behavior is unverified. Enumeration failures
-// count as present (fail open - never kill a session on an enumerator
-// glitch).
-func pl81Present() bool {
-	ports, err := enumerator.GetDetailedPortsList()
-	if err != nil {
-		return true
-	}
-	for _, p := range ports {
-		if p.IsUSB && strings.EqualFold(p.VID, pl81VID) && strings.EqualFold(p.PID, pl81PID) {
-			return true
-		}
-	}
-	return false
-}
