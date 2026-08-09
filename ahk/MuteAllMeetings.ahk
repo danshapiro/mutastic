@@ -2,6 +2,7 @@
 ;
 ; Middle USB foot pedal (F14) toggles microphone mute in ALL running
 ; meeting apps at once: MS Teams, Zoom, Webex, and Google Meet tabs.
+; Left pedal (F13) toggles the NEEWER PL81 PRO light via mutastic.
 ;
 ; How it works: for every matching window, briefly activate it, send that
 ; app's own in-app mute-toggle hotkey, then return focus to where you were.
@@ -10,8 +11,8 @@
 ; mute states, toggling keeps them opposite. Sync them once (mute/unmute
 ; the odd one manually) and they stay in sync afterwards.
 ;
-; Local tool for this machine. Documented in
-; ~/code/this-machine-projects/docs/foot-pedal.md
+; Local tool for this machine. Documented in the mutastic repo:
+; README.md and docs/pedal-and-mute.md
 
 #SingleInstance Force
 #NoEnv
@@ -20,11 +21,15 @@ SetWorkingDir %A_ScriptDir%
 DetectHiddenWindows, Off
 
 Menu, Tray, Icon, %A_ScriptDir%\mic_mute_light.ico
-Menu, Tray, Tip, MuteAllMeetings - F14 toggles mute in all meetings
+Menu, Tray, Tip, MuteAllMeetings - F14 mutes meetings+mic`, F13 toggles light
 
 F14::
 Run, "%A_ScriptDir%\mutastic.exe" toggle, %A_ScriptDir%, Hide UseErrorLevel
 ToggleAllMeetings()
+return
+
+F13::
+Run, "%A_ScriptDir%\mutastic.exe" light toggle, %A_ScriptDir%, Hide UseErrorLevel
 return
 
 ToggleAllMeetings() {

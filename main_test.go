@@ -67,3 +67,33 @@ func TestRunClientNoDaemon(t *testing.T) {
 		t.Fatalf("output = %q, want it to mention 'no daemon reachable'", out.String())
 	}
 }
+
+func TestRunClientPassesMultiWordCommandVerbatim(t *testing.T) {
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	gotCmd := make(chan string, 1)
+	go func() {
+		buf := make([]byte, 64)
+		n, addr, err := pc.ReadFrom(buf)
+		if err != nil {
+			return
+		}
+		gotCmd <- string(buf[:n])
+		pc.WriteTo([]byte("on 100% 4950K"), addr)
+	}()
+
+	var out bytes.Buffer
+	code := runClient("light brightness 100", pc.LocalAddr().String(), time.Second, &out)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (output %q)", code, out.String())
+	}
+	if got := <-gotCmd; got != "light brightness 100" {
+		t.Fatalf("daemon received %q, want %q", got, "light brightness 100")
+	}
+	if got := strings.TrimSpace(out.String()); got != "on 100% 4950K" {
+		t.Fatalf("printed %q, want the reply", got)
+	}
+}

@@ -1,7 +1,9 @@
-// mutastic controls the Blue Yeti X hardware mute.
+// mutastic controls the Blue Yeti X hardware mute and the NEEWER PL81 PRO
+// streaming light.
 //
-//	mutastic daemon                     resident: HID session + UDP server
-//	mutastic toggle|mute|unmute|status  one-shot client for the daemon
+//	mutastic daemon                     resident: HID + serial sessions + UDP server
+//	mutastic toggle|mute|unmute|status  one-shot client: mic hardware mute
+//	mutastic light <subcommand...>      one-shot client: light control
 package main
 
 import (
@@ -16,6 +18,7 @@ import (
 	"time"
 
 	"mutastic/internal/daemon"
+	"mutastic/internal/light"
 )
 
 const udpAddr = "127.0.0.1:42814"
@@ -30,6 +33,12 @@ func main() {
 		os.Exit(runDaemon())
 	case "toggle", "mute", "unmute", "status":
 		os.Exit(runClient(os.Args[1], udpAddr, time.Second, os.Stdout))
+	case "light":
+		if len(os.Args) < 3 {
+			usage()
+			os.Exit(2)
+		}
+		os.Exit(runClient(strings.Join(os.Args[1:], " "), udpAddr, 2*time.Second, os.Stdout))
 	default:
 		usage()
 		os.Exit(2)
@@ -38,6 +47,8 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: mutastic daemon | toggle | mute | unmute | status")
+	fmt.Fprintln(os.Stderr, "       mutastic light toggle|on|off|status")
+	fmt.Fprintln(os.Stderr, "       mutastic light brightness <0-100> | temp <2900-7000> | preset <cold|sunlight|afternoon|sunset|candle>")
 }
 
 // runClient sends one UDP command to the daemon and prints the reply.
@@ -87,7 +98,11 @@ func runDaemon() int {
 		return 1
 	}
 	open := func() (daemon.Device, error) { return openYetiX(logger) }
-	daemon.Run(context.Background(), open, pc, logger)
+	ctx := context.Background()
+	lm := light.NewManager(logger, lightStatePath())
+	lm.Present = pl81Present
+	go lm.Run(ctx, func() (light.Port, error) { return openPL81(logger) })
+	daemon.Run(ctx, open, lm, pc, logger)
 	return 0
 }
 
@@ -111,6 +126,17 @@ func openLogFile() (io.WriteCloser, string, error) {
 		return nil, "", err
 	}
 	return f, path, nil
+}
+
+// lightStatePath returns %LOCALAPPDATA%\mutastic\light-state.json (the same
+// directory as mutastic.log). An empty string disables persistence rather
+// than failing the daemon.
+func lightStatePath() string {
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "mutastic", "light-state.json")
 }
 
 type nopWriteCloser struct{}

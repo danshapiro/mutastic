@@ -124,6 +124,55 @@ func TestHandleCommandUnknown(t *testing.T) {
 	}
 }
 
+type fakeLightHandler struct {
+	reply string
+	got   []string
+}
+
+func (f *fakeLightHandler) HandleCommand(cmd string) string {
+	f.got = append(f.got, cmd)
+	return f.reply
+}
+
+func TestHandleCommandRoutesLightPrefix(t *testing.T) {
+	d := New(testLogger())
+	f := &fakeLightHandler{reply: "on 100% 4950K"}
+	d.Light = f
+	if got := d.HandleCommand("light toggle"); got != "on 100% 4950K" {
+		t.Fatalf("reply = %q, want the handler's reply", got)
+	}
+	if got := d.HandleCommand("light brightness 40"); got != "on 100% 4950K" {
+		t.Fatalf("reply = %q, want the handler's reply", got)
+	}
+	want := []string{"toggle", "brightness 40"}
+	if len(f.got) != 2 || f.got[0] != want[0] || f.got[1] != want[1] {
+		t.Fatalf("handler received %v, want %v", f.got, want)
+	}
+}
+
+func TestHandleCommandLightWithoutHandler(t *testing.T) {
+	d := New(testLogger())
+	if got := d.HandleCommand("light toggle"); got != "error: no light support" {
+		t.Fatalf("reply = %q, want %q", got, "error: no light support")
+	}
+}
+
+func TestHandleCommandDoesNotRouteLightPrefixWords(t *testing.T) {
+	d := New(testLogger())
+	d.Light = &fakeLightHandler{reply: "x"}
+	if got := d.HandleCommand("lightning"); got != "error: unknown command" {
+		t.Fatalf("reply = %q, want unknown command", got)
+	}
+}
+
+func TestLightCommandOverUDPWithoutManager(t *testing.T) {
+	open := func() (Device, error) { return newFakeDevice(), nil }
+	_, ask := startDaemon(t, open)
+	if got := ask("light status"); got != "error: no light support" {
+		t.Fatalf("UDP reply = %q, want %q", got, "error: no light support")
+	}
+}
+
 // --- integration tests over real UDP with a fake device ---
 
 func waitFor(t *testing.T, what string, cond func() bool) {
@@ -158,7 +207,7 @@ func startDaemon(t *testing.T, open OpenFunc) (addr string, ask func(cmd string)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		Run(ctx, open, pc, testLogger())
+		Run(ctx, open, nil, pc, testLogger())
 		close(done)
 	}()
 	t.Cleanup(func() {
