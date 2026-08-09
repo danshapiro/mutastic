@@ -9,19 +9,19 @@
 
 **Architecture:** A new self-contained `internal/light` package mirrors the mic's design: a manager with its own goroutine reconnect loop opens the CH340 serial port by VID/PID, sends the wake sequence, continuously parses echoed/broadcast 0x3A frames to track state, and persists the "last look" to `%LOCALAPPDATA%\mutastic\light-state.json`. The existing UDP server (`internal/daemon`) routes any command starting with `light ` to the manager through a small `CommandHandler` interface. The CLI gains a `light` subcommand; AHK gains an F13 hotkey.
 
-**Tech Stack:** Go 1.26.3 (module `mutastic`), `go.bug.st/serial` (+ its `enumerator` subpackage, pure Go on Windows), existing `github.com/sstallion/go-hid` (untouched), AutoHotkey v1.1, cmd batch deploy script.
+**Tech Stack:** Go 1.26.3 (module `mutastic`), `go.bug.st/serial` **v1.8.0, pinned** (+ its `enumerator` subpackage; validated 2026-08-08: pure Go on Windows, cross-compiles under this repo's exact cgo/mingw build), existing `github.com/sstallion/go-hid` (untouched), AutoHotkey v1.1, cmd batch deploy script.
 
 ## Global Constraints
 
 - Module `mutastic`, `go 1.26.3`. Dev in WSL2; build target windows/amd64 via `./build.sh` (cgo, `CC=x86_64-w64-mingw32-gcc`) → `bin/mutastic.exe` (never committed).
 - Quality gate after EVERY task: `go test -race ./... && go vet ./...` — both clean. Existing mic tests must keep passing.
 - UDP command surface: `127.0.0.1:42814` (`const udpAddr`, `main.go:21`). One datagram = one command; server read buffer is 64 bytes — all light commands are well under that. Error replies use the exact prefix `error: ` (drives CLI exit code 1).
-- Serial device: CH340 bridge, **VID `0x1A86` PID `0x7523`** — ALWAYS enumerate by VID/PID, NEVER hardcode COM4. 115200 8N1. Open sequence: flush both buffers, write wake bytes `00 00 00 00`, sleep ~100 ms. Keep ≥60 ms spacing before every frame write.
+- Serial device: CH340 bridge, **VID `0x1A86` PID `0x7523`** — ALWAYS enumerate by VID/PID, NEVER hardcode COM4. 115200 8N1. Open sequence: flush both buffers, write wake bytes `00 00 00 00`, sleep ~100 ms. Keep ≥60 ms spacing before every frame write. Open with **DTR/RTS deasserted** (`InitialStatusBits: &serial.ModemOutputBits{RTS: false, DTR: false}`): the proven 2026-08-08 probe ran on .NET SerialPort defaults (both deasserted) while go.bug.st v1.8.0's default asserts both (verified in library source) — replicate the proven line state, trust neither default. Set the **1 s read timeout once, at open** (v1.8.0 opens in NoTimeout mode where `Read` blocks forever, and re-issuing `SetCommTimeouts` per read can race an in-flight `Write`). Never `Close` a port concurrently with `Read` (go.bug.st issue #219): close only after the session loop has returned.
 - Frame: `[0x3A] [tag] [payload_len] [payload...] [cs_hi] [cs_lo]`; checksum = 16-bit **big-endian** sum of all preceding bytes.
 - Only tag `0x02` (CCT) is functional: `3A 02 03 <pwr=0x01> <brightness 0-100> <tempByte> <cs_hi> <cs_lo>`. OFF = brightness 0 with `pwr=0x01`. Tag `0x06` power frames are a no-op on this model — never use them.
 - Temp byte: `byte = round((K - 2900) * 18 / 4100)`, clamped to `0x00`–`0x12`; Kelvin clamped to 2900–7000. Inverse: `K = round(2900 + byte*4100/18)`.
 - Presets (host-side pairs): cold 100%/7000K · sunlight 28%/5600K · afternoon 16%/5000K · sunset 16%/4500K · candle 28%/3400K.
-- No query command exists: state is learned ONLY from byte-for-byte echoes (ACKs) and unprompted knob broadcasts. State is `unknown` until the first inbound frame.
+- No query command exists: state is learned ONLY from byte-for-byte echoes (ACKs) and unprompted knob broadcasts. State is `unknown` until the first inbound frame. Inbound CCT frames with `pwr != 0x01` are treated as OFF (brightness 0): upstream captures show panels can signal off via the pwr byte (`0x00`/`0x02`) while the brightness field stays non-zero.
 - Persisted state file: `%LOCALAPPDATA%\mutastic\light-state.json` (same dir as `mutastic.log`, via `os.UserCacheDir()`).
 - `ahk/MuteAllMeetings.ahk` is UTF-8 **with BOM** + **CRLF**, AHK **v1.1** syntax. Preserve both exactly; do NOT change F14 behavior; F15 belongs to Winpepper — never touch it.
 - `README.md` is the only end-user markdown doc; `docs/` files are working/protocol docs.
@@ -61,7 +61,7 @@ This is one subsystem (light control) plus its integration points (UDP dispatch,
 
 Design note (locked in): the light manager is a **sibling** of the mic logic, not a refactor of it. `internal/daemon` keeps owning the mic session and the UDP server; it delegates `light ...` strings through the one-method `CommandHandler` interface so the daemon package never imports `internal/light`. `main.go` wires both. This is the smallest change that leaves the proven mic path untouched.
 
-Divergence from the mic session, on purpose: the mic session has a handshake-liveness gate because `GetVolume` provokes a reply. The PL81 has **no query command**, so a silent-but-healthy idle light is indistinguishable from a dead one — the light session therefore has NO liveness gate; only read/write errors end a session.
+Divergence from the mic session, on purpose: the mic session has a handshake-liveness gate because `GetVolume` provokes a reply. The PL81 has **no query command**, so a silent-but-healthy idle light is indistinguishable from a dead one — the light session therefore has NO query-based liveness gate; a session ends on a read/write error, or when the optional device-presence check (USB re-enumeration consulted after ~10 s of read silence) reports the device gone — the CH340 driver's surprise-removal error behavior is unverified, so presence is checked directly rather than assumed.
 
 ---
 
@@ -738,7 +738,8 @@ git commit -m "feat: light state tracker with persisted restore targets"
 **Interfaces:**
 - Consumes: `CCT`, `KelvinToByte`, `MinKelvin`, `MaxKelvin`, `Presets` (Task 1); `NewState`, `(*State).Set/Status/TargetOn/StatusString` (Task 3).
 - Produces (Task 5 extends this file; Tasks 6/7 call these):
-  - `type Port interface { Write(p []byte) (int, error); ReadWithTimeout(p []byte, timeout time.Duration) (int, error); Close() error }` — same contract as `daemon.Device`: a read timeout returns `(0, nil)`; any non-nil error means "device gone".
+  - `type Port interface { Write(p []byte) (int, error); Read(p []byte) (int, error); Close() error }` — like `daemon.Device`: a poll-timeout read returns `(0, nil)` (the Windows adapter fixes the 1 s read timeout ONCE at open — never per read, see Task 7); any non-nil error means "device gone".
+  - `Manager` field `Present func() bool` — optional device-presence probe (nil disables); the Task 5 session loop uses it as the liveness fallback.
   - `type Manager struct { Logger *log.Logger; ... }`
   - `func NewManager(logger *log.Logger, statePath string) *Manager`
   - `func (m *Manager) HandleCommand(cmd string) string` — receives the command WITHOUT the `light ` prefix, already trimmed (e.g. `"brightness 40"`).
@@ -793,7 +794,7 @@ func (f *fakePort) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (f *fakePort) ReadWithTimeout(p []byte, _ time.Duration) (int, error) {
+func (f *fakePort) Read(p []byte) (int, error) {
 	select {
 	case data := <-f.reads:
 		return copy(p, data), nil
@@ -1005,13 +1006,14 @@ import (
 	"time"
 )
 
-// Port is the minimal serial handle the manager needs. Same contract as the
-// mic's daemon.Device: ReadWithTimeout returns (0, nil) when the timeout
-// elapses with no data; any non-nil error means "device gone" and triggers
-// a reconnect.
+// Port is the minimal serial handle the manager needs. Like the mic's
+// daemon.Device: Read returns (0, nil) when the poll timeout elapses with
+// no data (the Windows adapter fixes the 1 s read timeout once, at open -
+// re-issuing it per read could race an in-flight Write); any non-nil
+// error means "device gone" and triggers a reconnect.
 type Port interface {
 	Write(p []byte) (int, error)
-	ReadWithTimeout(p []byte, timeout time.Duration) (int, error)
+	Read(p []byte) (int, error)
 	Close() error
 }
 
@@ -1026,6 +1028,13 @@ var errNoLight = errors.New("no light")
 // (from the UDP goroutine); inbound frames arrive via the session loop.
 type Manager struct {
 	Logger *log.Logger
+
+	// Present optionally reports whether the device is still attached
+	// (USB enumeration; nil disables the check). The session loop consults
+	// it during long read silences: the CH340 driver's surprise-removal
+	// error behavior is unverified, so presence is checked rather than
+	// assumed (Task 5).
+	Present func() bool
 
 	state *State
 
@@ -1185,11 +1194,11 @@ git commit -m "feat: light manager with rate-limited writes and command handling
 - Produces:
   - `type OpenFunc func() (Port, error)`
   - `func (m *Manager) Run(ctx context.Context, open OpenFunc)` — blocks until ctx is done; `main.go` calls it via `go` (Task 7).
-  - `var wakeDelay = 100 * time.Millisecond`, `var openRetryDelay = 3 * time.Second`, `var reconnectDelay = 2 * time.Second` (vars so tests can shrink them — keeps `-race` runs fast, unlike the mic package's fixed 2s/3s waits).
+  - `var wakeDelay = 100 * time.Millisecond`, `var openRetryDelay = 3 * time.Second`, `var reconnectDelay = 2 * time.Second`, `var presenceInterval = 10 * time.Second` (vars so tests can shrink them — keeps `-race` runs fast, unlike the mic package's fixed 2s/3s waits).
 
 Behavior locked in (mirrors the mic's `Run` shape from `internal/daemon/daemon.go`):
-- Loop while ctx alive: `open()` → on error log + sleep `openRetryDelay` + retry; on success run `session`; on session end close port, log, sleep `reconnectDelay`, retry.
-- `session`: write wake bytes `00 00 00 00` raw (no frame, no checksum), sleep `wakeDelay`, THEN `setPort(port)` (commands answer `error: no light` until the wake completes), `defer setPort(nil)`; continuous `ReadWithTimeout(buf, time.Second)` loop feeding a `Parser`; every valid CCT frame (tag 0x02, 3-byte payload) updates state via `state.Set(int(payload[1]), payload[2])` and is logged with the `light:` prefix (the log file is how E2E confirms echoes); other frames are logged as ignored. NO liveness gate (no query command exists — see design note above).
+- Loop while ctx alive: `open()` → on error log + sleep `openRetryDelay` + retry; on success run `session`; on session end close port, log, sleep `reconnectDelay`, retry. `port.Close()` runs only after `session` has returned — reader and closer are the same goroutine, so Close never races Read (go.bug.st issue #219).
+- `session`: write wake bytes `00 00 00 00` raw (no frame, no checksum), sleep `wakeDelay`, THEN `setPort(port)` (commands answer `error: no light` until the wake completes), `defer setPort(nil)`; continuous `port.Read(buf)` loop (1 s poll timeout, fixed at open) feeding a `Parser`; every valid CCT frame (tag 0x02, 3-byte payload) updates state via `state.Set(...)` — with inbound `payload[0] != 0x01` mapped to brightness 0, because upstream captures show the pwr byte can carry panel-off state — and is logged with the `light:` prefix (the log file is how E2E confirms echoes); other frames are logged as ignored. NO query-based liveness gate (no query command exists — see design note above); instead, after `presenceInterval` of continuous read silence the loop consults `m.Present` (when non-nil) and ends the session with an error if the device is no longer enumerated.
 - All light log lines start with `"light: "` so the two managers' interleaved log lines stay distinguishable.
 
 - [ ] **Step 1: Write the failing test**
@@ -1201,11 +1210,14 @@ func fastTimings(t *testing.T) {
 	t.Helper()
 	oldSpacing, oldWake := writeSpacing, wakeDelay
 	oldOpen, oldReconnect := openRetryDelay, reconnectDelay
+	oldPresence := presenceInterval
 	writeSpacing, wakeDelay = time.Millisecond, time.Millisecond
 	openRetryDelay, reconnectDelay = 10*time.Millisecond, 10*time.Millisecond
+	presenceInterval = time.Millisecond
 	t.Cleanup(func() {
 		writeSpacing, wakeDelay = oldSpacing, oldWake
 		openRetryDelay, reconnectDelay = oldOpen, oldReconnect
+		presenceInterval = oldPresence
 	})
 }
 
@@ -1258,6 +1270,41 @@ func TestSessionReturnsOnReadError(t *testing.T) {
 	}
 	if got := m.HandleCommand("on"); got != "error: no light" {
 		t.Fatalf("port must be cleared after session ends; got %q", got)
+	}
+}
+
+func TestSessionMapsNonOnPwrByteToOff(t *testing.T) {
+	fastTimings(t)
+	m := NewManager(testLogger(), "")
+	p := newFakePort()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		m.session(ctx, p)
+		close(done)
+	}()
+
+	waitFor(t, "wake write", func() bool { return p.writeCount() >= 1 })
+	// Panel-off style frame: pwr=0x02 with a non-zero brightness field (the
+	// official app and non-Pro broadcasts carry off-state in the pwr byte).
+	// Must land as "off", never "on 50%".
+	p.reads <- []byte{0x3A, 0x02, 0x03, 0x02, 0x32, 0x0C, 0x00, 0x7F}
+	waitFor(t, "off state from pwr byte", func() bool {
+		return m.HandleCommand("status") == "off"
+	})
+
+	cancel()
+	<-done
+}
+
+func TestSessionEndsWhenDeviceGoesAbsent(t *testing.T) {
+	fastTimings(t)
+	m := NewManager(testLogger(), "")
+	m.Present = func() bool { return false }
+	p := newFakePort()
+	err := m.session(context.Background(), p)
+	if err == nil || err.Error() != "device no longer present" {
+		t.Fatalf("session err = %v, want device-absent error", err)
 	}
 }
 
@@ -1371,6 +1418,12 @@ var (
 	wakeDelay      = 100 * time.Millisecond // settle time after the wake bytes
 	openRetryDelay = 3 * time.Second        // "not present yet" backoff
 	reconnectDelay = 2 * time.Second        // "was here, went away" backoff
+	// presenceInterval is how long the session tolerates continuous read
+	// silence before consulting Manager.Present (nil = never). A silent
+	// idle light is normal (no status stream), but the CH340 driver's
+	// surprise-removal error behavior is unverified - so during long
+	// silences the device's continued USB presence is checked directly.
+	presenceInterval = 10 * time.Second
 )
 
 // wakeBytes is the raw wake sequence (not a frame - no header/checksum).
@@ -1389,6 +1442,9 @@ func (m *Manager) Run(ctx context.Context, open OpenFunc) {
 		}
 		m.Logger.Printf("light: port opened")
 		err = m.session(ctx, port)
+		// Close only after session has returned: reader and closer are the
+		// same goroutine, so Close never races a pending Read (go.bug.st
+		// issue #219).
 		port.Close()
 		if ctx.Err() != nil {
 			break
@@ -1402,9 +1458,12 @@ func (m *Manager) Run(ctx context.Context, open OpenFunc) {
 // (unplug) or ctx is cancelled. Echoes of our own commands and unprompted
 // knob broadcasts look identical and both simply update the state.
 //
-// Unlike the mic session there is deliberately NO liveness gate: the PL81
-// has no query command, so a healthy idle light is silent and cannot be
-// distinguished from a dead one by silence alone.
+// Unlike the mic session there is deliberately NO query-based liveness
+// gate: the PL81 has no query command, so a healthy idle light is silent
+// and cannot be distinguished from a dead one by silence alone. Instead,
+// during long silences the loop re-checks that the device is still
+// enumerated (Manager.Present) - the CH340 driver is not trusted to
+// surface an unplug as a read error.
 func (m *Manager) session(ctx context.Context, port Port) error {
 	if _, err := port.Write(wakeBytes); err != nil {
 		return err
@@ -1415,17 +1474,32 @@ func (m *Manager) session(ctx context.Context, port Port) error {
 
 	var parser Parser
 	buf := make([]byte, 64)
+	lastData := time.Now()
 	for ctx.Err() == nil {
-		n, err := port.ReadWithTimeout(buf, time.Second)
+		n, err := port.Read(buf) // 1 s poll timeout, fixed at open
 		if err != nil {
 			return err
 		}
-		if n == 0 {
-			continue // timeout, no data
+		if n == 0 { // timeout, no data
+			if m.Present != nil && time.Since(lastData) >= presenceInterval {
+				if !m.Present() {
+					return errors.New("device no longer present")
+				}
+				lastData = time.Now() // present; recheck one interval from now
+			}
+			continue
 		}
+		lastData = time.Now()
 		for _, fr := range parser.Feed(buf[:n]) {
 			if fr.Tag == TagCCT && len(fr.Payload) == 3 {
-				if err := m.state.Set(int(fr.Payload[1]), fr.Payload[2]); err != nil {
+				// Upstream captures show the pwr byte can carry panel-off
+				// state (0x00/0x02) with a non-zero brightness field; treat
+				// anything but 0x01 as OFF so status never lies "on".
+				b := int(fr.Payload[1])
+				if fr.Payload[0] != 0x01 {
+					b = 0
+				}
+				if err := m.state.Set(b, fr.Payload[2]); err != nil {
 					m.Logger.Printf("light: persist state: %v", err)
 				}
 				m.Logger.Printf("light: frame pwr=0x%02x brightness=%d temp=0x%02x -> %s",
@@ -1661,6 +1735,7 @@ git commit -m "feat: route light-prefixed UDP commands via CommandHandler"
 - Consumes: `light.NewManager`, `(*light.Manager).Run`, `light.Port`, `light.OpenFunc` (Tasks 4–5); `daemon.Run` new signature (Task 6); existing `runClient(cmd, addr string, timeout time.Duration, out io.Writer) int` and `const udpAddr = "127.0.0.1:42814"`.
 - Produces:
   - `func openPL81(logger *log.Logger) (light.Port, error)` (windows real / other stub)
+  - `func pl81Present() bool` (windows real / other stub) — read-only VID/PID re-enumeration for the session's presence check
   - `func lightStatePath() string`
   - CLI: `mutastic light <args...>` → joins `os.Args[1:]` with single spaces, sends over UDP with a **2 second** timeout (light writes are paced ~60 ms; 2 s gives headroom, and the mic commands keep their existing 1 s).
 
@@ -1668,11 +1743,11 @@ git commit -m "feat: route light-prefixed UDP commands via CommandHandler"
 
 ```bash
 cd /home/dan/code/mutastic/.worktrees/pl81-light-control
-go get go.bug.st/serial@latest
+go get go.bug.st/serial@v1.8.0
 go mod tidy
 ```
 
-Expected: `go.mod` gains `go.bug.st/serial` (plus its indirect deps, e.g. `github.com/creack/goselect`); `go build ./...` still succeeds. This module is pure Go on Windows — no new toolchain requirements.
+Expected: `go.mod` gains `go.bug.st/serial v1.8.0` (plus indirect deps, e.g. `github.com/creack/goselect`, `golang.org/x/sys`); `go build ./...` still succeeds. v1.8.0 is pinned deliberately — it is the version validated on 2026-08-08 (cross-compiles under this repo's exact cgo/mingw env AND with `CGO_ENABLED=0`; API surface confirmed against module source). Do not float to `@latest`.
 
 - [ ] **Step 2: Write the client test**
 
@@ -1767,6 +1842,11 @@ func openPL81(logger *log.Logger) (light.Port, error) {
 		DataBits: 8,
 		Parity:   serial.NoParity,
 		StopBits: serial.OneStopBit,
+		// The proven 2026-08-08 probe ran on .NET SerialPort defaults: DTR
+		// and RTS DEASSERTED. go.bug.st's default asserts both, and CH340
+		// boards are often line-state sensitive - replicate the proven
+		// configuration explicitly; trust neither stack's default.
+		InitialStatusBits: &serial.ModemOutputBits{RTS: false, DTR: false},
 	}
 	port, err := serial.Open(name, mode)
 	if err != nil {
@@ -1782,25 +1862,48 @@ func openPL81(logger *log.Logger) (light.Port, error) {
 		port.Close()
 		return nil, err
 	}
+	// Fix the poll timeout exactly once, here, before the port is shared:
+	// v1.8.0 opens in NoTimeout mode (a Read would block forever), and
+	// re-issuing SetCommTimeouts per read can race an in-flight Write.
+	if err := port.SetReadTimeout(time.Second); err != nil {
+		port.Close()
+		return nil, err
+	}
 	return serialPort{port}, nil
 }
 
-// serialPort adapts go.bug.st/serial to light.Port. SetReadTimeout plus a
-// Read that returns (0, nil) on expiry matches the Port contract exactly.
+// serialPort adapts go.bug.st/serial to light.Port. The 1 s read timeout
+// was fixed once in openPL81, so a Read that returns (0, nil) on expiry
+// matches the Port contract exactly - no per-read SetReadTimeout (which
+// could race an in-flight Write via SetCommTimeouts).
 type serialPort struct {
 	p serial.Port
 }
 
 func (s serialPort) Write(b []byte) (int, error) { return s.p.Write(b) }
 
-func (s serialPort) ReadWithTimeout(b []byte, timeout time.Duration) (int, error) {
-	if err := s.p.SetReadTimeout(timeout); err != nil {
-		return 0, err
-	}
-	return s.p.Read(b)
-}
+func (s serialPort) Read(b []byte) (int, error) { return s.p.Read(b) }
 
 func (s serialPort) Close() error { return s.p.Close() }
+
+// pl81Present reports whether a 1A86:7523 device is currently enumerated
+// (SetupAPI, present devices only). The session loop uses it as its
+// liveness fallback during long read silences, because the CH340 driver's
+// surprise-removal error behavior is unverified. Enumeration failures
+// count as present (fail open - never kill a session on an enumerator
+// glitch).
+func pl81Present() bool {
+	ports, err := enumerator.GetDetailedPortsList()
+	if err != nil {
+		return true
+	}
+	for _, p := range ports {
+		if p.IsUSB && strings.EqualFold(p.VID, pl81VID) && strings.EqualFold(p.PID, pl81PID) {
+			return true
+		}
+	}
+	return false
+}
 ```
 
 - [ ] **Step 4: Create the non-Windows stub**
@@ -1822,6 +1925,9 @@ import (
 func openPL81(_ *log.Logger) (light.Port, error) {
 	return nil, errors.New("the mutastic daemon only supports Windows")
 }
+
+// pl81Present is never consulted off-Windows (no session can ever start).
+func pl81Present() bool { return false }
 ```
 
 - [ ] **Step 5: Wire the CLI and the daemon**
@@ -1876,6 +1982,7 @@ with:
 	open := func() (daemon.Device, error) { return openYetiX(logger) }
 	ctx := context.Background()
 	lm := light.NewManager(logger, lightStatePath())
+	lm.Present = pl81Present
 	go lm.Run(ctx, func() (light.Port, error) { return openPL81(logger) })
 	daemon.Run(ctx, open, lm, pc, logger)
 ```
@@ -2216,7 +2323,9 @@ firmware mapping, deployment, install state).
 
 - [ ] **Step 2: Update the protocol doc with confirmed facts**
 
-Append to `docs/pl81-pro-serial-protocol.md` (adjust the factual claims to match what Task 9's `e2e-results.md` ACTUALLY recorded — if a claim below was not observed, write what was observed instead; never record unobserved claims):
+2a. FIX the transport section's stray claim first: the doc currently says the device "streams status at 60–80 ms intervals" — that line is a mis-import of the Rokkit (non-Pro) README's "Frame timing: repeats every ~60-80ms", which describes how fast knob-adjustment *broadcasts repeat while a knob is being turned*, not idle streaming. Pro units are silent when idle (m-rk RESEARCH + this machine's probe transcript). Locate the exact wording (`grep -n "60" docs/pl81-pro-serial-protocol.md`) and correct it to: idle connections are silent; unprompted frames occur only while a physical control is being adjusted (repeating at ~60–80 ms on the non-Pro during adjustment).
+
+2b. Append to `docs/pl81-pro-serial-protocol.md` (adjust the factual claims to match what Task 9's `e2e-results.md` ACTUALLY recorded — if a claim below was not observed, write what was observed instead; never record unobserved claims):
 
 ```markdown
 ## Daemon integration results (2026-08-08)
@@ -2239,9 +2348,21 @@ Append to `docs/pl81-pro-serial-protocol.md` (adjust the factual claims to match
    (byte 0x12) on this unit. (Pre-existing TODO, still open.)
 2. **Real pedal press:** press the LEFT pedal (F13) and confirm the light
    toggles; confirm F14 (mute) and F15 (Winpepper) still behave.
-3. **Knob broadcast capture:** touch the physical knob while the daemon
-   runs, then check the log for `light: frame` lines to finally capture a
-   broadcast transcript (expected: CCT-shaped 8-byte frames).
+3. **Knob broadcast + panel-off capture:** touch the physical knob while
+   the daemon runs, then check the log for `light: frame` lines to finally
+   capture a broadcast transcript (expected: CCT-shaped 8-byte frames).
+   Also turn the panel off/on with its own physical control and check what
+   the log records — this settles whether the pwr byte carries off-state
+   (`0x00`/`0x02`), which the daemon already tolerates defensively.
+4. **Unplug/replug:** with the daemon running, unplug the light's USB
+   cable; confirm the log shows `light: session ended` within ~15 s (read
+   error or the presence check), then replug and confirm `light: port
+   opened` returns. This settles the CH340 surprise-removal behavior,
+   which was validated only at source level.
+5. **Long-idle re-sleep check:** after the daemon has been connected and
+   idle for some hours, press F13 (or run `mutastic light on`) and confirm
+   the light actually responds — settles whether wake-once-per-session
+   suffices.
 ```
 
 - [ ] **Step 3: Commit**
@@ -2263,4 +2384,11 @@ tasks (Task 10 records them in `docs/pl81-pro-serial-protocol.md`):
 2. A real pedal-press test of F13 (and confirmation that F14/F15 behavior is
    unchanged).
 3. Touching the light's physical knob while the daemon runs to capture a
-   knob-broadcast transcript in the log.
+   knob-broadcast transcript in the log — and turning the panel off/on with
+   its own physical control, to settle whether the pwr byte carries
+   off-state (the daemon already tolerates both conventions).
+4. Unplugging/replugging the light's USB cable while the daemon runs:
+   expect `light: session ended` within ~15 s and an automatic reopen
+   (settles the CH340 surprise-removal behavior).
+5. After some hours of idle, pressing F13 (or `mutastic light on`) and
+   confirming the light responds (settles wake-once-per-session).
