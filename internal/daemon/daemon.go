@@ -37,6 +37,9 @@ type Daemon struct {
 	Track  Tracker
 	Logger *log.Logger
 	Light  CommandHandler // nil when no light support is wired in
+	Inject KeyInjector    // nil when no key injection is wired in (non-Windows builds)
+
+	gate injectGate // debounces physical mute-button injections; session goroutine only
 
 	mu  sync.Mutex
 	dev Device
@@ -126,9 +129,10 @@ type OpenFunc func() (Device, error)
 // Run serves UDP commands on pc and maintains the device session until ctx
 // is cancelled. The caller owns pc; binding the production port
 // (127.0.0.1:42814) doubles as a single-instance lock.
-func Run(ctx context.Context, open OpenFunc, light CommandHandler, pc net.PacketConn, logger *log.Logger) error {
+func Run(ctx context.Context, open OpenFunc, light CommandHandler, inject KeyInjector, pc net.PacketConn, logger *log.Logger) error {
 	d := New(logger)
 	d.Light = light
+	d.Inject = inject
 	go func() {
 		<-ctx.Done()
 		pc.Close()
@@ -200,6 +204,21 @@ func (d *Daemon) session(ctx context.Context, dev Device) error {
 			d.Logger.Printf("event op=0x%02x value=0x%02x -> muted=%v", ev.Op, ev.Value, muted)
 		} else {
 			d.Logger.Printf("event op=0x%02x value=0x%02x (ignored)", ev.Op, ev.Value)
+		}
+		// Physical mute-button press: fire the AHK meeting-app sweep.
+		// Gated on the op (0x21) alone, NOT on Apply's result — see
+		// injectGate's doc comment. Suppressed presses are logged so the
+		// live double-press test can observe the debounce working.
+		if d.Inject != nil && ev.Op == proto.EvtDeviceMute {
+			if d.gate.shouldInject(ev, time.Now()) {
+				if err := d.Inject.Inject(); err != nil {
+					d.Logger.Printf("mic button -> F24 app sweep: inject failed: %v", err)
+				} else {
+					d.Logger.Printf("mic button -> F24 app sweep")
+				}
+			} else {
+				d.Logger.Printf("mic button ignored (debounce)")
+			}
 		}
 	}
 	return ctx.Err()

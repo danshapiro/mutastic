@@ -136,7 +136,7 @@ func runDaemon() int {
 	reg := light.NewRegistry(namesPath)
 	lights := light.NewMultiManager(logger, stateDir, reg, enumeratePL81Ports, openPL81Port)
 	go lights.Run(ctx)
-	daemon.Run(ctx, open, lights, pc, logger)
+	daemon.Run(ctx, open, lights, nil, pc, logger)
 	return 0
 }
 
