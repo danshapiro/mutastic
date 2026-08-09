@@ -229,13 +229,16 @@ func fastTimings(t *testing.T) {
 	oldSpacing, oldWake := writeSpacing, wakeDelay
 	oldOpen, oldReconnect := openRetryDelay, reconnectDelay
 	oldPresence := presenceInterval
+	oldDrain, oldCall := drainTimeout, lightCallTimeout
 	writeSpacing, wakeDelay = time.Millisecond, time.Millisecond
 	openRetryDelay, reconnectDelay = 10*time.Millisecond, 10*time.Millisecond
 	presenceInterval = time.Millisecond
+	drainTimeout, lightCallTimeout = 50*time.Millisecond, 50*time.Millisecond
 	t.Cleanup(func() {
 		writeSpacing, wakeDelay = oldSpacing, oldWake
 		openRetryDelay, reconnectDelay = oldOpen, oldReconnect
 		presenceInterval = oldPresence
+		drainTimeout, lightCallTimeout = oldDrain, oldCall
 	})
 }
 
