@@ -99,28 +99,41 @@ loop-free:
 
 ### Stream Deck (OpenDeck plugin)
 
-The deck's lower-right key is a native OpenDeck plugin action, **Mutastic
-Mute** (`com.danshapiro.mutastic.mute`), served by the plugin mode built
-into `mutastic.exe` itself. OpenDeck launches the copy installed at
+Two deck keys are native OpenDeck plugin actions served by the plugin
+mode built into `mutastic.exe` itself: the lower-right key is **Mutastic
+Mute** (`com.danshapiro.mutastic.mute`) and the top-right key is
+**Mutastic Lights** (`com.danshapiro.mutastic.light`). OpenDeck launches the copy installed at
 `%APPDATA%\opendeck\plugins\com.danshapiro.mutastic.sdPlugin\mutastic.exe`
 with Elgato-style args (`-port N -pluginUUID ... -registerEvent ... -info ...`);
 the binary auto-detects the leading `-port` flag as plugin mode
 (`mutastic deckplugin -port ...` works for manual launches).
 
-- **Press** = the full mute-everything flow, in-process: `toggle` to the
-  daemon over UDP 42814 plus one SendInput F24 for the meeting-app sweep
-  (no cmd/AHK hop; both halves run even if the other fails).
-- **Icon** = the TRUE mic state. The plugin polls the daemon's `status`
-  every 750ms and drives the icon via `setState`, so physical mic-button
-  presses, the pedal, and the CLI all show up on the deck. `unknown`
-  (fresh daemon) keeps the last icon.
+- **Mute press** = the full mute-everything flow, in-process: `toggle` to
+  the daemon over UDP 42814 plus one SendInput F24 for the meeting-app
+  sweep (no cmd/AHK hop; both halves run even if the other fails).
+- **Mute icon** = the TRUE mic state. The plugin polls the daemon's
+  `status` every 750ms and drives the icon via `setState`, so physical
+  mic-button presses, the pedal, and the CLI all show up on the deck.
+  `unknown` (fresh daemon) keeps the last icon.
+- **Lights press** = `light toggle` to the daemon over UDP 42814: if ANY
+  light is on, ALL turn off; otherwise ALL turn on, each restoring its
+  own last look (the same collective semantics as the pedal). No F24.
+- **Lights icon** = whether ANY connected light is on. Polled with
+  `light status` on the same 750ms tick (one extra UDP round trip, not a
+  second timer). All-unknown or an unreachable daemon keeps the last
+  icon. Newly plugged-in lights (more PL81 PROs are on order) are picked
+  up automatically by the daemon's hot-plug rescan, so the button
+  controls the whole fleet with zero reconfiguration.
 - **Log:** `%LOCALAPPDATA%\mutastic\deckplugin.log` (every `setState` is
   logged).
 
 `deploy\deploy.cmd` installs the plugin directory, points the profile's
-`keys[5]` at the action (backup kept at `Default.json.bak-deckplugin`),
-and restarts OpenDeck. `deploy\mute-everything.cmd` remains as a CLI
-entry point but the deck no longer uses it.
+`keys[5]` at the mute action and `keys[2]` at the lights action (backups
+kept at `Default.json.bak-deckplugin` and timestamped
+`Default.json.bak-deckplugin-light-<timestamp>` files), and restarts
+OpenDeck.
+`deploy\mute-everything.cmd` remains as a CLI entry point but the deck no
+longer uses it.
 
 ## Build (from WSL)
 
