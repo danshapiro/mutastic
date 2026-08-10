@@ -102,7 +102,7 @@ loop-free:
 The deck's lower-right key is a native OpenDeck plugin action, **Mutastic
 Mute** (`com.danshapiro.mutastic.mute`), served by the plugin mode built
 into `mutastic.exe` itself. OpenDeck launches the copy installed at
-`%APPDATA%\\opendeck\\plugins\\com.danshapiro.mutastic.sdPlugin\\mutastic.exe`
+`%APPDATA%\opendeck\plugins\com.danshapiro.mutastic.sdPlugin\mutastic.exe`
 with Elgato-style args (`-port N -pluginUUID ... -registerEvent ... -info ...`);
 the binary auto-detects the leading `-port` flag as plugin mode
 (`mutastic deckplugin -port ...` works for manual launches).
@@ -114,12 +114,12 @@ the binary auto-detects the leading `-port` flag as plugin mode
   every 750ms and drives the icon via `setState`, so physical mic-button
   presses, the pedal, and the CLI all show up on the deck. `unknown`
   (fresh daemon) keeps the last icon.
-- **Log:** `%LOCALAPPDATA%\\mutastic\\deckplugin.log` (every `setState` is
+- **Log:** `%LOCALAPPDATA%\mutastic\deckplugin.log` (every `setState` is
   logged).
 
-`deploy\\deploy.cmd` installs the plugin directory, points the profile's
+`deploy\deploy.cmd` installs the plugin directory, points the profile's
 `keys[5]` at the action (backup kept at `Default.json.bak-deckplugin`),
-and restarts OpenDeck. `deploy\\mute-everything.cmd` remains as a CLI
+and restarts OpenDeck. `deploy\mute-everything.cmd` remains as a CLI
 entry point but the deck no longer uses it.
 
 ## Build (from WSL)
