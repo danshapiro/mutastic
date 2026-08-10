@@ -21,7 +21,7 @@
 - Button state rule: ANY connected light reporting on -> state 1; otherwise (all off / zero lights attached) -> state 0; all-unknown or daemon unreachable -> hold current state and log
 - One 750ms poll tick for both actions (`PollInterval` ticker in `Run`): a visible light key costs one extra UDP round trip, never a second timer
 - setState only on change (OpenDeck persists the profile to disk on every setState); the log line format `setState <context> -> <state>` is load-bearing (the live E2E greps it)
-- Profile edit targets `keys[2]` / context `Keypad.2.0` of `C:\Users\dan\AppData\Roaming\opendeck\profiles\sd-A00DA6141I07PW\Default.json`; do NOT disturb `keys[4]` (Device Brightness) or `keys[5]` (Mutastic Mute); keep a backup; edit only while opendeck.exe is stopped (deploy.cmd's kill ordering guarantees this)
+- Profile edit targets `keys[2]` / context `Keypad.2.0` of `C:\Users\dan\AppData\Roaming\opendeck\profiles\sd-A00DA6141I07PW\Default.json`; do NOT disturb `keys[5]` (Mutastic Mute) — the only other populated key: keys[2] and keys[4] are currently `null`/empty in the live profile (an earlier note calling keys[4] "Device Brightness" was stale; the fixture test still snapshots keys[4]+keys[5] to prove neighbors untouched); keep a timestamped backup; edit only while opendeck.exe is stopped (deploy.cmd's kill ordering guarantees this)
 - `deploy/deploy.cmd` is CRLF — every edit must preserve CRLF line endings
 - `deploy/*.ps1` are ASCII, LF, written with `Set-Content -Encoding ASCII` and a non-ASCII guard (a UTF-8 BOM breaks OpenDeck's serde_json parser)
 - `go test -race ./...` + `go vet ./...` clean; ALL existing tests keep passing; mute-button behavior unchanged
@@ -29,7 +29,7 @@
 - Do NOT modify the OpenDeck fork at `/home/dan/code/OpenDeck` (read-only reference)
 - WSL interop is flaky today (vsock errors that recover in ~30-60s): wrap EVERY interop call (`*.exe`, `cmd.exe`, `powershell.exe`) in retry-up-to-3-with-45s-waits before declaring a blocker; filesystem reads via `/mnt/c` always work and are the preferred evidence channel
 - Deployed tree `C:\Users\dan\code\mutastic-deploy\`; OpenDeck at `C:\Users\dan\AppData\Local\OpenDeck\opendeck.exe`; plugin installed as `com.danshapiro.mutastic.sdPlugin`; plugin log `%LOCALAPPDATA%\mutastic\deckplugin.log`
-- The single currently-connected light is COM4, named `desk-right`; the live E2E must restore its pre-test state (query first — it was last left `on 30% 2900K`, restore whatever is found) and leave the mic unmuted
+- The single currently-connected light is COM4, named `desk-right` (verified live 2026-08-09: attached, responsive, last observed `off` with stored brightness 30 / temp 2900K); the live E2E must restore its pre-test state (query first, restore whatever is found) and leave the mic unmuted
 
 ## File Structure
 
@@ -657,7 +657,7 @@ git -C /home/dan/code/mutastic/.worktrees/opendeck-light-button commit -m "feat(
 - Consumes: `light.CallTimeout` (`mutastic/internal/light`, = 2s), existing `askDaemon(cmd, addr string, timeout time.Duration)`
 - Produces: `commandTimeout(cmd string) time.Duration` and `const lightPluginTimeout`; `udpDaemonClient` loses its `timeout` field (constructed as `udpDaemonClient{udpAddr}`)
 
-Why: the plugin's UDP client is hard-wired to 1s, but the daemon's per-light stall bound (`light.CallTimeout`) is 2s — a wedged light's degraded reply (healthy lines + per-line `error: timeout`) lands just AFTER 2s, so a 1s budget would misread partial success as "daemon unreachable" on every poll. The CLI uses 6s, but the plugin cannot: `Command` blocks the single event-loop goroutine, so the budget also caps how long a wedged light can stall mute-key handling. Resolution: `light.CallTimeout + 500ms` (2.5s) — enough headroom for a localhost UDP round trip after the daemon's internal deadline, small enough that a wedged light degrades the plugin gracefully. A missed reply is harmless: the poll holds the current icon and self-heals on a later tick.
+Why: the plugin's UDP client is hard-wired to 1s, but the daemon's per-light stall bound (`light.CallTimeout`) is 2s — a wedged light's degraded reply (healthy lines + per-line `error: timeout`) lands just AFTER 2s, so a 1s budget would misread partial success as "daemon unreachable" on every poll. The CLI uses 6s, but the plugin cannot: `Command` blocks the single event-loop goroutine, so the budget also caps how long a wedged light can stall mute-key handling. Resolution: `light.CallTimeout + 500ms` (2.5s) — enough headroom for a localhost UDP round trip after the daemon's internal deadline, small enough that a wedged light degrades the plugin gracefully. A missed reply is harmless: the poll holds the current icon and self-heals on a later tick. Two verified caveats (daemon code traced): the daemon serves UDP serially, so a command queued behind ANOTHER client's wedged mutating light command (e.g. a pedal-driven `light toggle`) can reply at ~4s > 2.5s — bounded, one missed reply, self-heals next tick, no code change needed. And NEVER retry a timed-out toggle: the daemon executes the command even when the reply is lost, so a retry double-toggles — the plugin sends exactly one `Command` per event; keep it that way.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1091,9 +1091,9 @@ git -C /home/dan/code/mutastic/.worktrees/opendeck-light-button commit -m "feat(
 
 **Interfaces:**
 - Consumes: the icon filenames from Task 5 and action identity from Task 6
-- Produces: `keys[2]`/`Keypad.2.0` profile wiring; transcript line `keys[2] set to Mutastic Lights (backup: ...)` (or `keys[2] already Mutastic Lights; no change`) that Task 9's E2E greps for; backup file `Default.json.bak-deckplugin-light`
+- Produces: `keys[2]`/`Keypad.2.0` profile wiring; transcript line `keys[2] set to Mutastic Lights (backup: ...)` (or `keys[2] already Mutastic Lights; no change`) that Task 9's E2E greps for; timestamped backup file `Default.json.bak-deckplugin-light-<yyyyMMdd-HHmmss>`
 
-Design notes: a parallel script (not a generalization of `set-mute-key.ps1`) keeps the proven mute path untouched. The backup suffix MUST differ from the mute script's `.bak-deckplugin` — both scripts back up unconditionally-on-edit, and a shared suffix would let the second run clobber the first's snapshot. Profile image paths INCLUDE `.png` (opposite of the manifest). The instance-level `states` array is what OpenDeck renders; `action` is the manifest-derived snapshot. There is no programmatic "OpenDeck stopped" check — deploy.cmd's kill ordering enforces it; the fixture test below never touches the live profile so it is safe while OpenDeck runs.
+Design notes: a parallel script (not a generalization of `set-mute-key.ps1`) keeps the proven mute path untouched. The backup name MUST differ from the mute script's `.bak-deckplugin` AND be unique per run (timestamped): a fixed name lets a later edit-run clobber the earlier good snapshot (validated falsification — the live dir already shows `.bak-deckplugin` diverging from the OpenDeck-rewritten profile, i.e. a fixed-name backup degrades into the only-and-overwritable snapshot), so every run writes its own `.bak-deckplugin-light-<timestamp>` file. Deploy ordering is load-bearing: OpenDeck prunes placed profile keys whose action is missing from the registered plugin's manifest at profile load (fork `store/profiles.rs`), so deploy.cmd must keep installing the plugin dir (manifest+binary+icons) BEFORE the profile edit, restarting OpenDeck last — its current ordering already does this; never reorder. Profile image paths INCLUDE `.png` (opposite of the manifest). The instance-level `states` array is what OpenDeck renders; `action` is the manifest-derived snapshot. There is no programmatic "OpenDeck stopped" check — deploy.cmd's kill ordering enforces it; the fixture test below never touches the live profile so it is safe while OpenDeck runs.
 
 - [ ] **Step 1: Write the script**
 
@@ -1104,11 +1104,12 @@ Create `deploy/set-light-key.ps1` (LF line endings, pure ASCII — no smart quot
 # key) of the OpenDeck profile at the Mutastic Lights plugin action.
 # Idempotent: if keys[2] is already the plugin action, exits without
 # touching the file. Otherwise backs up the profile to
-# <profile>.bak-deckplugin-light first (a DIFFERENT suffix from
-# set-mute-key.ps1's .bak-deckplugin so the two scripts never clobber
-# each other's snapshot). MUST run with OpenDeck STOPPED -- OpenDeck
-# persists profiles on exit and would clobber this edit. Never touches
-# keys[4] (Device Brightness) or keys[5] (Mutastic Mute).
+# <profile>.bak-deckplugin-light-<timestamp> first (unique per run: a
+# fixed name would let a later edit-run clobber the earlier good
+# snapshot; also distinct from set-mute-key.ps1's .bak-deckplugin).
+# MUST run with OpenDeck STOPPED -- OpenDeck persists profiles on exit
+# and would clobber this edit. Never touches keys[5] (Mutastic Mute) or
+# any other key.
 #
 # The instance-level "states" array is what OpenDeck renders (the
 # "action" object is the manifest-derived template snapshot). Image
@@ -1128,7 +1129,8 @@ if ($json.keys[2] -and $json.keys[2].action.uuid -eq 'com.danshapiro.mutastic.li
     exit 0
 }
 
-Copy-Item -LiteralPath $ProfilePath -Destination "$ProfilePath.bak-deckplugin-light" -Force
+$BackupPath = "$ProfilePath.bak-deckplugin-light-$(Get-Date -Format yyyyMMdd-HHmmss)"
+Copy-Item -LiteralPath $ProfilePath -Destination $BackupPath
 
 function New-LightState([string]$image, [string]$name) {
     # All 14 fields of an OpenDeck profile state object, matching the
@@ -1172,8 +1174,11 @@ $json.keys[2] = [ordered]@{
 # so guard and fail loudly instead of corrupting silently.
 $out = $json | ConvertTo-Json -Depth 12
 if ($out -match '[^\x00-\x7F]') { throw 'profile serialization contains non-ASCII; refusing -Encoding ASCII write' }
+# -Depth 12 covers today's profile (measured depth 6), but ConvertTo-Json
+# silently stringifies anything past the cutoff -- guard the symptom.
+if ($out -match '"@\{') { throw 'profile serialization hit -Depth truncation (nested object stringified); refusing write' }
 $out | Set-Content -LiteralPath $ProfilePath -Encoding ASCII
-Write-Output "keys[2] set to Mutastic Lights (backup: $ProfilePath.bak-deckplugin-light)"
+Write-Output "keys[2] set to Mutastic Lights (backup: $BackupPath)"
 ```
 
 - [ ] **Step 2: Fixture test — set up (never the live profile)**
@@ -1210,7 +1215,7 @@ retry_interop() {
 retry_interop powershell.exe -NoProfile -ExecutionPolicy Bypass -File '\\wsl.localhost\Ubuntu\home\dan\code\mutastic\.worktrees\opendeck-light-button\deploy\set-light-key.ps1' -ProfilePath 'C:\Users\dan\AppData\Local\Temp\lightkey-fixture.json'
 ```
 
-Expected output: `keys[2] set to Mutastic Lights (backup: C:\Users\dan\AppData\Local\Temp\lightkey-fixture.json.bak-deckplugin-light)`
+Expected output: `keys[2] set to Mutastic Lights (backup: C:\Users\dan\AppData\Local\Temp\lightkey-fixture.json.bak-deckplugin-light-<timestamp>)` (timestamp = this run's `yyyyMMdd-HHmmss`)
 
 - [ ] **Step 4: Assert the fixture result (filesystem evidence, no interop)**
 
@@ -1244,7 +1249,7 @@ Expected: `fixture assertions ok`
 
 ```bash
 retry_interop powershell.exe -NoProfile -ExecutionPolicy Bypass -File '\\wsl.localhost\Ubuntu\home\dan\code\mutastic\.worktrees\opendeck-light-button\deploy\set-light-key.ps1' -ProfilePath 'C:\Users\dan\AppData\Local\Temp\lightkey-fixture.json'
-rm -f /mnt/c/Users/dan/AppData/Local/Temp/lightkey-fixture.json /mnt/c/Users/dan/AppData/Local/Temp/lightkey-fixture.json.bak-deckplugin-light /tmp/keys45-before.json
+rm -f /mnt/c/Users/dan/AppData/Local/Temp/lightkey-fixture.json /mnt/c/Users/dan/AppData/Local/Temp/lightkey-fixture.json.bak-deckplugin-light-* /tmp/keys45-before.json
 ```
 
 Expected: second run prints `keys[2] already Mutastic Lights; no change`; fixtures removed.
@@ -1371,8 +1376,9 @@ with:
 ```markdown
 `deploy\deploy.cmd` installs the plugin directory, points the profile's
 `keys[5]` at the mute action and `keys[2]` at the lights action (backups
-kept at `Default.json.bak-deckplugin` and
-`Default.json.bak-deckplugin-light`), and restarts OpenDeck.
+kept at `Default.json.bak-deckplugin` and timestamped
+`Default.json.bak-deckplugin-light-<timestamp>` files), and restarts
+OpenDeck.
 `deploy\mute-everything.cmd` remains as a CLI entry point but the deck no
 longer uses it.
 ```
