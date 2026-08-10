@@ -177,6 +177,34 @@ func TestSecondInstanceGetsStateOnAppear(t *testing.T) {
 	}
 }
 
+func TestWillAppearChangedStatePushesToAllVisible(t *testing.T) {
+	conn := newFakeConn()
+	fd := &fakeDaemon{replies: map[string]string{"status": "unmuted"}}
+	p := New(conn, fd, nil, testLogger())
+	p.HandleMessage([]byte(willAppearFrame)) // A appears, establishes state 0
+	base := conn.writeCount()
+
+	// Daemon flips before the next poll tick; a new instance appears. The
+	// change observed by the willAppear probe must reach A too, or the next
+	// poll sees st == lastKnown and A stays stale until the NEXT change.
+	fd.setReply("status", "muted")
+	p.HandleMessage(frameFor("willAppear", "sd-X.Other.Keypad.2.0"))
+	if got := conn.writeCount(); got != base+2 {
+		t.Fatalf("writes = %d, want %d: state change seen on willAppear must push to every visible instance", got, base+2)
+	}
+	frames := map[string]bool{conn.write(base): true, conn.write(base + 1): true}
+	wantA := `{"event":"setState","context":"sd-X.Default.Keypad.5.0","payload":{"state":1}}`
+	wantC := `{"event":"setState","context":"sd-X.Other.Keypad.2.0","payload":{"state":1}}`
+	if !frames[wantA] || !frames[wantC] {
+		t.Fatalf("frames = %v, want both %s and %s", frames, wantA, wantC)
+	}
+
+	p.PollOnce() // still muted: the willAppear probe already recorded it
+	if got := conn.writeCount(); got != base+2 {
+		t.Fatalf("writes after unchanged poll = %d, want %d (no duplicate pushes)", got, base+2)
+	}
+}
+
 func TestPollOncePushesOnlyOnChange(t *testing.T) {
 	conn := newFakeConn()
 	fd := &fakeDaemon{replies: map[string]string{"status": "unmuted"}}

@@ -95,9 +95,17 @@ func (p *Plugin) HandleMessage(data []byte) {
 		// Correct this key's icon immediately instead of waiting a tick.
 		if reply, err := p.daemon.Command("status"); err != nil {
 			p.logger.Printf("willAppear %s: status failed: %v", ev.Context, err)
-		} else if st, ok := desiredState(reply); ok {
+		} else if st, ok := desiredState(reply); ok && st != p.lastKnown {
+			// The probe observed a state change: every visible instance is
+			// stale, not just this one. Recording lastKnown without pushing
+			// to all would make the next poll see "no change" and leave the
+			// older keys wrong. pushAll covers ev.Context too (just added).
 			p.lastKnown = st
+			p.pushAll()
+			return
 		}
+		// Unchanged, or unknown/unreachable with a prior known state:
+		// correct only the appearing key.
 		if p.lastKnown >= 0 {
 			p.sendSetState(ev.Context, p.lastKnown)
 		}
