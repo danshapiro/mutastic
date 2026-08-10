@@ -1,10 +1,12 @@
 package deckplugin
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -116,6 +118,18 @@ func (f *fakeDaemon) call(i int) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.calls[i]
+}
+
+// fakeInjector mirrors internal/daemon/daemon_test.go's fakeInjector:
+// counts calls, returns err.
+type fakeInjector struct {
+	calls atomic.Int32
+	err   error
+}
+
+func (f *fakeInjector) Inject() error {
+	f.calls.Add(1)
+	return f.err
 }
 
 func TestDesiredState(t *testing.T) {
@@ -280,5 +294,61 @@ func TestUnknownEventsAreIgnored(t *testing.T) {
 	p.HandleMessage([]byte(`not json at all`))
 	if got := conn.writeCount(); got != 0 {
 		t.Fatalf("writes = %d, want 0", got)
+	}
+}
+
+func TestKeyDownTogglesAndInjects(t *testing.T) {
+	conn := newFakeConn()
+	fd := &fakeDaemon{replies: map[string]string{"status": "unmuted", "toggle": "muted"}}
+	inj := &fakeInjector{}
+	p := New(conn, fd, inj, testLogger())
+	p.HandleMessage([]byte(willAppearFrame)) // establishes state 0
+	base := conn.writeCount()
+
+	p.HandleMessage(frameFor("keyDown", "sd-X.Default.Keypad.5.0"))
+
+	if got := fd.call(fd.callCount() - 1); got != "toggle" {
+		t.Fatalf("last daemon command = %q, want toggle", got)
+	}
+	if got := inj.calls.Load(); got != 1 {
+		t.Fatalf("injections = %d, want exactly 1 F24 sweep per keyDown", got)
+	}
+	// The toggle reply IS the new state: the icon updates immediately,
+	// without waiting for the next poll.
+	if got := conn.writeCount(); got != base+1 {
+		t.Fatalf("writes = %d, want %d (one setState from the toggle reply)", got, base+1)
+	}
+	want := `{"event":"setState","context":"sd-X.Default.Keypad.5.0","payload":{"state":1}}`
+	if got := conn.write(base); got != want {
+		t.Fatalf("frame = %s, want %s", got, want)
+	}
+}
+
+func TestKeyDownInjectsEvenWhenDaemonDown(t *testing.T) {
+	// mute-everything.cmd runs its two lines unconditionally (not &&);
+	// the plugin mirrors that: a dead daemon must not stop the app sweep.
+	conn := newFakeConn()
+	fd := &fakeDaemon{replies: map[string]string{}}
+	fd.setErr(errors.New("no reply from daemon"))
+	inj := &fakeInjector{}
+	p := New(conn, fd, inj, testLogger())
+	p.HandleMessage(frameFor("keyDown", "sd-X.Default.Keypad.5.0"))
+	if got := inj.calls.Load(); got != 1 {
+		t.Fatalf("injections = %d, want 1 even with the daemon down", got)
+	}
+	if got := conn.writeCount(); got != 0 {
+		t.Fatalf("writes = %d, want 0: no state to show", got)
+	}
+}
+
+func TestKeyDownNilInjectorStillToggles(t *testing.T) {
+	// Non-Windows: newKeyInjector() returns nil. The daemon toggle must
+	// still run; only the F24 sweep is skipped.
+	conn := newFakeConn()
+	fd := &fakeDaemon{replies: map[string]string{"toggle": "muted"}}
+	p := New(conn, fd, nil, testLogger())
+	p.HandleMessage(frameFor("keyDown", "sd-X.Default.Keypad.5.0"))
+	if got := fd.callCount(); got != 1 || fd.call(0) != "toggle" {
+		t.Fatalf("daemon calls = %d, want exactly one toggle call", got)
 	}
 }

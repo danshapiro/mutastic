@@ -112,6 +112,8 @@ func (p *Plugin) HandleMessage(data []byte) {
 	case "willDisappear":
 		delete(p.visible, ev.Context)
 		p.logger.Printf("willDisappear %s (visible: %d)", ev.Context, len(p.visible))
+	case "keyDown":
+		p.handleKeyDown(ev)
 	}
 }
 
@@ -162,4 +164,32 @@ func (p *Plugin) sendSetState(ctx string, state int) {
 		return
 	}
 	p.logger.Printf("setState %s -> %d", ctx, state)
+}
+
+// handleKeyDown runs the full mute-everything flow in-process, mirroring
+// deploy/mute-everything.cmd's two unconditional lines: daemon toggle
+// FIRST, then exactly one F24 injection for the meeting-app sweep. Each
+// half runs even if the other fails. LOOP HAZARD: never inject F24 in
+// reaction to a state change or the daemon's own injection — F24 must
+// only ever mean "sweep the meeting apps once for this key press".
+func (p *Plugin) handleKeyDown(ev Event) {
+	reply, err := p.daemon.Command("toggle")
+	if err != nil {
+		p.logger.Printf("keyDown %s: toggle failed: %v", ev.Context, err)
+	} else {
+		p.logger.Printf("keyDown %s: toggle -> %q", ev.Context, reply)
+		// The toggle reply is the NEW state — update the icon now
+		// instead of waiting for the next poll tick.
+		if st, ok := desiredState(reply); ok && st != p.lastKnown {
+			p.lastKnown = st
+			p.pushAll()
+		}
+	}
+	if p.inject == nil {
+		p.logger.Printf("keyDown %s: no key injector on this platform, skipping F24 sweep", ev.Context)
+	} else if err := p.inject.Inject(); err != nil {
+		p.logger.Printf("keyDown %s: F24 inject failed: %v", ev.Context, err)
+	} else {
+		p.logger.Printf("keyDown %s: injected F24 app sweep", ev.Context)
+	}
 }
