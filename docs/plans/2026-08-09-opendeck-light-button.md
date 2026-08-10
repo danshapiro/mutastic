@@ -1386,10 +1386,10 @@ longer uses it.
 - [ ] **Step 4: Proofread + commit**
 
 ```bash
-grep -n 'mutastic.light\|Lights' README.md
+grep -n 'mutastic\.light\|Lights' README.md
 ```
 
-Expected: hits ONLY inside the `### Stream Deck (OpenDeck plugin)` section; all Windows paths single-backslash.
+Expected: hits ONLY inside the `### Stream Deck (OpenDeck plugin)` section; all Windows paths single-backslash. (The escaped dot is load-bearing: an unescaped `.` would also match the pre-existing `mutastic light` CLI examples and `mutastic\light-names.json` paths elsewhere in the README, which this task does not touch. Verified against the current README: `mutastic\.light`, `Lights`, and `Mutastic Lights` have zero pre-existing matches, so after this task's edits every hit comes from the new section content.)
 
 ```bash
 git -C /home/dan/code/mutastic/.worktrees/opendeck-light-button add README.md
@@ -1432,6 +1432,12 @@ Expected: `/tmp/light-pre.txt` holds one line per light, e.g. `COM4 desk-right: 
 - [ ] **Step 3: Deploy (NEW log filename to dodge lingering-console file locks)**
 
 ```bash
+# willAppear baselines for Step 4's delta gate (deckplugin.log is opened
+# O_APPEND and only rotates above 5 MB, so stale lines persist across deploys)
+LOG=/mnt/c/Users/dan/AppData/Local/mutastic/deckplugin.log
+mute_wa_before=$(grep -c 'willAppear com.danshapiro.mutastic.mute sd-A00DA6141I07PW.Default.Keypad.5.0' "$LOG" || true)
+light_wa_before=$(grep -c 'willAppear com.danshapiro.mutastic.light sd-A00DA6141I07PW.Default.Keypad.2.0' "$LOG" || true)
+
 DEPLOYLOG=/tmp/deploy-light-$(date +%s).log
 timeout 120 cmd.exe /c '\\wsl.localhost\Ubuntu\home\dan\code\mutastic\.worktrees\opendeck-light-button\deploy\deploy.cmd' '\\wsl.localhost\Ubuntu\home\dan\code\mutastic\.worktrees\opendeck-light-button' > "$DEPLOYLOG" 2>&1 || true
 cat "$DEPLOYLOG"
@@ -1439,17 +1445,18 @@ cat "$DEPLOYLOG"
 
 Success = the transcript contains ALL of: `== Installing OpenDeck plugin ==`; `keys[5] set to Mutastic Mute` OR `keys[5] already Mutastic Mute; no change`; `keys[2] set to Mutastic Lights` OR `keys[2] already Mutastic Lights; no change`; `Deploy complete.` (single-quoted UNC paths are mandatory; the exit code is unreliable because the started daemon inherits the console handle). If the transcript is empty or shows a vsock/exec-format interop failure, wait 45s and re-run with a fresh `$DEPLOYLOG` filename, up to 3 total attempts, before declaring a blocker.
 
-- [ ] **Step 4: Verify registration + both willAppear events (log evidence)**
+- [ ] **Step 4: Verify both willAppear events (delta-counted log evidence)**
 
 ```bash
 sleep 20
-LOG=/mnt/c/Users/dan/AppData/Local/mutastic/deckplugin.log
 grep -c 'Registered plugin com.danshapiro.mutastic.sdPlugin' /mnt/c/Users/dan/AppData/Local/OpenDeck/logs/OpenDeck.log || true
-grep -n 'willAppear com.danshapiro.mutastic.mute sd-A00DA6141I07PW.Default.Keypad.5.0' "$LOG" | tail -3
-grep -n 'willAppear com.danshapiro.mutastic.light sd-A00DA6141I07PW.Default.Keypad.2.0' "$LOG" | tail -3
+mute_wa_after=$(grep -c 'willAppear com.danshapiro.mutastic.mute sd-A00DA6141I07PW.Default.Keypad.5.0' "$LOG" || true)
+light_wa_after=$(grep -c 'willAppear com.danshapiro.mutastic.light sd-A00DA6141I07PW.Default.Keypad.2.0' "$LOG" || true)
+echo "mute willAppear delta: $((mute_wa_after - mute_wa_before))"    # MUST be >= 1
+echo "light willAppear delta: $((light_wa_after - light_wa_before))" # MUST be >= 1
 ```
 
-Expected: registration count >= 1; at least one willAppear line for EACH context (deckplugin.log rotates at plugin start, so these lines are from this deploy — sanity-check the timestamps).
+Expected: BOTH willAppear deltas >= 1 — that is this step's gate. Delta counting against Step 3's baselines (the same technique Step 5 uses) is required because `openNamedLogFile` (main.go) opens deckplugin.log with `O_APPEND` and rotates only above 5 MB — it does NOT rotate at plugin start, so absolute counts could be satisfied by stale lines from earlier deploys. The `Registered plugin` count is informational only (>= 1 expected; OpenDeck.log can retain lines from earlier OpenDeck runs). Uses `$LOG` and the `*_before` baselines set in Step 3 — Steps 3-5 run in one shell (this task's header already requires that for `retry_interop`).
 
 - [ ] **Step 5: Drive the lights via CLI and watch setState (delta-counted, mute untouched)**
 
@@ -1521,5 +1528,5 @@ No commit in this task. Record these two questions as the final human-verificati
 - `go test -race ./...` + `go vet ./...` + cross-compile vet: clean (Task 9 Step 1)
 - Unit coverage: reply parsing -> state decision for on/off/mixed/disconnected/unknown/unreachable (Task 1); per-action routing mute-vs-light keyDown, poll gating, setState dedupe, cross-contamination, unknown action (Task 2); per-verb timeout (Task 3); daemon log latch (Task 4); manifest contract (Task 6)
 - Fixture-tested profile edit; the live profile is only ever edited by deploy.cmd with OpenDeck stopped (Task 7)
-- Live E2E: deploy transcript markers, both willAppear contexts, CLI-driven `setState -> 1` / `-> 0` deltas for `Keypad.2.0` with zero mute-key setState churn, light state restored, mic re-established `unmuted` via the mic command path after the deploy restart (Task 9)
+- Live E2E: deploy transcript markers, delta-counted willAppear lines for both contexts, CLI-driven `setState -> 1` / `-> 0` deltas for `Keypad.2.0` with zero mute-key setState churn, light state restored, mic re-established `unmuted` via the mic command path after the deploy restart (Task 9)
 - Human-only: physical icon appearance and a real deck keypress (Task 9 Step 8)
