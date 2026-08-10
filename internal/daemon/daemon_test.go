@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -669,5 +670,25 @@ func TestLogCommandDedupesRepeatedStatus(t *testing.T) {
 	d.logCommand("status", "muted")
 	if got, want := take(), "command \"status\" -> \"muted\"\n"; got != want {
 		t.Fatalf("changed status after suppression logged %q, want %q", got, want)
+	}
+}
+
+// TestLogCommandSuppressesRepeatedLightStatus: the lights key polls
+// "light status" every ~750ms, exactly like the mute key polls
+// "status" — both need the repeated-reply latch or the log grows
+// unbounded (rotation runs only at daemon start).
+func TestLogCommandSuppressesRepeatedLightStatus(t *testing.T) {
+	var buf bytes.Buffer
+	d := &Daemon{Logger: log.New(&buf, "", 0)}
+	d.logCommand("light status", "COM4: off")
+	d.logCommand("light status", "COM4: off")          // identical: suppressed
+	d.logCommand("light status", "COM4: on 30% 2900K") // changed: logs
+	d.logCommand("status", "muted")                    // separate latch, separate bookkeeping
+	d.logCommand("light toggle", "COM4: off")          // non-poll verbs always log
+	if got := strings.Count(buf.String(), `"light status"`); got != 2 {
+		t.Fatalf("light status logged %d times, want 2 (first + change):\n%s", got, buf.String())
+	}
+	if got := strings.Count(buf.String(), `"light toggle"`); got != 1 {
+		t.Fatalf("light toggle logged %d times, want 1:\n%s", got, buf.String())
 	}
 }

@@ -18,8 +18,17 @@ const willAppearFrame = `{"event":"willAppear","action":"com.danshapiro.mutastic
 
 // frameFor builds an event frame for an arbitrary context.
 func frameFor(event, ctx string) []byte {
-	return fmt.Appendf(nil, `{"event":%q,"action":"com.danshapiro.mutastic.mute","context":%q,"device":"sd-X","payload":{"settings":{},"coordinates":{"row":1,"column":2},"controller":"Keypad","state":0,"isInMultiAction":false}}`, event, ctx)
+	return frameForAction(event, "com.danshapiro.mutastic.mute", ctx)
 }
+
+// frameForAction builds an event frame for an arbitrary action + context.
+func frameForAction(event, action, ctx string) []byte {
+	return fmt.Appendf(nil, `{"event":%q,"action":%q,"context":%q,"device":"sd-X","payload":{"settings":{},"coordinates":{"row":0,"column":2},"controller":"Keypad","state":0,"isInMultiAction":false}}`, event, action, ctx)
+}
+
+// lightWillAppearFrame mirrors willAppearFrame for the lights action on
+// the real deck's top-right key (Keypad.2.0).
+const lightWillAppearFrame = `{"event":"willAppear","action":"com.danshapiro.mutastic.light","context":"sd-X.Default.Keypad.2.0","device":"sd-X","payload":{"settings":{},"coordinates":{"row":0,"column":2},"controller":"Keypad","state":0,"isInMultiAction":false}}`
 
 func testLogger() *log.Logger { return log.New(io.Discard, "", 0) }
 
@@ -409,5 +418,221 @@ func TestRunHandlesEventsAndPolls(t *testing.T) {
 	conn.readErr <- errors.New("closing")
 	if err := <-done; err != nil {
 		t.Fatalf("Run = %v, want nil on socket close", err)
+	}
+}
+
+// TestLightAnyOn pins the light-reply -> state mapping against the
+// daemon's REAL output strings (fixtures copied verbatim from
+// internal/light/multi_test.go and main_test.go). ok=false means "no
+// usable state: hold the current icon" — same contract as desiredState.
+func TestLightAnyOn(t *testing.T) {
+	cases := []struct {
+		name  string
+		reply string
+		state int
+		ok    bool
+	}{
+		{"single on", "COM4: on 30% 2900K", stateLightsOn, true},
+		{"single named on", "COM4 desk-right: on 30% 2900K", stateLightsOn, true},
+		{"single off", "COM4: off", stateLightsOff, true},
+		{"all off", "COM4: off\nCOM7: off", stateLightsOff, true},
+		{"mixed off and on", "COM4: off\nCOM7: on 100% 4950K", stateLightsOn, true},
+		{"all on", "COM4: on 50% 4950K\nCOM7: on 50% 4950K\nCOM12: on 50% 4950K", stateLightsOn, true},
+		{"on plus wedged light", "COM4: on 40% 4950K\nCOM7: error: timeout", stateLightsOn, true},
+		{"off plus wedged light", "COM4: off\nCOM7: error: timeout", stateLightsOff, true},
+		{"off plus unknown counts as off", "COM4: off\nCOM7: unknown", stateLightsOff, true},
+		{"zero lights attached", "error: no light", stateLightsOff, true},
+		{"single unknown holds", "COM4: unknown", 0, false},
+		{"all unknown holds", "COM4: unknown\nCOM7: unknown", 0, false},
+		{"all wedged holds", "COM4: error: timeout", 0, false},
+		{"no light support holds", "error: no light support", 0, false},
+		{"unknown command holds", "error: unknown light command", 0, false},
+		{"empty reply holds", "", 0, false},
+		{"mic reply is not a light reply", "muted", 0, false},
+	}
+	for _, c := range cases {
+		st, ok := lightAnyOn(c.reply)
+		if ok != c.ok || (ok && st != c.state) {
+			t.Errorf("%s: lightAnyOn(%q) = (%d, %v), want (%d, %v)", c.name, c.reply, st, ok, c.state, c.ok)
+		}
+	}
+}
+
+func TestLightWillAppearProbesLightStatus(t *testing.T) {
+	conn := newFakeConn()
+	fd := &fakeDaemon{replies: map[string]string{"light status": "COM4 desk-right: on 30% 2900K"}}
+	p := New(conn, fd, nil, testLogger())
+	p.HandleMessage([]byte(lightWillAppearFrame))
+	if got := fd.call(0); got != "light status" {
+		t.Fatalf("willAppear probe = %q, want %q", got, "light status")
+	}
+	want := `{"event":"setState","context":"sd-X.Default.Keypad.2.0","payload":{"state":1}}`
+	if got := conn.write(0); got != want {
+		t.Fatalf("frame = %s, want %s", got, want)
+	}
+}
+
+func TestLightKeyDownSendsLightToggleAndNeverInjects(t *testing.T) {
+	conn := newFakeConn()
+	fd := &fakeDaemon{replies: map[string]string{"light status": "COM4: off", "light toggle": "COM4: on 30% 2900K"}}
+	inj := &fakeInjector{}
+	p := New(conn, fd, inj, testLogger())
+	p.HandleMessage([]byte(lightWillAppearFrame)) // probe pushes state 0
+	base := conn.writeCount()
+
+	p.HandleMessage(frameForAction("keyDown", "com.danshapiro.mutastic.light", "sd-X.Default.Keypad.2.0"))
+
+	if got := fd.call(fd.callCount() - 1); got != "light toggle" {
+		t.Fatalf("keyDown daemon command = %q, want %q", got, "light toggle")
+	}
+	if n := inj.calls.Load(); n != 0 {
+		t.Fatalf("F24 injections = %d, want 0 (lights have nothing to do with meetings)", n)
+	}
+	// The toggle reply is the NEW fleet state: icon updates immediately.
+	want := `{"event":"setState","context":"sd-X.Default.Keypad.2.0","payload":{"state":1}}`
+	if got := conn.write(base); got != want {
+		t.Fatalf("frame = %s, want %s", got, want)
+	}
+}
+
+func TestMuteKeyDownRoutingUnchanged(t *testing.T) {
+	conn := newFakeConn()
+	fd := &fakeDaemon{replies: map[string]string{"status": "unmuted", "toggle": "muted"}}
+	inj := &fakeInjector{}
+	p := New(conn, fd, inj, testLogger())
+	p.HandleMessage([]byte(willAppearFrame))
+
+	p.HandleMessage(frameFor("keyDown", "sd-X.Default.Keypad.5.0"))
+
+	if got := fd.call(fd.callCount() - 1); got != "toggle" {
+		t.Fatalf("keyDown daemon command = %q, want %q (mute must not speak light verbs)", got, "toggle")
+	}
+	if n := inj.calls.Load(); n != 1 {
+		t.Fatalf("F24 injections = %d, want exactly 1", n)
+	}
+}
+
+func TestPollOncePollsPerVisibleAction(t *testing.T) {
+	conn := newFakeConn()
+	fd := &fakeDaemon{replies: map[string]string{"status": "unmuted", "light status": "COM4: off"}}
+	p := New(conn, fd, nil, testLogger())
+
+	// Only a mute key visible: the tick sends ONLY the mic status.
+	p.HandleMessage([]byte(willAppearFrame))
+	base := fd.callCount()
+	p.PollOnce()
+	if got := fd.callCount(); got != base+1 {
+		t.Fatalf("daemon calls after mute-only poll = %d, want %d", got, base+1)
+	}
+	if got := fd.call(base); got != "status" {
+		t.Fatalf("poll command = %q, want %q", got, "status")
+	}
+
+	// A light key appears too: the SAME tick now costs one extra round trip.
+	p.HandleMessage([]byte(lightWillAppearFrame))
+	base = fd.callCount()
+	p.PollOnce()
+	if got := fd.callCount(); got != base+2 {
+		t.Fatalf("daemon calls after both-actions poll = %d, want %d", got, base+2)
+	}
+	if a, b := fd.call(base), fd.call(base+1); a != "status" || b != "light status" {
+		t.Fatalf("poll commands = %q, %q; want %q then %q", a, b, "status", "light status")
+	}
+}
+
+func TestLightPollPushesOnlyOnChange(t *testing.T) {
+	conn := newFakeConn()
+	fd := &fakeDaemon{replies: map[string]string{"light status": "COM4: off"}}
+	p := New(conn, fd, nil, testLogger())
+	p.HandleMessage([]byte(lightWillAppearFrame)) // probe pushes state 0
+	base := conn.writeCount()
+
+	p.PollOnce() // unchanged: no push
+	if got := conn.writeCount(); got != base {
+		t.Fatalf("writes after unchanged poll = %d, want %d (setState persists the profile; only push on change)", got, base)
+	}
+
+	fd.setReply("light status", "COM4: on 30% 2900K")
+	p.PollOnce()
+	if got := conn.writeCount(); got != base+1 {
+		t.Fatalf("writes after changed poll = %d, want %d", got, base+1)
+	}
+	want := `{"event":"setState","context":"sd-X.Default.Keypad.2.0","payload":{"state":1}}`
+	if got := conn.write(base); got != want {
+		t.Fatalf("frame = %s, want %s", got, want)
+	}
+
+	p.PollOnce() // still on: no new push
+	if got := conn.writeCount(); got != base+1 {
+		t.Fatalf("writes after second unchanged poll = %d, want %d", got, base+1)
+	}
+}
+
+func TestLightPollUnknownOrUnreachableHoldsState(t *testing.T) {
+	conn := newFakeConn()
+	fd := &fakeDaemon{replies: map[string]string{"light status": "COM4: on 30% 2900K"}}
+	p := New(conn, fd, nil, testLogger())
+	p.HandleMessage([]byte(lightWillAppearFrame)) // probe pushes state 1
+	base := conn.writeCount()
+
+	fd.setReply("light status", "COM4: unknown") // all-unknown: hold
+	p.PollOnce()
+	if got := conn.writeCount(); got != base {
+		t.Fatalf("writes after all-unknown poll = %d, want %d (hold current state)", got, base)
+	}
+
+	fd.setErr(errors.New("daemon down")) // unreachable: hold
+	p.PollOnce()
+	if got := conn.writeCount(); got != base {
+		t.Fatalf("writes after unreachable poll = %d, want %d (hold current state)", got, base)
+	}
+}
+
+func TestActionsDoNotCrossContaminate(t *testing.T) {
+	conn := newFakeConn()
+	fd := &fakeDaemon{replies: map[string]string{"status": "unmuted", "light status": "COM4: off"}}
+	p := New(conn, fd, nil, testLogger())
+	p.HandleMessage([]byte(willAppearFrame))      // mute key: state 0 pushed
+	p.HandleMessage([]byte(lightWillAppearFrame)) // light key: state 0 pushed
+	base := conn.writeCount()
+
+	// Mic flips: ONLY the mute context gets a setState.
+	fd.setReply("status", "muted")
+	p.PollOnce()
+	if got := conn.writeCount(); got != base+1 {
+		t.Fatalf("writes after mic flip = %d, want %d (one push, mute key only)", got, base+1)
+	}
+	want := `{"event":"setState","context":"sd-X.Default.Keypad.5.0","payload":{"state":1}}`
+	if got := conn.write(base); got != want {
+		t.Fatalf("frame = %s, want %s", got, want)
+	}
+
+	// Lights flip: ONLY the light context gets a setState.
+	fd.setReply("light status", "COM4: on 30% 2900K")
+	p.PollOnce()
+	if got := conn.writeCount(); got != base+2 {
+		t.Fatalf("writes after light flip = %d, want %d", got, base+2)
+	}
+	want = `{"event":"setState","context":"sd-X.Default.Keypad.2.0","payload":{"state":1}}`
+	if got := conn.write(base + 1); got != want {
+		t.Fatalf("frame = %s, want %s", got, want)
+	}
+}
+
+func TestUnknownActionEventsAreIgnored(t *testing.T) {
+	conn := newFakeConn()
+	fd := &fakeDaemon{replies: map[string]string{}}
+	p := New(conn, fd, nil, testLogger())
+	p.HandleMessage(frameForAction("willAppear", "com.danshapiro.mutastic.nonesuch", "sd-X.Default.Keypad.1.0"))
+	p.HandleMessage(frameForAction("keyDown", "com.danshapiro.mutastic.nonesuch", "sd-X.Default.Keypad.1.0"))
+	if got := conn.writeCount(); got != 0 {
+		t.Fatalf("writes = %d, want 0 (unknown action must be ignored)", got)
+	}
+	if got := fd.callCount(); got != 0 {
+		t.Fatalf("daemon calls = %d, want 0 (unknown action must not probe or toggle)", got)
+	}
+	p.PollOnce() // and it must not have joined any visible set
+	if got := fd.callCount(); got != 0 {
+		t.Fatalf("daemon calls after poll = %d, want 0", got)
 	}
 }

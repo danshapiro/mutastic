@@ -35,6 +35,8 @@ if not exist "%ODPLUGDIR%\icons" mkdir "%ODPLUGDIR%\icons"
 copy /Y "%SRC%\deck\com.danshapiro.mutastic.sdPlugin\manifest.json" "%ODPLUGDIR%\manifest.json" >nul || goto :fail
 copy /Y "%SRC%\deck\icons\mutastic-mic.png" "%ODPLUGDIR%\icons\mutastic-mic.png" >nul || goto :fail
 copy /Y "%SRC%\deck\icons\mutastic-mic-muted.png" "%ODPLUGDIR%\icons\mutastic-mic-muted.png" >nul || goto :fail
+copy /Y "%SRC%\deck\icons\mutastic-light-on.png" "%ODPLUGDIR%\icons\mutastic-light-on.png" >nul || goto :fail
+copy /Y "%SRC%\deck\icons\mutastic-light-off.png" "%ODPLUGDIR%\icons\mutastic-light-off.png" >nul || goto :fail
 set /a PLUGCOPYTRIES=0
 :copyplugexe
 copy /Y "%SRC%\bin\mutastic.exe" "%ODPLUGDIR%\mutastic.exe" >nul && goto :plugexeok
@@ -45,9 +47,11 @@ ping -n 3 127.0.0.1 >nul
 goto :copyplugexe
 :plugexeok
 copy /Y "%SRC%\deploy\set-mute-key.ps1" "%DEST%\set-mute-key.ps1" >nul || goto :fail
+copy /Y "%SRC%\deploy\set-light-key.ps1" "%DEST%\set-light-key.ps1" >nul || goto :fail
 
-echo == Pointing profile keys[5] at the plugin ==
+echo == Pointing profile keys[5]+keys[2] at the plugin ==
 powershell -NoProfile -ExecutionPolicy Bypass -File "%DEST%\set-mute-key.ps1" || goto :fail
+powershell -NoProfile -ExecutionPolicy Bypass -File "%DEST%\set-light-key.ps1" || goto :fail
 
 echo == Replacing startup shortcuts ==
 if exist "%STARTUP%\MuteAllMeetings.lnk" del /F "%STARTUP%\MuteAllMeetings.lnk"

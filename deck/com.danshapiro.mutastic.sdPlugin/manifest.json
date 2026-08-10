@@ -21,6 +21,19 @@
 				{ "Image": "icons/mutastic-mic", "Name": "Live", "ShowTitle": false },
 				{ "Image": "icons/mutastic-mic-muted", "Name": "Muted", "ShowTitle": false }
 			]
+		},
+		{
+			"Name": "Mutastic Lights",
+			"UUID": "com.danshapiro.mutastic.light",
+			"Tooltip": "Toggle all NEEWER lights; icon tracks whether any light is on",
+			"Icon": "icons/mutastic-light-on",
+			"DisableAutomaticStates": true,
+			"Controllers": ["Keypad"],
+			"SupportedInMultiActions": false,
+			"States": [
+				{ "Image": "icons/mutastic-light-off", "Name": "Off", "ShowTitle": false },
+				{ "Image": "icons/mutastic-light-on", "Name": "On", "ShowTitle": false }
+			]
 		}
 	]
 }

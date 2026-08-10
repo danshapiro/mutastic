@@ -42,33 +42,49 @@ func TestDeckPluginManifest(t *testing.T) {
 	if len(m.OS) != 1 || m.OS[0].Platform != "windows" {
 		t.Errorf("OS = %+v, want exactly one windows entry", m.OS)
 	}
-	if len(m.Actions) != 1 {
-		t.Fatalf("Actions has %d entries, want 1", len(m.Actions))
+	wantActions := map[string]struct {
+		name   string
+		images []string
+	}{
+		"com.danshapiro.mutastic.mute":  {"Mutastic Mute", []string{"icons/mutastic-mic", "icons/mutastic-mic-muted"}},
+		"com.danshapiro.mutastic.light": {"Mutastic Lights", []string{"icons/mutastic-light-off", "icons/mutastic-light-on"}},
 	}
-	a := m.Actions[0]
-	if a.UUID != "com.danshapiro.mutastic.mute" {
-		t.Errorf("action UUID = %q, want com.danshapiro.mutastic.mute", a.UUID)
+	if len(m.Actions) != len(wantActions) {
+		t.Fatalf("Actions has %d entries, want %d (mute + lights)", len(m.Actions), len(wantActions))
 	}
-	if a.Name != "Mutastic Mute" {
-		t.Errorf("action Name = %q, want Mutastic Mute", a.Name)
-	}
-	if !a.DisableAutomaticStates {
-		t.Error("DisableAutomaticStates must be true: the plugin alone drives the icon")
-	}
-	if len(a.States) != 2 {
-		t.Fatalf("States has %d entries, want 2 (0 = live, 1 = muted)", len(a.States))
-	}
-	wantImages := []string{"icons/mutastic-mic", "icons/mutastic-mic-muted"}
-	for i, st := range a.States {
-		if st.Image != wantImages[i] {
-			t.Errorf("States[%d].Image = %q, want %q", i, st.Image, wantImages[i])
+	for _, a := range m.Actions {
+		want, ok := wantActions[a.UUID]
+		if !ok {
+			t.Errorf("unexpected action UUID %q", a.UUID)
+			continue
 		}
-		if strings.Contains(st.Image, ".png") {
-			t.Errorf("States[%d].Image = %q must be extensionless", i, st.Image)
+		delete(wantActions, a.UUID)
+		if a.Name != want.name {
+			t.Errorf("action %s Name = %q, want %q", a.UUID, a.Name, want.name)
 		}
+		if !a.DisableAutomaticStates {
+			t.Errorf("action %s: DisableAutomaticStates must be true: the plugin alone drives the icon", a.UUID)
+		}
+		if len(a.States) != len(want.images) {
+			t.Fatalf("action %s: States has %d entries, want %d", a.UUID, len(a.States), len(want.images))
+		}
+		for i, st := range a.States {
+			if st.Image != want.images[i] {
+				t.Errorf("action %s States[%d].Image = %q, want %q", a.UUID, i, st.Image, want.images[i])
+			}
+			if strings.Contains(st.Image, ".png") {
+				t.Errorf("action %s States[%d].Image = %q must be extensionless", a.UUID, i, st.Image)
+			}
+		}
+	}
+	for uuid := range wantActions {
+		t.Errorf("manifest is missing action %s", uuid)
 	}
 	// The PNGs deploy.cmd installs next to this manifest must exist.
-	for _, p := range []string{"deck/icons/mutastic-mic.png", "deck/icons/mutastic-mic-muted.png"} {
+	for _, p := range []string{
+		"deck/icons/mutastic-mic.png", "deck/icons/mutastic-mic-muted.png",
+		"deck/icons/mutastic-light-on.png", "deck/icons/mutastic-light-off.png",
+	} {
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("icon missing: %s: %v", p, err)
 		}
