@@ -1,6 +1,7 @@
 package deckplugin
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -350,5 +351,63 @@ func TestKeyDownNilInjectorStillToggles(t *testing.T) {
 	p.HandleMessage(frameFor("keyDown", "sd-X.Default.Keypad.5.0"))
 	if got := fd.callCount(); got != 1 || fd.call(0) != "toggle" {
 		t.Fatalf("daemon calls = %d, want exactly one toggle call", got)
+	}
+}
+
+func TestRunSendsRegisterFirst(t *testing.T) {
+	conn := newFakeConn()
+	p := New(conn, &fakeDaemon{replies: map[string]string{}}, nil, testLogger())
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- p.Run(ctx, "registerPlugin", "com.danshapiro.mutastic.sdPlugin") }()
+
+	waitFor(t, "register frame", func() bool { return conn.writeCount() >= 1 })
+	want := `{"event":"registerPlugin","uuid":"com.danshapiro.mutastic.sdPlugin"}`
+	if got := conn.write(0); got != want {
+		t.Fatalf("first frame = %s, want %s (register MUST be the very first frame)", got, want)
+	}
+	cancel()
+	if err := <-done; err == nil {
+		t.Fatal("Run after cancel = nil, want context error")
+	}
+	conn.readErr <- errors.New("unblock the reader goroutine")
+}
+
+func TestRunReturnsNilOnSocketClose(t *testing.T) {
+	conn := newFakeConn()
+	p := New(conn, &fakeDaemon{replies: map[string]string{}}, nil, testLogger())
+	conn.readErr <- errors.New("connection closed by OpenDeck")
+	if err := p.Run(context.Background(), "registerPlugin", "x.sdPlugin"); err != nil {
+		t.Fatalf("Run = %v, want nil: a closed socket is the normal end of life", err)
+	}
+}
+
+func TestRunHandlesEventsAndPolls(t *testing.T) {
+	old := PollInterval
+	PollInterval = 5 * time.Millisecond
+	t.Cleanup(func() { PollInterval = old })
+
+	conn := newFakeConn()
+	fd := &fakeDaemon{replies: map[string]string{"status": "muted"}}
+	p := New(conn, fd, nil, testLogger())
+	done := make(chan error, 1)
+	go func() { done <- p.Run(context.Background(), "registerPlugin", "com.danshapiro.mutastic.sdPlugin") }()
+
+	conn.frames <- []byte(willAppearFrame)
+	// write 0 = register, write 1 = setState(1) from willAppear.
+	waitFor(t, "setState from willAppear", func() bool { return conn.writeCount() >= 2 })
+
+	// Flip the daemon state out-of-band (models the physical mic button);
+	// the ticker poll must observe it and push the change.
+	fd.setReply("status", "unmuted")
+	waitFor(t, "setState from poll", func() bool { return conn.writeCount() >= 3 })
+	want := `{"event":"setState","context":"sd-X.Default.Keypad.5.0","payload":{"state":0}}`
+	if got := conn.write(2); got != want {
+		t.Fatalf("poll frame = %s, want %s", got, want)
+	}
+
+	conn.readErr <- errors.New("closing")
+	if err := <-done; err != nil {
+		t.Fatalf("Run = %v, want nil on socket close", err)
 	}
 }

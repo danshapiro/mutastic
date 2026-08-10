@@ -1,7 +1,10 @@
 package deckplugin
 
 import (
+	"context"
+	"fmt"
 	"log"
+	"time"
 )
 
 // The manifest's two state indices. The plugin alone drives these via
@@ -12,6 +15,13 @@ const (
 	stateLive  = 0 // state 0: live mic (icons/mutastic-mic)
 	stateMuted = 1 // state 1: muted (icons/mutastic-mic-muted)
 )
+
+// PollInterval is how often the plugin polls the daemon's status while
+// at least one instance is visible. ~750ms keeps the icon honest within
+// a blink of a physical mic-button press. A var so tests can shrink it
+// (restore via t.Cleanup, registered before the loop starts u2014 same
+// discipline as daemon_test.go's timing knobs).
+var PollInterval = 750 * time.Millisecond
 
 // Conn is the minimal WebSocket surface the plugin needs. Implemented by
 // package main's gorilla/websocket adapter; tests use a channel-backed
@@ -191,5 +201,51 @@ func (p *Plugin) handleKeyDown(ev Event) {
 		p.logger.Printf("keyDown %s: F24 inject failed: %v", ev.Context, err)
 	} else {
 		p.logger.Printf("keyDown %s: injected F24 app sweep", ev.Context)
+	}
+}
+
+// Run registers with OpenDeck and processes events until the WebSocket
+// closes or ctx is cancelled. A read error is the NORMAL end of life
+// (OpenDeck kills or closes plugins when it exits and never restarts
+// them), so it returns nil. One reader goroutine feeds the select loop;
+// HandleMessage and PollOnce only ever run on this goroutine, which is
+// what makes the lock-free Plugin state safe.
+func (p *Plugin) Run(ctx context.Context, registerEvent, pluginUUID string) error {
+	if err := p.conn.WriteMessage(EncodeRegister(registerEvent, pluginUUID)); err != nil {
+		return fmt.Errorf("register: %w", err)
+	}
+	p.logger.Printf("registered as %s (event %s)", pluginUUID, registerEvent)
+
+	frames := make(chan []byte)
+	readErrs := make(chan error, 1)
+	go func() {
+		for {
+			data, err := p.conn.ReadMessage()
+			if err != nil {
+				readErrs <- err
+				return
+			}
+			select {
+			case frames <- data:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	tick := time.NewTicker(PollInterval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case err := <-readErrs:
+			p.logger.Printf("websocket closed: %v", err)
+			return nil
+		case data := <-frames:
+			p.HandleMessage(data)
+		case <-tick.C:
+			p.PollOnce()
+		}
 	}
 }
