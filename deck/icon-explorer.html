@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Stream Deck Icon Explorer — 6 vector sets</title>
+<style>
+  :root { --key: 80px; }
+  body { background:#191b1f; color:#ddd; font-family:"Segoe UI",system-ui,sans-serif; margin:24px; }
+  h1 { font-size:20px; font-weight:600; margin:0 0 4px; }
+  p.sub { color:#888; font-size:13px; margin:0 0 20px; max-width:900px; }
+  table { border-collapse:separate; border-spacing:6px 14px; }
+  th { font-size:13px; font-weight:600; color:#bbb; padding:0 6px 2px; position:sticky; top:0; background:#191b1f; z-index:2; }
+  th .lic { display:block; font-weight:400; font-size:10px; color:#666; }
+  td.fn { font-size:13px; color:#aaa; padding-right:14px; white-space:nowrap; text-align:right; position:sticky; left:0; background:#191b1f; }
+  td.cell { text-align:center; vertical-align:top; }
+  .key { width:var(--key); height:var(--key); background:#000; border:1px solid #333;
+         border-radius:12px; display:flex; align-items:center; justify-content:center;
+         box-shadow:0 2px 6px rgba(0,0,0,.6); margin:0 auto; }
+  .key img { width:48px; height:48px; }
+  .key.na { color:#444; font-size:11px; }
+  .nm { font-size:9px; color:#555; margin-top:3px; max-width:calc(var(--key) + 8px);
+        overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-left:auto; margin-right:auto; }
+  .note { color:#777; font-size:12px; margin-top:18px; max-width:900px; line-height:1.5; }
+  .ctl { margin:0 0 16px; font-size:13px; color:#999; }
+  .ctl label { margin-right:16px; cursor:pointer; }
+</style>
+</head>
+<body>
+<h1>Stream Deck Icon Explorer</h1>
+<p class="sub">Each tile simulates an 80&times;80 Stream Deck Mini key (black background). Icons load live from
+api.iconify.design as pure SVG. <b>n/a</b> = that set has no such glyph (a real finding, not a bug).
+Hover any tile for the exact icon name.</p>
+<div class="ctl">
+  Icon size:
+  <label><input type="radio" name="sz" value="40" onchange="setSize(40)"> 40px</label>
+  <label><input type="radio" name="sz" value="48" checked onchange="setSize(48)"> 48px</label>
+  <label><input type="radio" name="sz" value="56" onchange="setSize(56)"> 56px</label>
+</div>
+<table id="grid"></table>
+<p class="note"><b>Notes:</b> Phosphor has no lightbulb-off glyph — its idiom is a lighter <i>weight</i> for the off state
+(shown here as the thin-stroke bulb). Solar has no mic-off/cam-off at all (verified). Fluent icons shown are the
+24px-grid filled variants; 32/48px optical sizes exist with heavier strokes. Licenses: Phosphor/Tabler/Fluent/Iconoir MIT,
+MDI Apache-2.0, Solar CC&nbsp;BY&nbsp;4.0 (no LICENSE file in repo — personal use fine).</p>
+<script>
+const SETS = [
+  ["ph","Phosphor","MIT"],
+  ["mdi","MDI","Apache-2.0"],
+  ["tabler","Tabler","MIT"],
+  ["fluent","Fluent","MIT"],
+  ["solar","Solar","CC BY 4.0"],
+  ["iconoir","Iconoir","MIT"],
+];
+// rows: [label, ph, mdi, tabler, fluent, solar, iconoir]  (null = known-absent)
+const ROWS = [
+  ["Mic (live)",        "microphone-fill",        "microphone",      "microphone-filled",    "mic-24-filled",               "microphone-bold",     "microphone-solid"],
+  ["Mic muted",         "microphone-slash-fill",  "microphone-off",  "microphone-off",       "mic-off-24-filled",           null,                  "microphone-mute-solid"],
+  ["Light on",          "lightbulb-fill",         "lightbulb-on",    "bulb-filled",          "lightbulb-24-filled",         "lightbulb-bolt-bold", "light-bulb-on"],
+  ["Light off",         "lightbulb-thin",         "lightbulb-off",   "bulb-off",             "lightbulb-off-24-filled",     null,                  "light-bulb-off"],
+  ["Camera (on)",       "video-camera-fill",      "video",           "video",                "video-24-filled",             "videocamera-bold",    "video-camera"],
+  ["Camera off",        "video-camera-slash-fill","video-off",       "video-off",            "video-off-24-filled",         null,                  "video-camera-off"],
+  ["Webcam",            "webcam-fill",            "webcam",          "device-computer-camera","camera-24-filled",           "webcam-bold",         "webcam"],
+  ["Speaker (on)",      "speaker-high-fill",      "volume-high",     "volume",               "speaker-2-24-filled",         "volume-loud-bold",    "sound-high-solid"],
+  ["Speaker muted",     "speaker-slash-fill",     "volume-off",      "volume-off",           "speaker-mute-24-filled",      "muted-bold",          "sound-off-solid"],
+  ["Play",              "play-fill",              "play",            "player-play-filled",   "play-24-filled",              "play-bold",           "play-solid"],
+  ["Pause",             "pause-fill",             "pause",           "player-pause-filled",  "pause-24-filled",             "pause-bold",          "pause-solid"],
+  ["Record",            "record-fill",            "record",          "player-record-filled", "record-24-filled",            "record-bold",         "record-circle"],
+  ["Screen share",      "screencast-fill",        "monitor-share",   "screen-share",         "share-screen-start-24-filled","screencast-bold",     "airplay"],
+  ["Stop sharing",      null,                     "monitor-off",     "screen-share-off",     "share-screen-stop-24-filled", null,                  null],
+  ["Leave call",        "phone-slash-fill",       "phone-hangup",    "phone-off",            "call-end-24-filled",          "end-call-bold",       "phone-remove"],
+  ["Settings",          "gear-fill",              "cog",             "settings-filled",      "settings-24-filled",          "settings-bold",       "settings"],
+  ["Terminal",          "terminal-window-fill",   "console",         "terminal-2",           "window-console-20-filled",    "programming-bold",    "terminal"],
+  ["Next page",         "caret-right-fill",       "chevron-right",   "chevron-right",        "chevron-right-24-filled",     "alt-arrow-right-bold","nav-arrow-right"],
+];
+const grid = document.getElementById("grid");
+let html = "<tr><th></th>" + SETS.map(s => `<th>${s[1]}<span class="lic">${s[2]}</span></th>`).join("") + "</tr>";
+for (const row of ROWS) {
+  html += `<tr><td class="fn">${row[0]}</td>`;
+  for (let i = 0; i < SETS.length; i++) {
+    const name = row[i + 1];
+    if (!name) { html += `<td class="cell"><div class="key na">n/a</div><div class="nm">&mdash;</div></td>`; continue; }
+    const full = `${SETS[i][0]}:${name}`;
+    const url = `https://api.iconify.design/${SETS[i][0]}/${name}.svg?color=%23ffffff`;
+    html += `<td class="cell"><div class="key" title="${full}">` +
+            `<img loading="lazy" src="${url}" alt="${full}" onerror="this.parentElement.classList.add('na');this.parentElement.textContent='n/a';">` +
+            `</div><div class="nm">${name}</div></td>`;
+  }
+  html += "</tr>";
+}
+grid.innerHTML = html;
+function setSize(px) { document.querySelectorAll(".key img").forEach(el => { el.style.width = el.style.height = px + "px"; }); }
+</script>
+</body>
+</html>
