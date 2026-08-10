@@ -26,6 +26,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"mutastic/internal/deckplugin"
+	"mutastic/internal/light"
 )
 
 // errNoReply distinguishes "daemon reached but no reply arrived" from
@@ -66,15 +67,33 @@ func (w wsConn) WriteMessage(data []byte) error {
 	return w.c.WriteMessage(websocket.TextMessage, data)
 }
 
-// udpDaemonClient implements deckplugin.DaemonClient: one UDP round trip
-// per call with the mic-verb timeout (1s, same as the CLI client).
+// lightPluginTimeout is the plugin's UDP read budget for light verbs.
+// It must exceed the daemon's per-light stall bound (light.CallTimeout):
+// a wedged light's degraded reply lands just after that bound. Unlike
+// the CLI's 6s lightClientTimeout, the plugin adds only 500ms of
+// headroom because this call blocks the plugin's single event-loop
+// goroutine — the budget also caps how long a wedged light can stall
+// mute-key handling. A missed reply just holds the icon one tick.
+const lightPluginTimeout = light.CallTimeout + 500*time.Millisecond
+
+// commandTimeout picks the UDP read budget for one plugin->daemon
+// command. The light-prefix rule mirrors the daemon's routing in
+// daemon.HandleCommand: "light" + end-of-string, space, or '@'.
+func commandTimeout(cmd string) time.Duration {
+	if rest, ok := strings.CutPrefix(cmd, "light"); ok && (rest == "" || rest[0] == ' ' || rest[0] == '@') {
+		return lightPluginTimeout
+	}
+	return time.Second
+}
+
+// udpDaemonClient implements deckplugin.DaemonClient: one UDP round
+// trip per call with a per-verb timeout (see commandTimeout).
 type udpDaemonClient struct {
-	addr    string
-	timeout time.Duration
+	addr string
 }
 
 func (u udpDaemonClient) Command(cmd string) (string, error) {
-	return askDaemon(cmd, u.addr, u.timeout)
+	return askDaemon(cmd, u.addr, commandTimeout(cmd))
 }
 
 // runDeckPlugin is the plugin-mode entry point. args excludes the
@@ -121,7 +140,7 @@ func runDeckPlugin(args []string) int {
 	if ki := newKeyInjector(); ki != nil {
 		inject = ki // nil on non-Windows: keyDown still toggles the daemon, skips F24
 	}
-	p := deckplugin.New(wsConn{ws}, udpDaemonClient{udpAddr, time.Second}, inject, logger)
+	p := deckplugin.New(wsConn{ws}, udpDaemonClient{udpAddr}, inject, logger)
 	if err := p.Run(context.Background(), cfg.RegisterEvent, cfg.PluginUUID); err != nil {
 		logger.Printf("deckplugin exiting: %v", err)
 		return 1
