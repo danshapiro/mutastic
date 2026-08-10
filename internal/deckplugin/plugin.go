@@ -20,6 +20,18 @@ const (
 	stateLightsOn  = 1 // light action state 1: any light on (icons/mutastic-light-on)
 )
 
+// Action UUIDs served by this plugin (manifest Actions[].UUID). Every
+// inbound willAppear/willDisappear/keyDown carries one in its "action"
+// field; all routing keys off it.
+const (
+	actionMute  = "com.danshapiro.mutastic.mute"
+	actionLight = "com.danshapiro.mutastic.light"
+)
+
+// actionOrder is the deterministic per-tick polling order (map
+// iteration order would make tests and logs flap).
+var actionOrder = []string{actionMute, actionLight}
+
 // PollInterval is how often the plugin polls the daemon's status while
 // at least one instance is visible. ~750ms keeps the icon honest within
 // a blink of a physical mic-button press. A var so tests can shrink it
@@ -50,30 +62,60 @@ type Injector interface {
 	Inject() error
 }
 
+// actionSpec is one action's behavior table: the daemon commands it
+// speaks, how its replies map to state indices, and whether a key
+// press also injects F24 (the mute action's meeting-app sweep; never
+// for lights).
+type actionSpec struct {
+	statusCmd     string
+	toggleCmd     string
+	replyToState  func(string) (int, bool)
+	injectOnPress bool
+}
+
+// actionState is one action's worth of runtime state — exactly what
+// used to be the whole Plugin state back when mute was the only action.
+type actionState struct {
+	spec      actionSpec
+	visible   map[string]bool // context -> instance currently on a visible key
+	lastKnown int             // last state observed/pushed; -1 = never known
+	pollDown  bool            // daemon was unreachable at the last poll (log transitions, not every 750ms)
+	noState   bool            // last poll reply carried no usable state (log transitions, not every 750ms)
+}
+
 // Plugin is one running plugin session. All methods are called from a
 // single goroutine (Run's select loop feeds HandleMessage and PollOnce),
 // so there is no internal locking by design.
 type Plugin struct {
 	conn   Conn
 	daemon DaemonClient
-	inject Injector // may be nil (non-Windows): keyDown skips the F24 sweep
+	inject Injector // may be nil (non-Windows): mute keyDown skips the F24 sweep
 	logger *log.Logger
 
-	visible   map[string]bool // context -> instance currently on a visible key
-	lastKnown int             // last state observed/pushed; -1 = never known
-	pollDown  bool            // daemon was unreachable at the last poll (log transitions, not every 750ms)
+	actions map[string]*actionState // action UUID -> that action's state
 }
 
-// New builds a Plugin. inject may be nil (no key injection on this
-// platform); logger must not be nil (tests pass log.New(io.Discard,"",0)).
+// New builds a Plugin serving both actions. inject may be nil (no key
+// injection on this platform); logger must not be nil (tests pass
+// log.New(io.Discard,"",0)).
 func New(conn Conn, daemonClient DaemonClient, inject Injector, logger *log.Logger) *Plugin {
 	return &Plugin{
-		conn:      conn,
-		daemon:    daemonClient,
-		inject:    inject,
-		logger:    logger,
-		visible:   make(map[string]bool),
-		lastKnown: -1,
+		conn:   conn,
+		daemon: daemonClient,
+		inject: inject,
+		logger: logger,
+		actions: map[string]*actionState{
+			actionMute: {
+				spec:      actionSpec{statusCmd: "status", toggleCmd: "toggle", replyToState: desiredState, injectOnPress: true},
+				visible:   make(map[string]bool),
+				lastKnown: -1,
+			},
+			actionLight: {
+				spec:      actionSpec{statusCmd: "light status", toggleCmd: "light toggle", replyToState: lightAnyOn, injectOnPress: false},
+				visible:   make(map[string]bool),
+				lastKnown: -1,
+			},
+		},
 	}
 }
 
@@ -140,69 +182,94 @@ func (p *Plugin) HandleMessage(data []byte) {
 		return
 	}
 	switch ev.Event {
+	case "willAppear", "willDisappear", "keyDown":
+	default:
+		return // titleParametersDidChange etc.: ignored by design
+	}
+	st, ok := p.actions[ev.Action]
+	if !ok {
+		p.logger.Printf("%s %s: unknown action %q, ignoring", ev.Event, ev.Context, ev.Action)
+		return
+	}
+	switch ev.Event {
 	case "willAppear":
-		p.visible[ev.Context] = true
-		p.logger.Printf("willAppear %s (visible: %d)", ev.Context, len(p.visible))
+		st.visible[ev.Context] = true
+		p.logger.Printf("willAppear %s %s (visible: %d)", ev.Action, ev.Context, len(st.visible))
 		// Correct this key's icon immediately instead of waiting a tick.
-		if reply, err := p.daemon.Command("status"); err != nil {
-			p.logger.Printf("willAppear %s: status failed: %v", ev.Context, err)
-		} else if st, ok := desiredState(reply); ok && st != p.lastKnown {
-			// The probe observed a state change: every visible instance is
-			// stale, not just this one. Recording lastKnown without pushing
-			// to all would make the next poll see "no change" and leave the
-			// older keys wrong. pushAll covers ev.Context too (just added).
-			p.lastKnown = st
-			p.pushAll()
+		if reply, err := p.daemon.Command(st.spec.statusCmd); err != nil {
+			p.logger.Printf("willAppear %s: %s failed: %v", ev.Context, st.spec.statusCmd, err)
+		} else if s, ok := st.spec.replyToState(reply); ok && s != st.lastKnown {
+			// The probe observed a state change: every visible instance
+			// of THIS action is stale, not just this one. Recording
+			// lastKnown without pushing to all would make the next poll
+			// see "no change" and leave the older keys wrong. pushAll
+			// covers ev.Context too (just added).
+			st.lastKnown = s
+			p.pushAll(st)
 			return
 		}
 		// Unchanged, or unknown/unreachable with a prior known state:
 		// correct only the appearing key.
-		if p.lastKnown >= 0 {
-			p.sendSetState(ev.Context, p.lastKnown)
+		if st.lastKnown >= 0 {
+			p.sendSetState(ev.Context, st.lastKnown)
 		}
 	case "willDisappear":
-		delete(p.visible, ev.Context)
-		p.logger.Printf("willDisappear %s (visible: %d)", ev.Context, len(p.visible))
+		delete(st.visible, ev.Context)
+		p.logger.Printf("willDisappear %s %s (visible: %d)", ev.Action, ev.Context, len(st.visible))
 	case "keyDown":
-		p.handleKeyDown(ev)
+		p.handleKeyDown(ev, st)
 	}
 }
 
-// PollOnce queries the daemon's status once and, when the mute state is
-// known and has CHANGED, pushes setState to every visible instance.
-// Pushing only on change matters: OpenDeck persists the profile to disk
-// on every setState. Unknown or unreachable leaves the icons untouched.
+// PollOnce polls the daemon once per action that has visible instances
+// and, when an action's state is known and has CHANGED, pushes setState
+// to that action's visible instances. Pushing only on change matters:
+// OpenDeck persists the profile to disk on every setState. Unknown or
+// unreachable leaves the icons untouched. Both actions share the one
+// 750ms tick — a visible light key costs one extra UDP round trip per
+// tick, never a second timer.
 func (p *Plugin) PollOnce() {
-	if len(p.visible) == 0 {
-		return
-	}
-	reply, err := p.daemon.Command("status")
-	if err != nil {
-		if !p.pollDown {
-			p.pollDown = true
-			p.logger.Printf("status poll: daemon unreachable, keeping icon: %v", err)
+	for _, action := range actionOrder {
+		st := p.actions[action]
+		if len(st.visible) == 0 {
+			continue
 		}
-		return
+		reply, err := p.daemon.Command(st.spec.statusCmd)
+		if err != nil {
+			if !st.pollDown {
+				st.pollDown = true
+				p.logger.Printf("%s poll: daemon unreachable, keeping icon: %v", st.spec.statusCmd, err)
+			}
+			continue
+		}
+		if st.pollDown {
+			st.pollDown = false
+			p.logger.Printf("%s poll: daemon reachable again", st.spec.statusCmd)
+		}
+		s, ok := st.spec.replyToState(reply)
+		if !ok {
+			// Unknown / error reply: hold the current icon, and log the
+			// TRANSITION into this condition (all-unknown lights after a
+			// daemon restart would otherwise spam a line every 750ms).
+			if !st.noState {
+				st.noState = true
+				p.logger.Printf("%s poll: no usable state in %q, keeping icon", st.spec.statusCmd, reply)
+			}
+			continue
+		}
+		st.noState = false
+		if s == st.lastKnown {
+			continue
+		}
+		st.lastKnown = s
+		p.pushAll(st)
 	}
-	if p.pollDown {
-		p.pollDown = false
-		p.logger.Printf("status poll: daemon reachable again")
-	}
-	st, ok := desiredState(reply)
-	if !ok {
-		return // "unknown" or "error: ...": keep the current icon
-	}
-	if st == p.lastKnown {
-		return
-	}
-	p.lastKnown = st
-	p.pushAll()
 }
 
-// pushAll sends the last-known state to every visible instance.
-func (p *Plugin) pushAll() {
-	for ctx := range p.visible {
-		p.sendSetState(ctx, p.lastKnown)
+// pushAll sends the action's last-known state to its visible instances.
+func (p *Plugin) pushAll(st *actionState) {
+	for ctx := range st.visible {
+		p.sendSetState(ctx, st.lastKnown)
 	}
 }
 
@@ -217,24 +284,27 @@ func (p *Plugin) sendSetState(ctx string, state int) {
 	p.logger.Printf("setState %s -> %d", ctx, state)
 }
 
-// handleKeyDown runs the full mute-everything flow in-process, mirroring
-// deploy/mute-everything.cmd's two unconditional lines: daemon toggle
-// FIRST, then exactly one F24 injection for the meeting-app sweep. Each
-// half runs even if the other fails. LOOP HAZARD: never inject F24 in
-// reaction to a state change or the daemon's own injection — F24 must
-// only ever mean "sweep the meeting apps once for this key press".
-func (p *Plugin) handleKeyDown(ev Event) {
-	reply, err := p.daemon.Command("toggle")
+// handleKeyDown routes a key press to its action: send the action's
+// toggle command, update the icon from the reply (the toggle reply IS
+// the new state — don't wait a tick), and — for the mute action only —
+// inject exactly one F24 for the meeting-app sweep. Each half runs even
+// if the other fails. LOOP HAZARD: never inject F24 in reaction to a
+// state change or the daemon's own injection — F24 must only ever mean
+// "sweep the meeting apps once for this key press". The light action
+// never injects: lights have nothing to do with meetings.
+func (p *Plugin) handleKeyDown(ev Event, st *actionState) {
+	reply, err := p.daemon.Command(st.spec.toggleCmd)
 	if err != nil {
-		p.logger.Printf("keyDown %s: toggle failed: %v", ev.Context, err)
+		p.logger.Printf("keyDown %s: %s failed: %v", ev.Context, st.spec.toggleCmd, err)
 	} else {
-		p.logger.Printf("keyDown %s: toggle -> %q", ev.Context, reply)
-		// The toggle reply is the NEW state — update the icon now
-		// instead of waiting for the next poll tick.
-		if st, ok := desiredState(reply); ok && st != p.lastKnown {
-			p.lastKnown = st
-			p.pushAll()
+		p.logger.Printf("keyDown %s: %s -> %q", ev.Context, st.spec.toggleCmd, reply)
+		if s, ok := st.spec.replyToState(reply); ok && s != st.lastKnown {
+			st.lastKnown = s
+			p.pushAll(st)
 		}
+	}
+	if !st.spec.injectOnPress {
+		return
 	}
 	if p.inject == nil {
 		p.logger.Printf("keyDown %s: no key injector on this platform, skipping F24 sweep", ev.Context)
