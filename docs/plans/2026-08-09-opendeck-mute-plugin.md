@@ -18,7 +18,7 @@ Every task's requirements implicitly include this section. Values are copied ver
 - **Repo root for every command:** `/home/dan/code/mutastic/.worktrees/opendeck-mute-plugin` (the isolated worktree). All relative paths in this plan are relative to it. Every subagent dispatch must state this path explicitly and use `git -C` / path-prefixed access.
 - **Do NOT modify the OpenDeck fork** at `/home/dan/code/OpenDeck` — read-only reference. The plugin must work against stock v2.13.1 behavior.
 - **Single binary:** the plugin ships inside `mutastic.exe` (a plugin mode of the existing binary), not a second executable. `build.sh` keeps its single `GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc` target; any new dependency must be pure Go.
-- **Quality gate for every code task:** `go test -race ./... && go vet ./...` clean, plus `GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc go vet .` for Windows-tagged files. ALL existing mic/light/daemon tests keep passing. Existing daemon/CLI behavior unchanged (including exact `runClient` output strings).
+- **Quality gate for every code task:** `go test -race ./... && go vet ./...` clean, plus `GOOS=windows GOARCH=amd64 CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc go vet .` for Windows-tagged files. ALL existing mic/light/daemon tests keep passing. Existing daemon/CLI behavior unchanged (including exact `runClient` output strings) — one validated exception: Task 5b dedupes repeated identical `status` log lines (UDP replies and CLI output stay byte-identical).
 - **Action identity:** plugin directory (= plugin UUID) `com.danshapiro.mutastic.sdPlugin`; action UUID `com.danshapiro.mutastic.mute`; action name `Mutastic Mute`; 2 states — state 0 = live mic, state 1 = muted; `DisableAutomaticStates: true` in the manifest AND `disable_automatic_states: true` in the profile instance (the plugin alone drives state).
 - **keyDown behavior:** daemon UDP `toggle` (127.0.0.1:42814) + in-process F24 injection via the existing `newKeyInjector()` SendInput path (`dwExtraInfo=0`, proven to fire `MuteAllMeetings.ahk`'s `*F24` sweep). No cmd/AHK spawning. Both actions run even if the other fails (mirrors `mute-everything.cmd`'s two unconditional lines). Never inject F24 in reaction to a state change (loop hazard).
 - **State sync:** poll daemon `status` every ~750ms while any instance is visible; on `muted`/`unmuted` change, `setState(1|0)` for all visible instances; `unknown` or daemon-unreachable → leave current state, log.
@@ -41,7 +41,7 @@ One subsystem, one repo, one deliverable (the plugin mode + its deployment). No 
 
 You are extending an existing, working system. Facts you need (verified against the OpenDeck v2.13.1 source and the live Windows install):
 
-**The mutastic repo** (module `mutastic`, Go 1.26.3): root `package main` + `internal/{daemon,light,proto}`. Subcommand dispatch is hand-rolled `os.Args` inspection in `main.go` (no flag package, no cobra): `daemon` is special-cased inline; everything else maps to a one-shot UDP client via the pure function `clientCommand`. The daemon serves plain-text commands on UDP `127.0.0.1:42814` (`const udpAddr`, `main.go:24`). Replies for mic verbs are exactly `"muted"`, `"unmuted"`, `"unknown"`, or `"error: <reason>"`. `"unknown"` is normal after a daemon restart; `toggle` on unknown state mutes. There is NO push channel — a live icon must poll `status`. The daemon logs every UDP command; the poll will add periodic `command "status" -> ...` lines to `%LOCALAPPDATA%\mutastic\mutastic.log` (its 5 MB rotation already handles growth). F24 injection: `newKeyInjector() daemon.KeyInjector` (root `package main`, `inject_windows.go`) returns a SendInput-based injector with `Inject() error`; on non-Windows it returns `nil` and callers must nil-check. Its `dwExtraInfo=0` is load-bearing — visible to AHK hook hotkeys without `SendLevel`.
+**The mutastic repo** (module `mutastic`, Go 1.26.3): root `package main` + `internal/{daemon,light,proto}`. Subcommand dispatch is hand-rolled `os.Args` inspection in `main.go` (no flag package, no cobra): `daemon` is special-cased inline; everything else maps to a one-shot UDP client via the pure function `clientCommand`. The daemon serves plain-text commands on UDP `127.0.0.1:42814` (`const udpAddr`, `main.go:24`). Replies for mic verbs are exactly `"muted"`, `"unmuted"`, `"unknown"`, or `"error: <reason>"`. `"unknown"` is normal after a daemon restart; `toggle` on unknown state mutes. There is NO push channel — a live icon must poll `status`. The daemon logs every UDP command; the poll will add periodic `command "status" -> ...` lines to `%LOCALAPPDATA%\mutastic\mutastic.log`. **Correction from load-bearing validation:** the 5 MB rotation runs ONLY at log open (`openLogFile`, main.go:177-179, called once at daemon start, main.go:133) — a resident 750 ms poll writes ~48-50 B/line ≈ 5.5 MiB/day and grows the file unbounded within a single daemon run. Task 5b bounds this daemon-side by deduplicating repeated identical `status` log lines. F24 injection: `newKeyInjector() daemon.KeyInjector` (root `package main`, `inject_windows.go`) returns a SendInput-based injector with `Inject() error`; on non-Windows it returns `nil` and callers must nil-check. Its `dwExtraInfo=0` is load-bearing — visible to AHK hook hotkeys without `SendLevel`.
 
 **OpenDeck plugin hosting** (from `/home/dan/code/OpenDeck/src-tauri/src/plugins/` — read-only): plugins live at `%APPDATA%\opendeck\plugins\<dirname>.sdPlugin\` and **the directory name IS the plugin UUID** (there is no top-level UUID manifest field). `manifest.json` sits at the plugin dir root; required top-level fields: `Name`, `Author`, `Version`, `Icon`, `Actions`, `OS`. `PropertyInspectorPath` is optional — omitted means the plugin simply never gets PI events; nothing breaks. On Windows, `CodePathWin` (a path relative to the plugin dir) selects the binary; a flat `"CodePathWin": "mutastic.exe"` is correct. Manifest image paths are **extensionless** (OpenDeck appends `.svg` → `@2x.png` → `.png`; writing `icons/x.png` would resolve `icons/x.png.png`). OpenDeck spawns the binary with argv `-port <N> -pluginUUID <dirname> -registerEvent registerPlugin -info <json>` (single dash, values as separate argv entries, port base 57116 — always use the given value), working directory = plugin dir, `CREATE_NO_WINDOW`, stdout+stderr redirected to `%LOCALAPPDATA%\opendeck\logs\plugins\<dirname>.log`. The plugin connects to `ws://127.0.0.1:<port>` and MUST send, as its very first text frame, `{"event":"registerPlugin","uuid":"<dirname>"}` — a malformed register is a **silent** failure (socket never registered, you receive nothing). Events queued before registration are flushed on register. No acknowledgement is sent; silence after registering is normal. OpenDeck kills plugin processes when it exits and does not restart them.
 
@@ -85,6 +85,8 @@ Design decisions locked in here:
 - **`runClient` reuse:** a new `askDaemon(cmd, addr, timeout) (string, error)` becomes the shared UDP round-trip; `runClient` is reimplemented on top of it with its exact historical output preserved (dial/write errors print `error: no daemon reachable: <err>`; read errors print the bare `error: no daemon reachable`), distinguished via an `errNoReply` sentinel.
 - **Poller sends `setState` only on change** (every `setState` makes OpenDeck re-render AND persist the profile to disk — pushing every 750ms would thrash disk). New instances get the last-known state pushed on `willAppear`.
 - **Two `mutastic.exe` processes will run** (daemon + plugin child of OpenDeck). Safe: only the daemon binds UDP 42814 (the single-instance lock); the plugin is a pure client. The plugin logs to its own file (`deckplugin.log`) because two processes racing `mutastic.log`'s rename-rotation would be a real hazard.
+- **No reconnect loop (validated decision):** OpenDeck v2.13.1 has NO ping/keepalive/idle timeout and no transient close path — a registered plugin socket closes only on OpenDeck exit or a deliberate plugin kill (fork: `events/mod.rs:40-41`, `plugins/mod.rs:382-385`, `main.rs:379-381`). A reconnect loop was considered and REJECTED: re-registering a duplicate UUID silently DISPLACES the live socket (`events/mod.rs:37`), so a stale orphan reconnecting could hijack a fresh instance. Exit-on-read-error stands; log the error before exiting so a dead plugin is diagnosable from `deckplugin.log`. Accepted residual: loopback TCP across machine sleep (neither side sends keepalives, so nothing can time out; worst case is a frozen icon fixed by an OpenDeck restart — E2E human question 3 covers it).
+- **Register immediately after dial (validated hazard):** a client that connects and then disconnects — or sends a non-text first frame — BEFORE registering panics OpenDeck's accept loop, refusing all later plugin connections until OpenDeck restarts. The very first write after a successful dial must be the register frame; never dial speculatively.
 
 ---
 
@@ -1500,6 +1502,53 @@ git commit -m "feat: wire OpenDeck plugin mode into the mutastic binary"
 
 ---
 
+### Task 5b: Bound daemon log growth under status polling (dedupe repeated `status` log lines)
+
+**Why this task exists (validated finding):** the plan originally claimed the daemon log's "5 MB rotation already handles growth". Load-bearing validation FALSIFIED that: rotation happens only inside `openLogFile()` (`main.go:177-179`), called exactly once at daemon start (`main.go:133`), and `serveUDP` logs every command unconditionally (`d.Logger.Printf("command %q -> %q", cmd, reply)`, `internal/daemon/daemon.go:255`). A resident 750 ms poller writes ~48-50 B/line ≈ 5.5 MiB/day, crosses the 5 MB threshold in under a day of daemon uptime, and grows unbounded until the next daemon restart. Fix it daemon-side so ANY polling client is safe.
+
+**Files:**
+- Modify: `internal/daemon/daemon.go` (the `serveUDP` logging site)
+- Test: the daemon package's test file alongside its existing serveUDP/HandleCommand tests (mirror existing conventions)
+
+**Interfaces:**
+- Consumes: existing daemon logging (single-goroutine `serveUDP` loop — a plain struct field needs no lock).
+- Produces: unchanged UDP replies and CLI output (byte-identical); new logging contract — a `status` command logs only when its reply differs from the previously LOGGED `status` reply; the first `status` after start always logs; every non-`status` command logs exactly as before with the same format string.
+
+- [ ] **Step 1: Write the failing test**
+
+Extract the logging decision into an unexported helper on the daemon type (e.g. `logCommand(cmd, reply string)`) holding a `lastStatusReply string` field, so the behavior is testable without UDP. Using a captured logger (`log.New(&buf, "", 0)` over a `bytes.Buffer`), assert:
+
+1. first `status` -> `muted`: line IS logged;
+2. second `status` -> `muted` (unchanged): NOT logged;
+3. `status` -> `unmuted` (changed): IS logged;
+4. repeated `toggle`/`mute`/`unmute`/light commands: ALWAYS logged, even with identical replies;
+5. after a non-status command, an unchanged `status` reply is still suppressed (dedupe keys on the last *status* reply, not the last command).
+
+Adapt receiver/field names to the actual struct in `internal/daemon/daemon.go`; keep hand-written `if got != want { t.Fatalf(...) }` style with explanatory messages.
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `go test ./internal/daemon/ -run TestLogCommand -v` (use your actual test name)
+Expected: FAIL — helper doesn't exist yet / logging is unconditional.
+
+- [ ] **Step 3: Implement**
+
+Replace the unconditional `d.Logger.Printf("command %q -> %q", cmd, reply)` at the `serveUDP` call site with the helper. Keep the exact format string for lines that ARE logged. Do not touch replies, `HandleCommand`, or any other logging.
+
+- [ ] **Step 4: Full gate**
+
+Run: `go test -race ./... && go vet ./...`
+Expected: clean. Existing tests keep passing — dedupe only suppresses REPEATS, so any existing assertion about a single command's log line still holds.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add internal/daemon/
+git commit -m "fix(daemon): dedupe repeated status log lines to bound log growth under polling"
+```
+
+---
+
 ### Task 6: Plugin manifest and its guard test
 
 **Files:**
@@ -1730,10 +1779,16 @@ $json.keys[5] = [ordered]@{
 }
 
 # ASCII, not UTF8: Windows PowerShell 5.1's UTF8 writes a BOM, which
-# serde_json (OpenDeck's parser) rejects. All content here is ASCII.
-$json | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $ProfilePath -Encoding ASCII
+# serde_json (OpenDeck's parser) rejects. ASCII is only safe while the
+# content IS ASCII (-Encoding ASCII silently mangles non-ASCII to '?'),
+# so guard and fail loudly instead of corrupting silently.
+$out = $json | ConvertTo-Json -Depth 12
+if ($out -match '[^\x00-\x7F]') { throw 'profile serialization contains non-ASCII; refusing -Encoding ASCII write' }
+$out | Set-Content -LiteralPath $ProfilePath -Encoding ASCII
 Write-Output "keys[5] set to Mutastic Mute (backup: $ProfilePath.bak-deckplugin)"
 ```
+
+Validated context: a profile OpenDeck cannot parse does NOT crash it — `Store::new` silently falls back to a blank default (fork `store/mod.rs:61-73`). A botched edit therefore shows up as an EMPTY deck profile, not an error; the `.bak-deckplugin` restore is the recovery, and Task 10 Step 4 asserts `keys[5].action.uuid` after relaunch precisely because no error would surface.
 
 - [ ] **Step 2: Run it against a fixture copy of the real profile (never the live file)**
 
@@ -1822,12 +1877,22 @@ if not exist "%ODPLUGDIR%\icons" mkdir "%ODPLUGDIR%\icons"
 copy /Y "%SRC%\deck\com.danshapiro.mutastic.sdPlugin\manifest.json" "%ODPLUGDIR%\manifest.json" >nul || goto :fail
 copy /Y "%SRC%\deck\icons\mutastic-mic.png" "%ODPLUGDIR%\icons\mutastic-mic.png" >nul || goto :fail
 copy /Y "%SRC%\deck\icons\mutastic-mic-muted.png" "%ODPLUGDIR%\icons\mutastic-mic-muted.png" >nul || goto :fail
-copy /Y "%SRC%\bin\mutastic.exe" "%ODPLUGDIR%\mutastic.exe" >nul || goto :fail
+set /a PLUGCOPYTRIES=0
+:copyplugexe
+copy /Y "%SRC%\bin\mutastic.exe" "%ODPLUGDIR%\mutastic.exe" >nul && goto :plugexeok
+set /a PLUGCOPYTRIES+=1
+if %PLUGCOPYTRIES% geq 5 goto :fail
+echo plugin exe still locked, retrying %PLUGCOPYTRIES%/5 ...
+ping -n 3 127.0.0.1 >nul
+goto :copyplugexe
+:plugexeok
 copy /Y "%SRC%\deploy\set-mute-key.ps1" "%DEST%\set-mute-key.ps1" >nul || goto :fail
 
 echo == Pointing profile keys[5] at the plugin ==
 powershell -NoProfile -ExecutionPolicy Bypass -File "%DEST%\set-mute-key.ps1" || goto :fail
 ```
+
+The plugin-exe copy gets a bounded retry loop (validated finding: TerminateProcess is asynchronous and AV scanners can hold a short tail lock on a just-killed exe — a retry beats a longer fixed sleep). The other copies keep plain `|| goto :fail`: their targets are never executing.
 
 **(d)** In the relaunch section, after the line `start "" "%AHK_EXE%" "%DEST%\MuteAllMeetings.ahk"`, add:
 
@@ -1838,12 +1903,12 @@ start "" "%OPENDECK_EXE%"
 - [ ] **Step 2: Static sanity check of the edited script**
 
 ```bash
-grep -n "ODPLUGDIR\|OPENDECK_EXE\|set-mute-key\|opendeck.exe\|ping -n 3" deploy/deploy.cmd
+grep -n "ODPLUGDIR\|OPENDECK_EXE\|set-mute-key\|opendeck.exe\|ping -n 3\|copyplugexe" deploy/deploy.cmd
 grep -n "mute-everything.cmd" deploy/deploy.cmd
 file deploy/deploy.cmd
 ```
 
-Expected: all additions present in order stop → copy → plugin install → profile edit → shortcuts → relaunch (OpenDeck relaunch after the AHK relaunch); the existing `mute-everything.cmd` copy line untouched (spec: keep it); `file` still reports CRLF line terminators.
+Expected: all additions present in order stop → copy → plugin install (incl. the `:copyplugexe` retry loop) → profile edit → shortcuts → relaunch (OpenDeck relaunch after the AHK relaunch); the existing `mute-everything.cmd` copy line untouched (spec: keep it); `file` still reports CRLF line terminators.
 
 - [ ] **Step 3: Commit**
 
@@ -1952,7 +2017,7 @@ sleep 20
 tail -40 /mnt/c/Users/dan/AppData/Local/OpenDeck/logs/OpenDeck.log
 ```
 
-Expected in the fresh tail (the log is append-only across launches — check timestamps after the deploy): a `Registered plugin com.danshapiro.mutastic.sdPlugin` line and NO `Failed to initialise plugin` for our directory. Also check the per-plugin stdout log:
+Expected in the fresh tail (the log is append-only across launches — check timestamps after the deploy): a `Registered plugin com.danshapiro.mutastic.sdPlugin` line and NO `Failed to initialise plugin` for our directory. (Validated: the line is a DEBUG-level `log::debug!("Registered plugin {}")`, enabled by default in the fork build, and appears in the live log today for the starterpack plugin. The per-plugin log below is truncated on each respawn.) Also check the per-plugin stdout log:
 
 ```bash
 ls -la /mnt/c/Users/dan/AppData/Local/OpenDeck/logs/plugins/com.danshapiro.mutastic.sdPlugin.log
@@ -2029,4 +2094,5 @@ These CANNOT be verified programmatically; record them as the final open questio
 | Deployment (kill/relaunch OpenDeck, profile `.bak`) | Tasks 7–8, Task 10 Steps 2–3 and 7 |
 | Existing behavior unchanged; `-race`+vet clean | Task 5 Steps 1/7 baseline, every task's gate, Task 10 Steps 1/7 |
 | Mic left UNMUTED, light untouched | Task 10 Step 6 (final `unmute` + status check; no light commands anywhere) |
+| Daemon log growth bounded under the 750 ms poll | Task 5b dedupe test (repeat `status` suppressed, changes + other verbs still logged) + full gate |
 | Deck icon flip on physical press / real deck keypress | Task 10 Step 8 — recorded human questions (only a human can confirm pixels and a physical press) |
