@@ -978,7 +978,7 @@ git -C /home/dan/code/mutastic/.worktrees/opendeck-light-button commit -m "feat(
 ### Task 6: Manifest second action + guard-test rewrite
 
 **Files:**
-- Modify: `deck_manifest_test.go` (lines 45-75: single-action assertions -> lookup-by-UUID over 2 actions)
+- Modify: `deck_manifest_test.go` (lines 45-76: single-action assertions + the function's final `}` -> lookup-by-UUID over 2 actions)
 - Modify: `deck/com.danshapiro.mutastic.sdPlugin/manifest.json`
 
 **Interfaces:**
@@ -987,7 +987,7 @@ git -C /home/dan/code/mutastic/.worktrees/opendeck-light-button commit -m "feat(
 
 - [ ] **Step 1: Rewrite the guard test (the RED step)**
 
-In `deck_manifest_test.go`, replace everything from `if len(m.Actions) != 1 {` down to the closing brace of the icon-stat loop (currently lines 45-75, just before the function's final `}`) with:
+In `deck_manifest_test.go`, replace everything from `if len(m.Actions) != 1 {` through the function's final `}` (currently lines 45-76: the single-action assertions, the icon-stat loop, AND the function's closing `}` on line 76) with the block below. The block's last line is a column-0 `}` that becomes the function's new final brace — the old line-76 `}` must not survive the edit, or the file gains a duplicate top-level brace and fails to compile:
 
 ```go
 	wantActions := map[string]struct {
@@ -1475,13 +1475,15 @@ echo "mute setState delta: $((mute_after - mute_before))"  # MUST be 0
 
 Expected: `->1` delta >= 1 after `light on`; `->0` delta >= 1 after `light off`; mute delta exactly 0 (the mute instance stays untouched while lights are driven).
 
-- [ ] **Step 6: Verify the mic is unmuted**
+- [ ] **Step 6: Verify the mic command path still works, and leave the mic unmuted**
 
 ```bash
-retry_interop /mnt/c/Users/dan/code/mutastic-deploy/mutastic.exe status
+retry_interop /mnt/c/Users/dan/code/mutastic-deploy/mutastic.exe status   # informational: normally `unknown` right after Step 3's restart
+retry_interop /mnt/c/Users/dan/code/mutastic-deploy/mutastic.exe unmute
+retry_interop /mnt/c/Users/dan/code/mutastic-deploy/mutastic.exe status   # the gate
 ```
 
-Expected: `unmuted` (nothing in this E2E touches the mic, but verify). If it prints `muted`, run `retry_interop /mnt/c/Users/dan/code/mutastic-deploy/mutastic.exe unmute` and re-check.
+Expected: the FINAL `status` prints `unmuted` — that line is the pass/fail gate. The first `status` is informational only: mic mute state lives solely in daemon memory (nothing persists it across restarts), and Step 3's deploy unconditionally killed and restarted `mutastic.exe`, so it normally prints `unknown` (`muted`/`unmuted` are also possible if the mic was physically toggled since the restart — record whatever it says). The unconditional `unmute` re-establishes a known state through the mic command path, doubling as a regression check that the lights work didn't break mic routing.
 
 - [ ] **Step 7: Restore the light's pre-test state**
 
@@ -1519,5 +1521,5 @@ No commit in this task. Record these two questions as the final human-verificati
 - `go test -race ./...` + `go vet ./...` + cross-compile vet: clean (Task 9 Step 1)
 - Unit coverage: reply parsing -> state decision for on/off/mixed/disconnected/unknown/unreachable (Task 1); per-action routing mute-vs-light keyDown, poll gating, setState dedupe, cross-contamination, unknown action (Task 2); per-verb timeout (Task 3); daemon log latch (Task 4); manifest contract (Task 6)
 - Fixture-tested profile edit; the live profile is only ever edited by deploy.cmd with OpenDeck stopped (Task 7)
-- Live E2E: deploy transcript markers, both willAppear contexts, CLI-driven `setState -> 1` / `-> 0` deltas for `Keypad.2.0` with zero mute-key setState churn, light state restored, mic left unmuted (Task 9)
+- Live E2E: deploy transcript markers, both willAppear contexts, CLI-driven `setState -> 1` / `-> 0` deltas for `Keypad.2.0` with zero mute-key setState churn, light state restored, mic re-established `unmuted` via the mic command path after the deploy restart (Task 9)
 - Human-only: physical icon appearance and a real deck keypress (Task 9 Step 8)
