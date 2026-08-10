@@ -1921,7 +1921,7 @@ git commit -m "feat(deploy): install OpenDeck plugin, edit profile, cycle OpenDe
 
 ---
 
-### Task 9: README — the deck section describes the plugin
+### Task 9: README — add the Stream Deck (OpenDeck plugin) section
 
 **Files:**
 - Modify: `README.md`
@@ -1930,14 +1930,16 @@ git commit -m "feat(deploy): install OpenDeck plugin, edit profile, cycle OpenDe
 - Consumes: the shipped behavior of Tasks 1–8.
 - Produces: accurate end-user documentation (README is the only end-user markdown doc).
 
-- [ ] **Step 1: Locate the stale content**
+**Context (verified against the current README):** the README does not mention the deck key, OpenDeck, or `mute-everything.cmd` anywhere — there is no stale deck prose to replace. This task ADDS a new section. The README's headings today are `# mutastic` (line 1) and four `##` sections — `## Components` (38), `## Build (from WSL)` (100), `## Deploy (on Windows)` (110), `## Troubleshooting` (143) — with no `###` headings yet.
 
-Run: `grep -n -i "opendeck\|stream deck\|mute-everything" README.md`
-Expected: hits describing the deck button as a "Run Command" action invoking `C:\Users\dan\code\mutastic-deploy\mute-everything.cmd` with two auto-toggling states (plus unrelated hits in the F24-flow and deploy sections, which stay).
+- [ ] **Step 1: Confirm there is no existing deck content**
 
-- [ ] **Step 2: Rewrite the deck-button description**
+Run: `grep -n -i "opendeck\|stream deck\|mute-everything" README.md; echo "exit=$?"`
+Expected: no matching lines, `exit=1`. If this prints hits instead, STOP and read them — the README changed since this plan was validated, and the section below must be reconciled with that content (not duplicated alongside it) before proceeding.
 
-Replace the prose that describes the Run Command button / auto-toggling icon (keep surrounding sections intact, match the file's heading level) with:
+- [ ] **Step 2: Insert the deck-plugin section**
+
+Insert the following block at the end of the `## Components` section — immediately BEFORE the `## Build (from WSL)` heading, with a blank line on each side. (`###` makes it a subsection of Components: the plugin is a fourth trigger surface alongside the daemon, CLI client, and AHK script described there.)
 
 ```markdown
 ### Stream Deck (OpenDeck plugin)
@@ -1966,10 +1968,10 @@ and restarts OpenDeck. `deploy\mute-everything.cmd` remains as a CLI
 entry point but the deck no longer uses it.
 ```
 
-- [ ] **Step 3: Proofread against behavior**
+- [ ] **Step 3: Proofread the insertion**
 
-Run: `grep -n -i "run command\|auto-toggl" README.md`
-Expected: no remaining claims that the deck button is a Run Command action or that its icon auto-toggles. The F24/AHK flow section and troubleshooting entries stay (they still describe the daemon and physical button accurately).
+Run: `grep -n -i "opendeck\|com.danshapiro.mutastic\|deckplugin" README.md`
+Expected: hits ONLY between the `## Components` and `## Build (from WSL)` headings — the new section's plugin UUID, `%APPDATA%\opendeck\plugins\...` install path, 750ms poll, and `deckplugin.log` lines. Everything outside the new section is untouched: the F24/AHK flow prose and troubleshooting entries stay as they are (they still describe the daemon and physical button accurately).
 
 - [ ] **Step 4: Commit**
 
@@ -2050,16 +2052,23 @@ Expected: `muted`, `unmuted`, or `unknown` (all healthy; `unknown` is normal rig
 
 - [ ] **Step 6: The plugin observes CLI-driven state changes (the core promise)**
 
+`deckplugin.log` is opened `O_APPEND` and rotated only at open (Task 5's `openNamedLogFile`), so its contents survive plugin respawns and prior E2E runs — a whole-file `grep -c ≥ 1` would pass vacuously on any re-run. Capture before/after counts and assert on the DELTA:
+
 ```bash
+LOG=/mnt/c/Users/dan/AppData/Local/mutastic/deckplugin.log
+P0="setState sd-A00DA6141I07PW.Default.Keypad.5.0 -> 0"
+P1="setState sd-A00DA6141I07PW.Default.Keypad.5.0 -> 1"
+B0=$(grep -c "$P0" "$LOG"); B1=$(grep -c "$P1" "$LOG")
 /mnt/c/Users/dan/code/mutastic-deploy/mutastic.exe unmute && sleep 3
-grep -c "setState sd-A00DA6141I07PW.Default.Keypad.5.0 -> 0" /mnt/c/Users/dan/AppData/Local/mutastic/deckplugin.log
 /mnt/c/Users/dan/code/mutastic-deploy/mutastic.exe mute && sleep 3
-grep -c "setState sd-A00DA6141I07PW.Default.Keypad.5.0 -> 1" /mnt/c/Users/dan/AppData/Local/mutastic/deckplugin.log
+A1=$(grep -c "$P1" "$LOG")
 /mnt/c/Users/dan/code/mutastic-deploy/mutastic.exe unmute && sleep 3
+A0=$(grep -c "$P0" "$LOG")
 /mnt/c/Users/dan/code/mutastic-deploy/mutastic.exe status
+echo "new setState->1: $((A1 - B1)); new setState->0: $((A0 - B0))"
 ```
 
-Expected: the first grep ≥ 1 (setState → 0 observed after `unmute`), the second grep ≥ 1 (setState → 1 after `mute`), and the final status prints `unmuted`. This proves the poll loop turns out-of-band state changes into `setState` — the same daemon-tracked path a physical mic-button press takes (its `0x21` event updates the same status; only a human can confirm the pixels, Step 8). **Do not issue any `light` commands** — the light must be left untouched.
+Expected: `new setState->1` ≥ 1, `new setState->0` ≥ 1 (i.e. NEW lines appended during THIS run), and the final status prints `unmuted`. The first `unmute` pins a known baseline state, so the following `mute` and the final `unmute` are each guaranteed real transitions that the 750ms poll must observe within the 3s windows (~4 polls each) — the deltas cannot be satisfied by lines left over from earlier runs. (`grep -c` printing `0` exits nonzero; that is harmless inside `$( )`, which is why the counting greps are not `&&`-chained.) This proves the poll loop turns out-of-band state changes into `setState` — the same daemon-tracked path a physical mic-button press takes (its `0x21` event updates the same status; only a human can confirm the pixels, Step 8). **Do not issue any `light` commands** — the light must be left untouched.
 
 - [ ] **Step 7: Profile backup + regression sweep**
 
