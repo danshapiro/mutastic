@@ -3,7 +3,7 @@
 
 Writes deck/icons/mutastic-light-on.png and mutastic-light-off.png:
 144x144 RGB PNG, pure-black background, classic LIGHT BULB glyph.
-State 0 (OFF) is a dim gray outline bulb; state 1 (ON) is a warm
+State 0 (OFF) is a pure white outline bulb; state 1 (ON) is a warm
 bright-filled bulb with short rays.
 
 Antialiased via 4x supersampling: drawn at 576px, downscaled to 144px
@@ -17,7 +17,8 @@ SIZE = 144
 SS = 4  # supersample factor
 S = SIZE * SS
 BLACK = (0, 0, 0)
-GRAY = (128, 128, 128)
+GRAY = (128, 128, 128)   # screw base on the ON state
+WHITE = (255, 255, 255)  # OFF-state outline
 WARM = (255, 228, 138)   # warm lit bulb fill
 RAY = (255, 240, 200)    # slightly paler warm rays
 OUTLINE_W = 7 * SS       # stroke width for the OFF outline
@@ -56,12 +57,12 @@ def draw_bulb(on: bool) -> Image.Image:
         for x0, y0, x1, y1 in RAYS:
             d.line(px(x0, y0, x1, y1), fill=RAY, width=RAY_W)
     else:
-        # dim gray outline bulb
-        d.ellipse(px(*GLOBE), outline=GRAY, width=OUTLINE_W)
-        d.line(px(60, 84, 64, 98), fill=GRAY, width=OUTLINE_W)
-        d.line(px(84, 84, 80, 98), fill=GRAY, width=OUTLINE_W)
-        d.rounded_rectangle(px(*BASE1), radius=2 * SS, outline=GRAY, width=OUTLINE_W // 2)
-        d.rounded_rectangle(px(*BASE2), radius=2 * SS, outline=GRAY, width=OUTLINE_W // 2)
+        # pure white outline bulb
+        d.ellipse(px(*GLOBE), outline=WHITE, width=OUTLINE_W)
+        d.line(px(60, 84, 64, 98), fill=WHITE, width=OUTLINE_W)
+        d.line(px(84, 84, 80, 98), fill=WHITE, width=OUTLINE_W)
+        d.rounded_rectangle(px(*BASE1), radius=2 * SS, outline=WHITE, width=OUTLINE_W // 2)
+        d.rounded_rectangle(px(*BASE2), radius=2 * SS, outline=WHITE, width=OUTLINE_W // 2)
     return img.resize((SIZE, SIZE), Image.LANCZOS)
 
 if __name__ == "__main__":
