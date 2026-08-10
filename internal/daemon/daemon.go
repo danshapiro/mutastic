@@ -41,6 +41,11 @@ type Daemon struct {
 
 	gate injectGate // debounces physical mute-button injections; session goroutine only
 
+	// lastStatusReply is the reply of the last LOGGED "status" command,
+	// used by logCommand to suppress repeated identical status lines.
+	// Touched only by the single serveUDP goroutine, so no lock is needed.
+	lastStatusReply string
+
 	mu  sync.Mutex
 	dev Device
 }
@@ -252,11 +257,27 @@ func (d *Daemon) serveUDP(pc net.PacketConn) {
 		}
 		cmd := strings.TrimSpace(string(buf[:n]))
 		reply := d.HandleCommand(cmd)
-		d.Logger.Printf("command %q -> %q", cmd, reply)
+		d.logCommand(cmd, reply)
 		if _, err := pc.WriteTo([]byte(reply), addr); err != nil {
 			d.Logger.Printf("udp write to %s: %v (continuing)", addr, err)
 		}
 	}
+}
+
+// logCommand logs one served UDP command. Non-status commands always log.
+// A "status" command logs only when its reply differs from the previously
+// logged status reply: a resident poller (e.g. the OpenDeck plugin asking
+// every ~750ms) would otherwise grow the log unbounded, because rotation
+// runs only at daemon start. Called only from the single serveUDP
+// goroutine, so lastStatusReply needs no lock.
+func (d *Daemon) logCommand(cmd, reply string) {
+	if cmd == "status" {
+		if reply == d.lastStatusReply {
+			return
+		}
+		d.lastStatusReply = reply
+	}
+	d.Logger.Printf("command %q -> %q", cmd, reply)
 }
 
 func sleepCtx(ctx context.Context, dur time.Duration) {

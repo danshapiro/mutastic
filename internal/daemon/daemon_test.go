@@ -1,8 +1,10 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -601,4 +603,71 @@ func TestInjectFailureIsNonFatal(t *testing.T) {
 	waitFor(t, "failed injection attempted", func() bool { return inj.calls.Load() == 1 })
 	// The daemon must keep tracking and serving after the failure.
 	waitFor(t, "daemon still serves status", func() bool { return ask("status") == "muted" })
+}
+
+// TestLogCommandDedupesRepeatedStatus guards the daemon-side log-growth
+// bound: a resident poller (the OpenDeck plugin asks "status" every ~750ms)
+// must not grow the log when nothing changed, because rotation runs only at
+// daemon start. Contract: a "status" command logs only when its reply
+// differs from the previously LOGGED status reply; the first status after
+// start always logs; every non-status command always logs, even repeats
+// with identical replies.
+func TestLogCommandDedupesRepeatedStatus(t *testing.T) {
+	var buf bytes.Buffer
+	d := New(log.New(&buf, "", 0))
+
+	// take returns everything logged since the last call and resets the
+	// buffer, so each assertion sees only its own command's output.
+	take := func() string {
+		s := buf.String()
+		buf.Reset()
+		return s
+	}
+
+	// 1) The first status after start always logs.
+	d.logCommand("status", "muted")
+	if got, want := take(), "command \"status\" -> \"muted\"\n"; got != want {
+		t.Fatalf("first status logged %q, want %q (first status after start must always log)", got, want)
+	}
+
+	// 2) An unchanged status reply is suppressed.
+	d.logCommand("status", "muted")
+	if got := take(); got != "" {
+		t.Fatalf("repeated identical status logged %q, want no output (unchanged status must be suppressed)", got)
+	}
+
+	// 3) A changed status reply logs.
+	d.logCommand("status", "unmuted")
+	if got, want := take(), "command \"status\" -> \"unmuted\"\n"; got != want {
+		t.Fatalf("changed status logged %q, want %q (a changed status reply must log)", got, want)
+	}
+
+	// 4) Non-status commands ALWAYS log, even repeated with identical
+	// replies (each command sent twice with the same reply).
+	for _, c := range []struct{ cmd, reply string }{
+		{"toggle", "muted"}, {"toggle", "muted"},
+		{"mute", "muted"}, {"mute", "muted"},
+		{"unmute", "unmuted"}, {"unmute", "unmuted"},
+		{"light toggle", "on 64% 4950K"}, {"light toggle", "on 64% 4950K"},
+	} {
+		d.logCommand(c.cmd, c.reply)
+		want := fmt.Sprintf("command %q -> %q\n", c.cmd, c.reply)
+		if got := take(); got != want {
+			t.Fatalf("non-status %q logged %q, want %q (non-status commands must always log, even identical repeats)", c.cmd, got, want)
+		}
+	}
+
+	// 5) After the non-status commands above, an unchanged status reply is
+	// still suppressed: dedupe keys on the last LOGGED status reply
+	// ("unmuted", from step 3), not on the last command.
+	d.logCommand("status", "unmuted")
+	if got := take(); got != "" {
+		t.Fatalf("status after non-status commands logged %q, want no output (dedupe must key on the last status reply, not the last command)", got)
+	}
+
+	// A genuinely changed status still logs after that suppression.
+	d.logCommand("status", "muted")
+	if got, want := take(), "command \"status\" -> \"muted\"\n"; got != want {
+		t.Fatalf("changed status after suppression logged %q, want %q", got, want)
+	}
 }
