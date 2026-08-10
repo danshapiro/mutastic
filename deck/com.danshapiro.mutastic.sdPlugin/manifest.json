@@ -1,0 +1,26 @@
+{
+	"Name": "Mutastic",
+	"Author": "Dan Shapiro",
+	"Version": "1.0.0",
+	"Icon": "icons/mutastic-mic",
+	"Category": "Custom",
+	"CodePathWin": "mutastic.exe",
+	"OS": [
+		{ "Platform": "windows", "MinimumVersion": "10" }
+	],
+	"Actions": [
+		{
+			"Name": "Mutastic Mute",
+			"UUID": "com.danshapiro.mutastic.mute",
+			"Tooltip": "Toggle mic mute everywhere; icon tracks the true mic state",
+			"Icon": "icons/mutastic-mic",
+			"DisableAutomaticStates": true,
+			"Controllers": ["Keypad"],
+			"SupportedInMultiActions": false,
+			"States": [
+				{ "Image": "icons/mutastic-mic", "Name": "Live", "ShowTitle": false },
+				{ "Image": "icons/mutastic-mic-muted", "Name": "Muted", "ShowTitle": false }
+			]
+		}
+	]
+}
