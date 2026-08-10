@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -45,6 +46,17 @@ func main() {
 		}
 		os.Exit(runDaemon())
 	}
+	// Stream Deck plugin mode. OpenDeck launches the binary from the
+	// plugin directory with Elgato-style args and NO subcommand word
+	// (mutastic.exe -port N -pluginUUID ... -registerEvent ... -info ...),
+	// so a leading -port flag IS the plugin mode; the explicit
+	// "deckplugin" word exists for manual/diagnostic launches.
+	if os.Args[1] == "deckplugin" {
+		os.Exit(runDeckPlugin(os.Args[2:]))
+	}
+	if os.Args[1] == "-port" {
+		os.Exit(runDeckPlugin(os.Args[1:]))
+	}
 	cmd, timeout, ok := clientCommand(os.Args[1:])
 	if !ok {
 		usage()
@@ -74,6 +86,7 @@ func clientCommand(args []string) (cmd string, timeout time.Duration, ok bool) {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: mutastic daemon | toggle | mute | unmute | status")
+	fmt.Fprintln(os.Stderr, "       mutastic deckplugin -port <N> -pluginUUID <uuid> -registerEvent <event> [-info <json>]  (OpenDeck plugin mode)")
 	fmt.Fprintln(os.Stderr, "       mutastic light toggle|on|off|status|list  (bare light commands act on ALL lights)")
 	fmt.Fprintln(os.Stderr, "       mutastic light brightness <0-100> | temp <2900-7000> | preset <cold|sunlight|afternoon|sunset|candle>")
 	fmt.Fprintln(os.Stderr, "       mutastic light name <COMx> <name> | unname <name|COMx>")
@@ -83,24 +96,15 @@ func usage() {
 // runClient sends one UDP command to the daemon and prints the reply.
 // Exit codes: 0 = ok, 1 = "error:" reply from the daemon, 2 = no daemon.
 func runClient(cmd, addr string, timeout time.Duration, out io.Writer) int {
-	conn, err := net.Dial("udp", addr)
-	if err != nil {
-		fmt.Fprintln(out, "error: no daemon reachable:", err)
-		return 2
-	}
-	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(timeout))
-	if _, err := conn.Write([]byte(cmd)); err != nil {
-		fmt.Fprintln(out, "error: no daemon reachable:", err)
-		return 2
-	}
-	buf := make([]byte, 2048) // multi-light list/fan-out replies exceed 256 bytes
-	n, err := conn.Read(buf)
-	if err != nil {
+	reply, err := askDaemon(cmd, addr, timeout)
+	switch {
+	case errors.Is(err, errNoReply):
 		fmt.Fprintln(out, "error: no daemon reachable")
 		return 2
+	case err != nil:
+		fmt.Fprintln(out, "error: no daemon reachable:", err)
+		return 2
 	}
-	reply := strings.TrimSpace(string(buf[:n]))
 	fmt.Fprintln(out, reply)
 	if strings.HasPrefix(reply, "error:") {
 		return 1
@@ -162,9 +166,11 @@ func runDaemon() int {
 	return 0
 }
 
-// openLogFile opens %LOCALAPPDATA%\mutastic\mutastic.log (os.UserCacheDir
-// is %LOCALAPPDATA% on Windows), rotating to .old above 5 MB.
-func openLogFile() (io.WriteCloser, string, error) {
+// openNamedLogFile opens %LOCALAPPDATA%\mutastic\<name> (os.UserCacheDir
+// is %LOCALAPPDATA% on Windows), rotating to <name>.old above 5 MB.
+// The daemon and the deckplugin use SEPARATE files: two processes racing
+// the rename-rotation on one file would be a real hazard.
+func openNamedLogFile(name string) (io.WriteCloser, string, error) {
 	dir, err := os.UserCacheDir()
 	if err != nil {
 		return nil, "", err
@@ -173,7 +179,7 @@ func openLogFile() (io.WriteCloser, string, error) {
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		return nil, "", err
 	}
-	path := filepath.Join(logDir, "mutastic.log")
+	path := filepath.Join(logDir, name)
 	if fi, err := os.Stat(path); err == nil && fi.Size() > 5<<20 {
 		os.Rename(path, path+".old")
 	}
@@ -182,6 +188,11 @@ func openLogFile() (io.WriteCloser, string, error) {
 		return nil, "", err
 	}
 	return f, path, nil
+}
+
+// openLogFile opens the daemon's log (%LOCALAPPDATA%\mutastic\mutastic.log).
+func openLogFile() (io.WriteCloser, string, error) {
+	return openNamedLogFile("mutastic.log")
 }
 
 // lightStateDir returns %LOCALAPPDATA%\mutastic (the same directory as
