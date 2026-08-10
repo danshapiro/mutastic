@@ -265,8 +265,6 @@ func (d *Daemon) serveUDP(pc net.PacketConn) {
 	}
 }
 
-// logCommand logs one served UDP command. Non-status commands always log.
-// A "status" command logs only when its reply differs from the previously
 // logCommand logs one served UDP command. Non-poll commands always log.
 // The two resident-poller commands ("status" from the mute key,
 // "light status" from the lights key, each every ~750ms) log only when
