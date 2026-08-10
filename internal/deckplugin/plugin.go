@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 )
 
@@ -12,8 +13,11 @@ import (
 // disable_automatic_states is true in the profile instance, so OpenDeck
 // never flips the icon on its own.
 const (
-	stateLive  = 0 // state 0: live mic (icons/mutastic-mic)
-	stateMuted = 1 // state 1: muted (icons/mutastic-mic-muted)
+	stateLive  = 0 // mute action state 0: live mic (icons/mutastic-mic)
+	stateMuted = 1 // mute action state 1: muted (icons/mutastic-mic-muted)
+
+	stateLightsOff = 0 // light action state 0: all lights off (icons/mutastic-light-off)
+	stateLightsOn  = 1 // light action state 1: any light on (icons/mutastic-light-on)
 )
 
 // PollInterval is how often the plugin polls the daemon's status while
@@ -83,6 +87,43 @@ func desiredState(reply string) (state int, ok bool) {
 		return stateMuted, true
 	case "unmuted":
 		return stateLive, true
+	}
+	return 0, false
+}
+
+// lightAnyOn maps a "light status" (or "light toggle") fan-out reply to
+// the light action's state index. Per-line grammar (multi.go handleAll):
+// "<COMx>[ <name>]: <status>" where status is "on <N>% <K>K", "off",
+// "unknown", or "error: <reason>"; labels never contain ':' so the
+// first ": " split is unambiguous even for "COM7: error: timeout".
+// Rules: ANY light on -> stateLightsOn; else any light known-off — or
+// the zero-lights reply "error: no light" (nothing attached, nothing
+// is on) -> stateLightsOff; else (all unknown/errors/unparseable) ->
+// ok=false: no usable state, the caller holds the current icon. This
+// mirrors the fleet toggle's own predicate, which counts unknown and
+// timed-out lights as off.
+func lightAnyOn(reply string) (state int, ok bool) {
+	if reply == "error: no light" {
+		return stateLightsOff, true
+	}
+	if strings.HasPrefix(reply, "error:") {
+		return 0, false
+	}
+	sawOff := false
+	for _, line := range strings.Split(reply, "\n") {
+		_, status, found := strings.Cut(line, ": ")
+		if !found {
+			continue
+		}
+		if status == "on" || strings.HasPrefix(status, "on ") {
+			return stateLightsOn, true
+		}
+		if status == "off" {
+			sawOff = true
+		}
+	}
+	if sawOff {
+		return stateLightsOff, true
 	}
 	return 0, false
 }

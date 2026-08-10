@@ -411,3 +411,40 @@ func TestRunHandlesEventsAndPolls(t *testing.T) {
 		t.Fatalf("Run = %v, want nil on socket close", err)
 	}
 }
+
+// TestLightAnyOn pins the light-reply -> state mapping against the
+// daemon's REAL output strings (fixtures copied verbatim from
+// internal/light/multi_test.go and main_test.go). ok=false means "no
+// usable state: hold the current icon" — same contract as desiredState.
+func TestLightAnyOn(t *testing.T) {
+	cases := []struct {
+		name  string
+		reply string
+		state int
+		ok    bool
+	}{
+		{"single on", "COM4: on 30% 2900K", stateLightsOn, true},
+		{"single named on", "COM4 desk-right: on 30% 2900K", stateLightsOn, true},
+		{"single off", "COM4: off", stateLightsOff, true},
+		{"all off", "COM4: off\nCOM7: off", stateLightsOff, true},
+		{"mixed off and on", "COM4: off\nCOM7: on 100% 4950K", stateLightsOn, true},
+		{"all on", "COM4: on 50% 4950K\nCOM7: on 50% 4950K\nCOM12: on 50% 4950K", stateLightsOn, true},
+		{"on plus wedged light", "COM4: on 40% 4950K\nCOM7: error: timeout", stateLightsOn, true},
+		{"off plus wedged light", "COM4: off\nCOM7: error: timeout", stateLightsOff, true},
+		{"off plus unknown counts as off", "COM4: off\nCOM7: unknown", stateLightsOff, true},
+		{"zero lights attached", "error: no light", stateLightsOff, true},
+		{"single unknown holds", "COM4: unknown", 0, false},
+		{"all unknown holds", "COM4: unknown\nCOM7: unknown", 0, false},
+		{"all wedged holds", "COM4: error: timeout", 0, false},
+		{"no light support holds", "error: no light support", 0, false},
+		{"unknown command holds", "error: unknown light command", 0, false},
+		{"empty reply holds", "", 0, false},
+		{"mic reply is not a light reply", "muted", 0, false},
+	}
+	for _, c := range cases {
+		st, ok := lightAnyOn(c.reply)
+		if ok != c.ok || (ok && st != c.state) {
+			t.Errorf("%s: lightAnyOn(%q) = (%d, %v), want (%d, %v)", c.name, c.reply, st, ok, c.state, c.ok)
+		}
+	}
+}
