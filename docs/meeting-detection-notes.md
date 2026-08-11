@@ -333,7 +333,7 @@ Only the *most recent* session per leaf survives (§4.3). History is not recover
 
 Checked and closed. Recorded so they are not re-investigated.
 
-- **ETW / Event Log** — the complete Microsoft-Windows-Audio manifest has no capture-session lifecycle events with a client PID, and zero events mapped to an Event Log channel. `[high]`
+- **ETW / Event Log for USAGE** — now **proven**, not inferred: beyond the Microsoft-Windows-Audio manifest (no capture lifecycle events), camsvc's OWN provider `Microsoft-Windows-Privacy-Auditing` (GUID `{D67FBB76-D18A-5AE3-24A3-8C1DB52D6C62}`, implemented by CapabilityAccessManager.dll) was manifest-dumped for 21H2 AND 24H2: every event (IDs 1000–1025) is consent/settings/database lifecycle — zero usage (start/stop) events. `[high]` **Nuance: see §13 — the channel IS useful as a diagnostic input.**
 - **Chrome DevTools Protocol** — requires owning browser launch; cannot attach to a running instance. `[high]`
 - **UI scraping** — MuteDeck documents the full cost (§12): visible-controls requirements, per-language string matching, vendor UI churn, enterprise extension policies, single-call limit. Reserve UI Automation for the one thing nothing else provides (per-app mute state) and prefer §6.7.
 - **Slack-specific signal** — none exists; huddles fall back to generic mic-in-use (English-only even in MuteDeck's scraper). `[high]`
@@ -394,3 +394,144 @@ Ordered by value-to-cost.
 - **Phantom-indicator class**: "1 app is using your microphone" with every per-app permission off — svchost-hosted services (voice-activation/Cortana wake-word listening) hold a permanent mic session that appears in NO per-app Settings list; OEM audio software (**MSI SoundTune**, Nahimic) keeps the indicator lit 24/7, training users to ignore it. For detection: R7's exclusion class extends to svchost/OEM services, and the taskbar indicator's credibility problem is an argument for our own diagnostic surface (§10). `[high — multiple threads]`
 
 **Binary archaeology (this machine):** camsvc.dll not present under System32 (service hosted elsewhere); audiosrv.dll/AudioSes.dll strings contain no ConsentStore/WNF_AUDC markers beyond a lone "PhoneCall" — no cheap string-level shortcut to the WNF_AUDC struct; real reversing required. `[high]`
+
+
+---
+
+## 13. Pass-6 addendum: live experiments + the Privacy-Auditing channel (2026-08-10)
+
+### 13.1 First measured ConsentStore write timing (this machine, 25H2)
+
+Live experiment: ffmpeg held the Yeti X for 6 s (`-f dshow -t 6`) while a
+100 ms poll watched the leaf.
+
+| Event | Measured |
+|---|---|
+| Process launch → leaf `Start!=0, Stop==0` | **+1.45 s** (upper bound; includes ffmpeg/dshow init) |
+| Capture end (+~7.4 s) → `Stop` written | **≤ ~1 s** |
+
+No published timing measurement exists anywhere (verified) — treat these as
+the first quantified numbers. Implications: a 750 ms–2 s poll is well matched
+to the OS's own write latency; sub-second detection ambitions are bounded by
+camsvc, not by the watcher. The leaf was freshly CREATED on first-ever use by
+that exe and persisted afterward (no garbage collection observed).
+
+### 13.2 `Microsoft-Windows-Privacy-Auditing/Operational` — a supported diagnostic channel
+
+camsvc ships its own ETW provider with a real Event Log channel that is
+**enabled by default** (verified locally: enabled=true, 100 MB cap,
+`%SystemRoot%\System32\Winevt\Logs\Microsoft-Windows-Privacy-Auditing%4Operational.evtx`).
+Full manifests (21H2 + 24H2, nasbench/EVTX-ETW-Resources) prove it carries
+NO usage events — but it is the supported passive path for two things the
+detector's diagnostic surface (§10) wants:
+
+- **Event 1004** (ValueChanged, user-app): someone/something changed a
+  consent value — e.g. mic permission revoked → fire the R9 blindness check.
+- **Events 1022/1023** (DatabaseRecovery, Warning): the CAM database was
+  recovered and "old data was lost" — expect this in the wild given the WAL
+  bug's cottage industry of cleanup tools (three GitHub repos now exist
+  solely to delete the WAL).
+
+Version-gate any parser: the schema changed materially 21H2→24H2 (16→26
+events; 1014/1015 fields changed `AppPackageFamilyName`→`AppID` +
+`FileID`/`ProgramID`). Sibling provider `-CPSS` (CorePrivacySettingsStore.dll)
+writes into the same channel. Zero public consumers found (no Sigma/KQL
+rules, no DFIR writeups) — this channel is essentially virgin territory.
+
+### 13.3 IMFSensorActivityMonitor — mic question now cheaply falsifiable
+
+The official sample (microsoft/Windows-Camera SensorActivityMonitorConsoleApp)
+applies **no device-type filtering** — its camera-only-ness is just the
+sample's own `DeviceClass::VideoCapture` enumeration choice, and its monitor
+callback prints EVERY report unfiltered. Experiment: run monitor mode with a
+mic hot and no camera; if an audio endpoint appears, mic coverage is real.
+Weak evidence leans negative (`MFSensorDeviceType` doc language is
+camera/frame-server only; audio capture does not flow through frame server).
+
+### 13.4 New audio-side WNF surface (unverified)
+
+An RS4 in-memory RPC dump (masthoon gist) shows `audiodg.exe` exposing
+`AudioDGGetDeviceGraphWnfStateName` — audiodg hands out per-device-graph WNF
+state names — plus `Windows.Media.Devices.Internal.AudioDeviceBroker`
+interfaces. First audio-side WNF lead beyond `WNF_AUDC_CAPTURE`; semantics
+unverified. Same dump shows the `Windows.Internal.CapabilityAccess.Management`
+namespace contained only *provisioning* interfaces on RS4 — `CapabilityUsage`
+arrived later; treat its availability as build-dependent.
+
+### 13.5 Closures and confirmations
+
+- **Patents**: Microsoft's patent corpus does not document the usage-tracking
+  mechanism (four targeted queries; closed).
+- **Wine/ReactOS**: neither implements CapabilityAccessManager (closed).
+- **`WNF_CAPTURE_STREAM_EVENT_HEADER`**: zero occurrences on the indexed web;
+  local reversing is the only path (authenticated GitHub code search remains
+  the one unclosed sweep).
+- **Velociraptor** parses ConsentStore as a standard forensic artifact; the
+  Windows 11 Settings "recent activity" 7-day history is the CAM SQLite db
+  surfacing, not the registry.
+- ConsentStore stores only the LATEST session per leaf (independent
+  confirmation of §4.3/§7.4).
+
+---
+
+## 14. Pass-7 addendum: live-experiment timing + ETW channel + WNF/IMFSensor notes (2026-08-10)
+
+### 14.1 First measured ConsentStore write timing (this machine, 25H2)
+
+Live experiment: ffmpeg held the Yeti X for 6 s (`-f dshow -t 6`) while a
+100 ms poll watched the leaf.
+
+| Event | Measured |
+|---|---|
+| Process launch → leaf `Start!=0, Stop==0` | **+1.45 s** (upper bound; includes ffmpeg/dshow init) |
+| Capture end (+~7.4 s) → `Stop` written | **≤ ~1 s** |
+
+No published timing measurement exists anywhere (verified) — treat these as
+the first quantified numbers. Implications: a 750 ms–2 s poll is well matched
+to the OS's own write latency; sub-second detection ambitions are bounded by
+camsvc, not by the watcher. The leaf was freshly CREATED on first-ever use by
+that exe and persisted afterward (no garbage collection observed).
+
+### 14.2 Operational ETW channel as diagnostic input: `Microsoft-Windows-Privacy-Auditing/Operational`
+
+**MAJOR CORRECTION to §8 (Dead ends).** ETW is NOT dead for usage; it IS live
+as a **diagnostic input, not a detection signal**. The channel `Microsoft-Windows-Privacy-Auditing/Operational`
+(enabled by default, 100 MB cap, manifest-confirmed via nasbench/EVTX-ETW-Resources for 21H2+24H2)
+carries:
+
+- **Event 1004** (ValueChanged, user-app): user or policy toggled a consent value
+  (e.g., mic permission revoked) → trigger the R9 privacy-toggle blindness check
+  without polling the `Value` key.
+- **Events 1022/1023** (DatabaseRecovery, Warning): CAM SQLite WAL recovery /
+  "old data was lost" → expected in the wild given the ecosystem of WAL cleanup
+  tools (three GitHub repos now exist solely to delete the WAL).
+
+The full manifest (16 events on 21H2 → 26 on 24H2) enumerates consent/settings/DB
+lifecycle only; zero usage (Start/Stop) events. **Schema changed 21H2→24H2:**
+`AppPackageFamilyName` → `AppID` + `FileID`/`ProgramID`; events 1014/1015 fields
+restructured; event ID count +10. Version-gate any consumer.
+
+Sibling provider `-CPSS` (CorePrivacySettingsStore.dll) writes into the same
+channel. Zero public consumers found (no Sigma/KQL rules, no DFIR writeups) —
+this channel is virgin territory for incident response.
+
+Upgrade §8 from "ETW: dead end" to "ETW: signal-dead, diagnostic-live."
+
+### 14.3 WNF micro-update (unverified)
+
+An RS4 in-memory RPC dump (masthoon gist) shows `audiodg.exe` exposing
+`AudioDGGetDeviceGraphWnfStateName` — audiodg hands out per-device-graph WNF
+state names — plus `Windows.Internal.CapabilityAccess.Management` contained
+only *provisioning* interfaces on RS4; `CapabilityUsage` (for usage queries)
+arrived later and is build-dependent. No action item; noted for future reversing.
+
+### 14.4 IMFSensorActivityMonitor mic coverage (weak negative evidence)
+
+The official sample applies **no device-type filtering** — it enumerates
+`DeviceClass::VideoCapture` by choice in the sample, but the monitor callback
+prints ALL reports unfiltered. Weak evidence leans negative: `MFSensorDeviceType`
+doc language emphasizes camera/frame-server only; audio capture does not flow
+through the frame server. Remains unproven; marked for empirical testing
+(spike: run the sample with a mic hot and zero camera activity).
+
+---
