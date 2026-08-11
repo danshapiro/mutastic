@@ -275,7 +275,9 @@ Media Foundation, **Windows 10 1703+**, documented and supported. Provides **eve
 - **Camera coverage: verified.** Multiple projects use it for camera activity.
 - **Microphone coverage: unverified.** The API is sensor-oriented; whether audio capture devices report through it is the open question.
 
-**This is the highest-value spike in the document.** If mic coverage works, it obsoletes registry archaeology entirely — no zombie keys, no `#`-encoding, no hive cross-product, no staleness guards. Spike before committing to the registry path as permanent architecture.
+**Spike attempted 2026-08-10 — VERDICT: treat as camera-only; DO NOT design the mic detector around it.** Empirical build blocked: this machine's VS2019 BuildTools has no usable Windows SDK headers (no mfidl.h/UCRT — confirming would require a ~1-2 GB SDK install, declined as a poor trade for a low-value confirmation). The documentary + structural evidence is strong and convergent: IMFSensorActivityMonitor is **Media Foundation Frame Server** infrastructure; the Frame Server brokers cameras (KSCATEGORY_SENSOR_CAMERA / KSCATEGORY_VIDEO_CAMERA); audio capture runs on a separate stack (audiodg/audiosrv, KSCATEGORY_AUDIO) that does not flow through the frame server; `MFSensorDeviceType` has no audio category; every MS sample/doc is camera-only.
+
+**Architectural decision:** the mic detector ships on the ConsentStore path — now exhaustively de-risked AND live-validated against a real Teams call. IMFSensorActivityMonitor remains the RIGHT API if camera-specific, per-device push detection is ever wanted — keep the signal source behind an interface so it can be added for that purpose later, but it is not the mic path.
 
 ### 6.2 `WNF_AUDC_CAPTURE` — the sleeper `[high] name / [unverified] usability`
 
