@@ -82,6 +82,58 @@ with `\` → `#` in the exe path. Undocumented but forensically stable.
   signals, PowerToys VCM (never read ConsentStore; one gem: use device role
   `eCommunications`, not `eConsole`).
 
+## Pass-4 additions (WNF names, failure modes, THIS machine's ground truth)
+
+- **Named WNF states** (stable names since 2019; hex values NOT stable —
+  query at runtime via `CapabilityUsage.GetWNFStateNameForChanges()`):
+  `WNF_CAM_MICROPHONE_USAGE_CHANGED` (in-use edges),
+  `WNF_CAM_MICROPHONE_ACCESS_CHANGED` (privacy-toggle change — the
+  notification for the blindness self-check). Spike candidate:
+  **`WNF_AUDC_CAPTURE`** — audio-engine-level state reporting PIDs of ALL
+  capturing apps (no paths/PFNs/zombies); undocumented struct, zero public
+  consumers. Sibling `WNF_AUDC_PHONECALL_ACTIVE` fires on active
+  Communications-category streams.
+- **Damaged-subsystem failure mode**: Win11 24H2's CapabilityAccessManager
+  SQLite DB has a WAL-bloat bug (30-276GB reports); circulating user fixes
+  stop `camsvc` (the ConsentStore writer!) and delete DB files, sometimes
+  breaking mic capability itself. Diagnostics must distinguish "camsvc not
+  running / keys absent" from "no meeting". The DB itself is SYSTEM-ACL'd —
+  not user-readable; registry stays the interface.
+- **Churn claimants** (e.g. Dell SmartByte) hammer capability logging
+  continuously — a third claimant class besides normal and permanent;
+  debounce must absorb constant flapping.
+- **Teams marks the mic in-use even when muted, even joined with "no
+  audio"** — great for meeting detection, useless for talking-state. Mute
+  state is never in the registry (ConsentStore is a one-way log:
+  hand-writing Stop=0 does not raise the tray indicator).
+- **Resolve the Teams PFN dynamically** (`Get-AppxPackage -Name MSTeams`)
+  instead of hardcoding. Webex uniquely spawns a per-meeting process
+  (process-presence viable there only). Exclusive-mode capture streams can
+  be invisible to WASAPI (holes the fallback beyond virtual soundcards).
+  24H2 may introduce a `NonPackaged\Executables\<bare.exe>` key shape
+  (seen once, location capability) — verify before trusting the path model.
+- **UI-scraping is a dead end**: MuteDeck (commercial leader) scrapes app
+  UI instead of mic-in-use and pays for it — localization-dependent
+  (Webex English-only), Zoom needs "controls visible", web meetings need a
+  browser extension, single-call limit.
+
+## Ground truth from THIS machine (2026-08-10 survey)
+
+- HKCU microphone: 65 NonPackaged leaves + 12 packaged; HKLM present but
+  empty here. All timestamps REG_QWORD; `Value=Allow` everywhere.
+- **Aqua Voice: ~40 leaves — one per Squirrel version dir** (zombie
+  accumulation at scale, confirmed locally).
+- **Winpepper.exe held `Stop==0` at survey time** (push-to-talk dictation —
+  a live permanent claimant ON THIS MACHINE). The exclusion list must
+  include Winpepper.exe, and mutastic/iago must exclude their own exes
+  (Iago.exe is in the store too).
+- **No `MSTeams_8wekyb3d8bbwe` entry exists here** — new Teams has never
+  recorded mic usage on this machine (only a 2025 Teams-classic leaf).
+  Verify new-Teams attribution empirically before trusting the catalog.
+- Windows Hello (`Microsoft.BioEnrollment`) and Insta360
+  `VirtualCameraService.exe` present under webcam — the Hello filter and
+  claimant-set rules both have local members.
+
 ## Product requirement learned the hard way
 
 Ship a diagnostic command ("why do you think the mic is in use?") listing
