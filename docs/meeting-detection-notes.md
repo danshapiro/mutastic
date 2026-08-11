@@ -630,6 +630,33 @@ existence ≠ usage, and a missing `LastUsedTimeStop` value must be treated as
 live Start/Stop appearance during a real Teams call is the one remaining
 open live test (§11).
 
+**RESOLVED (live, during a real Teams test call, 2026-08-11):** the packaged
+key populated exactly as the model predicts; the new-Teams-attribution spike
+is **confirmed positive**:
+
+```
+Value              = Allow          (transitioned Prompt->Allow on real grant)
+LastUsedTimeStart  = 2026-08-11 06:09:18Z
+LastUsedTimeStop   = 0              (== IN USE while in the call)
+LastUserAnnotatedLabel = 2  [DWord]    <- undocumented
+PersistedInDatabase    = 1  [DWord]    <- undocumented
+```
+
+New first-party facts: (1) **new Teams records usage under the packaged PFN
+`MSTeams_8wekyb3d8bbwe`** with standard `LastUsedTimeStart`/`LastUsedTimeStop`
+-- the packaged-PFN detection path is verified for Teams; (2) `Stop==0`
+correctly tracks live in-call state; (3) two undocumented values appear on
+packaged keys: **`PersistedInDatabase=1`** (confirms the registry entry is
+mirrored into the CAM SQLite db -- §14.3 -- so registry and DB are two views
+of the same write) and **`LastUserAnnotatedLabel`** (a DWord, semantics
+unknown); (4) the **webcam** MSTeams key held only `Value=Allow`/`LastSetTime`
+with no usage -- the camera was never used, so mic-only meeting state is real
+and cleanly distinguishable from camera; (5) `Winpepper.exe` remained a
+concurrent `Stop==0` claimant throughout -- a live demonstration of why the
+two-signal AND (§5.1) is required: mic-alone would false-positive on
+Winpepper, but "a recognized meeting app owns a mic leaf" correctly fires only
+for Teams.
+
 ---
 
 ## 14.6 Pass 7 — Authenticated GitHub code search (reverse-engineering sources)
