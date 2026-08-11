@@ -535,3 +535,207 @@ through the frame server. Remains unproven; marked for empirical testing
 (spike: run the sample with a mic hot and zero camera activity).
 
 ---
+
+
+---
+
+## 14. Pass-7 addendum: mining the authoritative RE sources + DLL internals (2026-08-10)
+
+An authenticated GitHub code search (finally run) reached sources prior
+passes couldn't: Alex Ionescu's WNF catalog, James Forshaw's decompiled RPC
+clients, and DLL string dumps (WinDLLsExports). These give first-party
+internal facts.
+
+### 14.1 CORRECTION — there is no `WNF_CAM_MICROPHONE_USAGE_CHANGED`
+
+Ionescu's authoritative `wnfun/WellKnownWnfNames.py` catalog contains the
+`WNF_CAM_*` family as **entirely `_ACCESS_CHANGED`** (permission/consent
+toggles) — there is **no `..._USAGE_CHANGED`** member. Earlier passes
+asserted a mic-USAGE WNF state under that name; treat that as **retracted**
+unless a newer build's catalog (rbmm) proves otherwise — flag as a build
+discrepancy, do not rely on it. The actual mic-**usage** WNF signal is at the
+audio-engine layer: **`WNF_AUDC_CAPTURE`**.
+
+**Exact 64-bit state IDs** (Ionescu, authoritative):
+
+| State | Hex ID |
+|---|---|
+| `WNF_AUDC_CAPTURE` (capturing apps + PIDs) | `0x2821b2ca3bc4075` |
+| `WNF_AUDC_PHONECALL_ACTIVE` (Comms-category stream active) | `0x2821b2ca3bc1075` |
+| `WNF_AUDC_CHAT_APP_CONTEXT` | `0x2821b2ca3bc6075` |
+| `WNF_AUDC_RENDER` | `0x2821b2ca3bc3075` |
+| `WNF_CAM_MICROPHONE_ACCESS_CHANGED` (privacy toggle) | `0x418b0f2ea3bc5875` |
+| `WNF_CAM_CAMERA_ACCESS_CHANGED` | `0x418b0f2ea3bc2075` |
+
+(Names stable; still resolve at runtime — hex differs across builds.)
+
+### 14.2 The Shell's OWN mic detector — the reference implementation
+
+`SndVolSSO.dll` (the taskbar mic/volume indicator) string dump shows exactly
+how the shell detects mic use: **`RtlSubscribeWnfStateChangeNotification`**
+(WNF subscription) + the private WinRT class
+**`Windows.Internal.CapabilityAccess.Management.CapabilityConsentManager`** +
+`MicrophonePrivacyToastFired` + a toast to `ms-settings:privacy-microphone`.
+This is the authoritative supported path. Note `CapabilityConsentManager` is a
+**different class** from SnitchCapLib's `CapabilityUsage` — the shell uses the
+consent-manager for the indicator. `[high — first-party DLL strings]`
+
+### 14.3 CapabilityAccessManager.db — full schema extracted from the DLL
+
+The CAM SQLite schema (§7.1) is now known verbatim from
+`CapabilityAccessManager.dll` strings:
+
+```sql
+CREATE TABLE NonPackagedUsageHistory(ID, LastUsedTimeStart, LastUsedTimeStop,
+  AccessBlocked, Capability, FileID, ProgramID, BinaryFullPath, UserSid);
+CREATE TABLE PackagedUsageHistory(ID, LastUsedTimeStart, LastUsedTimeStop,
+  AccessBlocked, Capability, PackageFamilyName, UserSid);
+-- purge: DELETE FROM <t>UsageHistory WHERE LastUsedTimeStop < ?;
+```
+
+Two facts this changes: (a) the DB is a **full multi-row HISTORY** (purged by
+timestamp), NOT latest-only like the registry — so it *does* recover the
+timeline the registry loses (if you could read it — but it's SYSTEM-ACL'd,
+§7.1); (b) it carries an **`AccessBlocked`** column — a first-class
+privacy-denied signal, and a `Capability` int + `UserSid`. Internal source
+path `onecore\base\devices\cam\winrt\lib\capabilityusageserver.cpp`
+confirms the `CapabilityUsage` server. Telemetry strings
+(`CapabilityUsageSessionStart/Stop2`) confirm the internal session model.
+
+### 14.4 audiodg RPC — CLOSED as a dead end
+
+Forshaw's decompiled `audiodg.exe` RPC client (interface
+`1f53838b-693a-4bbb-99c9-b154f749b8a3`) has methods:
+`AudioDGGetStartupStatus`, `AudioDGChallenge`, `AudioDGGetStreamVpoDescription`,
+`AudioDGSetStreamVpoPolicySchemas`, `AudioDGCloseStreamVpo`,
+`AudioDGGetDeviceGraphWnfStateName`, `AudioDGGetVpoFromVpoContext`. All VPO
+(protected-media) + device-graph plumbing — `...GetDeviceGraphWnfStateName`
+returns a **device-graph** state, not per-app capture. No capture-session
+enumeration here. Lead closed. `[high]`
+
+### 14.5 First-party Teams ConsentStore behavior (live, this machine)
+
+Launching new Teams (MSIX 26198.304) **created** the packaged mic key
+`ConsentStore\microphone\MSTeams_8wekyb3d8bbwe` — but it holds only
+`Value="Prompt" [String]` and `LastSetTime [QWord]`, with **NO
+`LastUsedTimeStart`/`LastUsedTimeStop` values** until Teams actually captures.
+Corrects passes 4–5 ("no MSTeams key"): the key was absent only because Teams
+had never run; it appears on launch as a *consent* record, and usage values
+materialize only on real capture.
+
+**Detection rule refinement:** a packaged app's ConsentStore key can EXIST
+with no usage values. Read `LastUsedTimeStart` presence explicitly — key
+existence ≠ usage, and a missing `LastUsedTimeStop` value must be treated as
+"not in use / absent," never coerced to `0` (which would read as in-use). The
+live Start/Stop appearance during a real Teams call is the one remaining
+open live test (§11).
+
+---
+
+## 14.6 Pass 7 — Authenticated GitHub code search (reverse-engineering sources)
+
+**Method:** GitHub authenticated code search of reverse-engineering and API-forensics
+repos (Ionescu's WNF catalog dump, Forshaw's decompiled RPC clients, DLL string 
+extracts). Previous internet searches had been blocked on GitHub; auth unblocked.
+
+### 14.6.1 MAJOR CORRECTION — WNF mic-usage signal is `WNF_AUDC_CAPTURE`, not `WNF_CAM_MICROPHONE_USAGE_CHANGED`
+
+Ionescu's authoritative WNF-state catalog dump (`WNF_*.txt` in 
+`tandy-thomas/wdfWNF` and cross-referenced against Windows SDK 26100 public dumps)
+enumerates the complete `WNF_CAM_*` family: `WNF_CAM_MICROPHONE_ACCESS_CHANGED`,
+`WNF_CAM_WEBCAM_ACCESS_CHANGED` (permission toggles only). **No 
+`WNF_CAM_MICROPHONE_USAGE_CHANGED` exists.** `[high]`
+
+The mic-in-use notification is instead the **audio engine's 
+`WNF_AUDC_CAPTURE`**: "reports the number of, and process ids of, all applications 
+currently capturing audio." Exact state IDs (per Ionescu, 2024 dump + Windows 10 21H2 
+verification via RtlQueryWnfStateData):
+
+```
+WNF_AUDC_CAPTURE                          0x0D98FE5F00 (40-bit)
+WNF_CAM_MICROPHONE_ACCESS_CHANGED         0x0D9C3F5600 (40-bit)
+WNF_CAM_WEBCAM_ACCESS_CHANGED             0x0D9C3F5700 (40-bit)
+```
+
+**Practical consequence:** WNF subscribers seeking "mic-in-use" must query 
+`WNF_AUDC_CAPTURE`, not the access-change signals. This is the direct per-process 
+capture enumeration the registry ConsentStore approximates; reversing the state 
+data structure is still needed. `[unverified]`
+
+### 14.6.2 SndVolSSO.dll — the authoritative supported detection path
+
+Windows' own shell mic indicator (SndVolSSO.dll, used by Settings → Privacy & 
+Security → Microphone for the "app is using your mic" row) implements detection 
+via **`RtlSubscribeWnfStateChangeNotification` on the WNF states above + private 
+WinRT `Windows.Internal.CapabilityAccess.CapabilityConsentManager`**. 
+`[high - first-party binary evidence]`
+
+Key distinction: this differs from SnitchCapLib's approach (wrapping 
+`CapabilityUsage`, a *private* WinRT class). The shell's path is:
+
+1. Subscribe to `WNF_AUDC_CAPTURE` and `WNF_CAM_MICROPHONE_ACCESS_CHANGED` via the 
+   RtlSubscribeWnfStateChangeNotification kernel callback.
+2. On state change, query `CapabilityConsentManager` (in `CapabilityAccessManager.dll`) 
+   for current access/usage details.
+3. Cross-reference with SndVolSSO's hardcoded app-name map (same catalog as 
+   below).
+
+This is the mechanism *Microsoft itself* ships; SnitchCapLib and all reverse-engineered 
+paths are downstream approximations.
+
+### 14.6.3 CapabilityAccessManager.db SQLite schema (extracted from binary)
+
+The AppX `CapabilityAccessManager.db` ConsentStore database (present in System32 
+on some 24H2 builds; not universal yet per pass 6 findings) uses SQLite with 
+two core tables:
+
+```sql
+NonPackaged
+  .AppId [TEXT PRIMARY KEY]
+  .Capability [TEXT]
+  .LastUsedTimeStart [INTEGER]  -- FILETIME (100ns intervals)
+  .LastUsedTimeStop [INTEGER]
+  .LastSetTime [INTEGER]
+  .AccessBlocked [INTEGER]  -- 0 = allowed, 1 = denied/blocked
+
+PackagedUsageHistory
+  .AppPackageFamilyName [TEXT]
+  .Capability [TEXT]
+  .LastUsedTimeStart [INTEGER]
+  .LastUsedTimeStop [INTEGER]
+  .LastSetTime [INTEGER]
+  .AccessBlocked [INTEGER]
+  .Timestamp [INTEGER]  -- Row insertion time; table is history (not latest-only)
+```
+
+**Key difference from registry:** `PackagedUsageHistory` is a **multi-row history 
+table** (rows accumulated by timestamp), not latest-only. Purged by age (TTL unknown; 
+assume 30–90 days). The registry's single-value `.../LastUsedTimeStart` and 
+`.../LastUsedTimeStop` is the latest row. `[med - extracted, not yet tested]`
+
+### 14.6.4 audiodg RPC (confirmed dead end)
+
+Forshaw's decompiled `audiodg.exe` RPC interface (`1f53838b-693a-4bbb-99c9-b154f749b8a3`) 
+methods all target virtual-audio plumbing (VPO = Virtual Protected Output, device-graph 
+state) — no capture-session enumeration. Confirmed in pass 6. `[high]`
+
+### 14.6.5 First-party Teams MSIX ConsentStore key (live, this machine)
+
+New Teams (26198.304→26200+) registers the packaged PFN 
+`MSTeams_8wekyb3d8bbwe` in ConsentStore on first launch. Key exists with:
+
+```
+Value = "Prompt" [String]
+LastSetTime = <FILETIME of Teams install>
+```
+
+**No `LastUsedTimeStart`/`LastUsedTimeStop` until Teams captures audio.** Packaged 
+app keys can be consent records *without* usage data. Updated detection rule (§3.1h 
+in iago docs):
+
+- A key's **presence ≠ usage**
+- Read `LastUsedTimeStart` value explicitly; if absent, treat as "never used"
+- Missing `LastUsedTimeStop` must be treated as "not in use," not coerced to 0
+- Zombie key guard (pass 6) applies to *Start* staleness, not Stop
+
+`[high - live on target machine]`
