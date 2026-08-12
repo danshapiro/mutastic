@@ -1,0 +1,4 @@
+# Windows launch scripts intentionally use CRLF; the CR is part of the line ending.
+ahk/*.ahk whitespace=cr-at-eol
+deploy/*.cmd whitespace=cr-at-eol
+deploy/*.vbs whitespace=cr-at-eol

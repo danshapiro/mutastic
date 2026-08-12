@@ -1,7 +1,7 @@
 ﻿; MuteAllMeetings.ahk  (AutoHotkey v1.1)
 ;
-; Middle USB foot pedal (F14) toggles microphone mute in ALL running
-; meeting apps at once: MS Teams, Zoom, Webex, and Google Meet tabs.
+; Center USB foot pedal (F14) is deliberately disabled because of accidental
+; presses; the Yeti physical button/F24 path and Stream Deck mute remain active.
 ; Left pedal (F13) toggles the NEEWER PL81 PRO light via mutastic.
 ;
 ; How it works: for every matching window, briefly activate it, send that

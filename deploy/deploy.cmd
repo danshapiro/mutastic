@@ -57,6 +57,7 @@ echo == Replacing startup shortcuts ==
 if exist "%STARTUP%\MuteAllMeetings.lnk" del /F "%STARTUP%\MuteAllMeetings.lnk"
 powershell -NoProfile -Command "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut('%STARTUP%\MuteAllMeetings.lnk'); $s.TargetPath = '%AHK_EXE%'; $s.Arguments = '%DEST%\MuteAllMeetings.ahk'; $s.WorkingDirectory = '%DEST%'; $s.Save()" || goto :fail
 powershell -NoProfile -Command "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut('%STARTUP%\Mutastic Daemon.lnk'); $s.TargetPath = 'C:\Windows\System32\wscript.exe'; $s.Arguments = '"%DEST%\mutastic-daemon.vbs"'; $s.WorkingDirectory = '%DEST%'; $s.Save()" || goto :fail
+powershell -NoProfile -Command "$key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder'; if (Test-Path -LiteralPath $key) { Remove-ItemProperty -LiteralPath $key -Name 'Mutastic Daemon.lnk' -ErrorAction SilentlyContinue; if ((Get-Item -LiteralPath $key -ErrorAction Stop).Property -contains 'Mutastic Daemon.lnk') { Write-Error 'StartupApproved still contains Mutastic Daemon.lnk'; exit 1 } }" || goto :fail
 
 echo == Relaunching ==
 start "" wscript.exe "%DEST%\mutastic-daemon.vbs"

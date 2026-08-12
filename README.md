@@ -1,39 +1,37 @@
 # mutastic
 
-One press mutes everything — foot pedal or the mic's own mute button:
-meeting apps AND the microphone itself.
+One press mutes everything — the mic's own mute button or the Stream Deck
+mute key toggles the meeting apps AND the microphone itself.
 
-The middle pedal of an iKKEGOL USB triple foot pedal (firmware-programmed to
-send `F14`) triggers:
+The center pedal of the iKKEGOL USB triple foot pedal is still
+firmware-programmed to send `F14`, but its handler in
+`ahk/MuteAllMeetings.ahk` is deliberately disabled because accidental presses
+were too easy. The active mute paths remain:
 
-1. **`ahk/MuteAllMeetings.ahk`** (AutoHotkey v1, Windows) — toggles the in-app
-   mute of every running meeting app (Teams desktop + browser tabs/PWA, Zoom,
-   Webex, focused Google Meet tabs) by activating each window, sending its
-   mute hotkey, and restoring focus.
-2. **`mutastic` daemon (Go)** — toggles the Blue Yeti X's *hardware* mute
-   (mute LED included) over its vendor HID protocol, and tracks the true mute
-   state by listening to the mic's events — including physical button presses
-   on the mic itself.
+1. **Physical Yeti X mute button** — the `mutastic` daemon observes the
+   hardware event and injects `F24`; `ahk/MuteAllMeetings.ahk` handles `F24`
+   by sweeping every running meeting app.
+2. **Stream Deck Mutastic Mute key** — the OpenDeck plugin toggles the Yeti X
+   through the daemon and injects the same `F24` app sweep.
 
-The left pedal (`F13`) toggles a NEEWER PL81 PRO LED streaming light: the
-AHK script runs `mutastic.exe light toggle`, and the same daemon drives the
-light over its CH340 USB-serial port.
+The left pedal (`F13`) still toggles the NEEWER PL81 PRO LED streaming lights:
+the AHK script runs `mutastic.exe light toggle`, and the same daemon drives the
+lights over their CH340 USB-serial ports.
 
 Pressing the **mute button on the Yeti X itself** keeps the meeting apps
-in sync too: the daemon sees the mic's `0x21` DeviceMute event (emitted
-only for physical presses — host-initiated commands echo `0x20` instead)
-and injects a synthetic `F24` keystroke; the AHK script's `*F24::` hotkey
-(the `*` lets it fire even while modifier keys are held)
-runs the same meeting-app sweep, but does NOT run `mutastic toggle` — the
-mic has already toggled its own hardware mute. Both directions are
-loop-free:
+in sync: the daemon sees the mic's `0x21` DeviceMute event (emitted only for
+physical presses — host-initiated commands echo `0x20` instead) and injects a
+synthetic `F24` keystroke. The AHK script's active `*F24::` hotkey (the `*`
+lets it fire even while modifier keys are held) runs the meeting-app sweep but
+does NOT run `mutastic toggle`, because the mic already changed its own
+hardware state. The active paths are loop-free:
 
-- **Pedal (`F14`):** AHK sweeps the apps and runs `mutastic toggle` → the
-  daemon writes a `0x20` mute command → the mic echoes `0x20` (stateless,
-  ignored) → no `0x21` is emitted → nothing re-triggers.
-- **Mic button:** the firmware toggles the mic and emits `0x21` → the
-  daemon injects `F24` (debounced, 400 ms) → AHK sweeps the apps only →
-  nothing runs `mutastic toggle` → no further events.
+- **Mic button:** the firmware toggles the mic and emits `0x21` → the daemon
+  injects `F24` (debounced, 400 ms) → AHK sweeps the apps only → no further
+  device command is sent.
+- **Stream Deck mute:** the plugin sends `toggle` to the daemon and injects one
+  `F24` app sweep → the mic's host-command echo is `0x20` (ignored) and the
+  AHK `F24` path does not call `mutastic toggle` → nothing re-triggers.
 
 ## Components
 
@@ -55,6 +53,10 @@ loop-free:
   command to the daemon and prints the reply (`muted`, `unmuted`, `unknown`,
   or `error: <reason>`). Exit codes: `0` = non-error reply, `1` = `error:`
   reply, `2` = no daemon reachable / bad usage.
+- **`mutastic ui`** — serves the loopback-only light controller at
+  `http://127.0.0.1:42815/`. Plain `mutastic ui` opens or focuses the panel in
+  the browser, reusing an already-running server; `mutastic ui --no-open`
+  starts or reuses the server without opening a browser and is the login mode.
 - **Light commands** — every attached PL81 PRO is discovered automatically.
   Bare `mutastic light <cmd>` acts on ALL lights, one reply line per light
   (`COM4 desk: on 30% 2900K`); `mutastic light@<name|COMx> <cmd>` targets
@@ -91,13 +93,12 @@ loop-free:
   light attached, the old single-light `light-state.json` is migrated to
   that light's per-port file; with several lights attached the old file is
   ambiguous and defaults apply.
-- **`ahk/MuteAllMeetings.ahk`** — the F14 handler runs
-  `mutastic.exe toggle` (hidden, non-blocking) and then toggles the meeting
-  apps as before; the F13 handler runs `mutastic.exe light toggle` the same
-  way.
-  The F24 handler — triggered only by the daemon's synthetic keystroke on
-  a physical mic-button press — runs the meeting-app sweep alone, with no
-  `mutastic.exe` call, so nothing loops back.
+- **`ahk/MuteAllMeetings.ahk`** — the F14/center-pedal handler is
+  deliberately commented out because of accidental presses. The active F13
+  handler runs `mutastic.exe light toggle` hidden and non-blocking. The active
+  `*F24` handler — used by the physical Yeti button and the Stream Deck mute
+  action — runs the meeting-app sweep alone, with no `mutastic.exe` call, so
+  nothing loops back.
 
 ### Stream Deck (OpenDeck plugin)
 
@@ -137,6 +138,27 @@ OpenDeck.
 `deploy\mute-everything.cmd` remains as a CLI entry point but the deck no
 longer uses it.
 
+## Startup (Windows login)
+
+The user Startup shortcut `Mutastic Daemon.lnk` runs the deployed
+`C:\Users\dan\code\mutastic-deploy\mutastic-daemon.vbs` through
+`wscript.exe`. The launcher starts `mutastic.exe daemon` first and then
+`mutastic.exe ui --no-open`, both hidden and asynchronously. Login therefore
+starts the hardware daemon and the light-controller server but **does not open
+Chrome or any other browser**. `MuteAllMeetings.lnk` separately starts the
+AutoHotkey app-sweep script.
+
+After login, plain `mutastic ui` opens or focuses the already-running panel at
+`http://127.0.0.1:42815/`. Duplicate launches are harmless: a second daemon
+cannot claim UDP port 42814, while a second UI command probes and reuses the
+existing server.
+
+To disable Mutastic startup intentionally, turn off **Mutastic Daemon** in
+Windows Settings → Apps → Startup (or Task Manager's Startup apps), or delete
+`Mutastic Daemon.lnk` from `shell:startup`. A later `deploy\deploy.cmd` run
+intentionally recreates and re-enables this owned Startup entry, so disable it
+again after deployment if that remains desired.
+
 ## Build (from WSL)
 
 ```bash
@@ -157,17 +179,21 @@ The script:
 
 - stops any running `mutastic.exe` and the MuteAllMeetings AutoHotkey process
   (other AHK scripts are left alone),
-- copies `mutastic.exe` and `MuteAllMeetings.ahk` to
-  `C:\Users\dan\code\mutastic-deploy\` (plus the tray icon if it can find
-  one),
+- copies `mutastic.exe`, `MuteAllMeetings.ahk`, and the unified hidden VBS
+  launcher to `C:\Users\dan\code\mutastic-deploy\` (plus the tray icon if
+  it can find one),
 - creates/updates two Startup shortcuts — `MuteAllMeetings.lnk` (AutoHotkey
-  v1 running the deployed script) and `Mutastic Daemon.lnk`
-  (`mutastic.exe daemon`) — removing the old shortcut that pointed at
-  `mute-unmute-meetings`,
-- relaunches both programs.
+  v1 running the deployed script) and `Mutastic Daemon.lnk` (`wscript.exe`
+  running the deployed VBS, which starts both the daemon and `ui --no-open`),
+- removes and then verifies the absence of the filename-keyed
+  `StartupApproved\StartupFolder` value for `Mutastic Daemon.lnk`; deployment
+  intentionally re-enables Mutastic autostart even if Windows previously
+  disabled that entry,
+- relaunches the daemon, UI server, AHK script, and OpenDeck. The UI relaunch
+  uses `--no-open`, so deployment does not force-open a browser.
 
 > **Deploying from WSL:** run `deploy.cmd` via `cmd.exe` with output
-> redirected to a file — the `start` of the daemon inherits the interop
+> redirected to a file — the `start` of the hidden launcher inherits the interop
 > console handle, so the invocation may never return to bash even though
 > the deploy succeeded. Treat a transcript ending in `Deploy complete.`
 > (plus fresh file timestamps and both processes running) as success, not
@@ -184,6 +210,17 @@ The script:
 
 - **Log:** `%LOCALAPPDATA%\mutastic\mutastic.log` — daemon startup, HID
   collection enumeration, every command and device event, reconnect activity.
+- **Nothing starts after Windows login:** check `Mutastic Daemon.lnk` in
+  `shell:startup` and the **Mutastic Daemon** entry in Windows Startup apps.
+  Running `deploy\deploy.cmd` recreates the shortcut, clears its exact
+  `StartupApproved` disable record, verifies that record is absent, and
+  intentionally re-enables login startup.
+- **No browser opened after login:** expected. Startup uses `ui --no-open` so
+  only the loopback server starts. Run plain `mutastic ui` to open or focus the
+  controller at `http://127.0.0.1:42815/`.
+- **Need startup intentionally disabled:** disable **Mutastic Daemon** in
+  Windows Startup apps (or remove its shortcut from `shell:startup`) after the
+  last deployment; every later deploy intentionally re-enables it.
 - **`status` says `unknown`:** normal right after daemon start; the state is
   known after the first mute command or device event.
 - **Second daemon exits immediately:** UDP port 42814 doubles as the

@@ -149,7 +149,9 @@ echo: 3A 02 03 01 00 09 00 49   <- ACK, light turned off
    and watch where visible change stops, to confirm the 19-step clamp
    (byte 0x12) on this unit. (Pre-existing TODO, still open.)
 2. **Real pedal press:** press the LEFT pedal (F13) and confirm the light
-   toggles; confirm F14 (mute) and F15 (Winpepper) still behave.
+   toggles; confirm F14 deliberately does nothing and F15 (Winpepper) still
+   behaves. Separately confirm the physical Yeti button/F24 path and Stream
+   Deck mute action still perform the active full-mute flow.
 3. **Knob broadcast + panel-off capture:** touch the physical knob while
    the daemon runs, then check the log for `light: frame` lines to finally
    capture a broadcast transcript (expected: CCT-shaped 8-byte frames).
