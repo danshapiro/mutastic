@@ -57,6 +57,10 @@ func main() {
 	if os.Args[1] == "-port" {
 		os.Exit(runDeckPlugin(os.Args[1:]))
 	}
+	// OBS snapshot mode: talks straight to obs-websocket, no daemon.
+	if os.Args[1] == "obs" {
+		os.Exit(runObs(os.Args[2:], os.Stdout, os.Stderr))
+	}
 	cmd, timeout, ok := clientCommand(os.Args[1:])
 	if !ok {
 		usage()
@@ -91,6 +95,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "       mutastic light brightness <0-100> | temp <2900-7000> | preset <cold|sunlight|afternoon|sunset|candle>")
 	fmt.Fprintln(os.Stderr, "       mutastic light name <COMx> <name> | unname <name|COMx>")
 	fmt.Fprintln(os.Stderr, "       mutastic light@<name|COMx> <command>  (one light)")
+	fmt.Fprintln(os.Stderr, "       mutastic obs snapshot --out <path> [--source <name>] | obs list-sources  (OBS still capture)")
 }
 
 // runClient sends one UDP command to the daemon and prints the reply.
