@@ -1,0 +1,13 @@
+{"id":"01","slug":"baseline","left":25,"center":25,"right":25,"temp":2900,"file":"01-baseline-L25-C25-R25-2900K.jpg"}
+{"id":"02","slug":"balanced-45","left":45,"center":45,"right":45,"temp":2900,"file":"02-balanced-45-L45-C45-R45-2900K.jpg"}
+{"id":"03","slug":"balanced-65","left":65,"center":65,"right":65,"temp":2900,"file":"03-balanced-65-L65-C65-R65-2900K.jpg"}
+{"id":"04","slug":"center-key","left":35,"center":70,"right":35,"temp":2900,"file":"04-center-key-L35-C70-R35-2900K.jpg"}
+{"id":"05","slug":"left-key","left":70,"center":45,"right":25,"temp":2900,"file":"05-left-key-L70-C45-R25-2900K.jpg"}
+{"id":"06","slug":"right-key","left":25,"center":45,"right":70,"temp":2900,"file":"06-right-key-L25-C45-R70-2900K.jpg"}
+{"id":"07","slug":"balanced-55","left":55,"center":55,"right":55,"temp":3500,"file":"07-balanced-55-L55-C55-R55-3500K.jpg"}
+{"id":"08","slug":"center-soft","left":40,"center":60,"right":40,"temp":3500,"file":"08-center-soft-L40-C60-R40-3500K.jpg"}
+{"id":"09","slug":"refined-left","left":65,"center":50,"right":30,"temp":3300,"file":"09-refined-left-L65-C50-R30-3300K.jpg"}
+{"id":"10","slug":"balanced-plus","left":58,"center":68,"right":58,"temp":3500,"file":"10-balanced-plus-L58-C68-R58-3500K.jpg"}
+{"id":"11","slug":"soft-left","left":60,"center":55,"right":40,"temp":3400,"file":"11-soft-left-L60-C55-R40-3400K.jpg"}
+{"id":"12","slug":"executive","left":55,"center":70,"right":50,"temp":3600,"file":"12-executive-L55-C70-R50-3600K.jpg"}
+{"id":"13","slug":"final-winner","left":55,"center":55,"right":55,"temp":3500,"file":"13-final-winner-L55-C55-R55-3500K.jpg","winner":true}

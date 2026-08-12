@@ -1,0 +1,3 @@
+Trying anthropic (timeout: 90s)...
+PASS - Face is evenly exposed with natural skin tones, clear catchlights in eyes, good facial dimension from balanced lighting, and clean background separation without hotspots or significant grain.
+✓ Success with anthropic

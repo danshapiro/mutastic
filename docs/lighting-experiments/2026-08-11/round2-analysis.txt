@@ -1,0 +1,39 @@
+Trying anthropic (timeout: 90s)...
+# Analysis
+
+Examining the face pixels closely:
+
+**#07 (balanced 55)** - L55/C55/R55/3500K
+- Best overall exposure: face is properly lit without blown highlights
+- Excellent skin tone: natural warmth without orange cast
+- Clear eye catchlights showing engagement
+- Good dimensionality with gentle modeling on face
+- Clean background separation
+- No visible glare or hot spots
+- Professional polish without looking overlit
+
+**#09 (refined left)** - L65/C50/R30/3300K
+- Slightly cooler than ideal, giving skin a hint of pallor
+- Good dimensionality from the left bias
+- Nice catchlights but face appears marginally underexposed in mid-tones
+- Professional but less warm/inviting
+
+**#10 (balanced plus)** - L58/C68/R58/3500K
+- Center too bright, creating slight flatness
+- Some forehead glare visible
+- Loses subtle shadow modeling that gives dimension
+
+**#12 (executive)** - L55/C70/R50/3600K
+- Center clearly overlit, face too bright
+- Flatter appearance, reduced dimensionality
+- Slightly warm but losing natural depth
+
+**#11, #05, #03** - Various issues with either too much contrast (#11), unbalanced warmth (#05), or slight overexposure (#03)
+
+## Winner: **#07 (balanced 55)**
+## Runner-up: **#09 (refined left)**
+
+**Why #07 wins:** The balanced 55 setup at 3500K delivers the most natural, credible professional appearance. Skin tone is warm but realistic, exposure is even without flatness, eyes have life, and the subtle facial modeling creates dimensionality. It looks polished but authentic—exactly what executive video calls demand.
+
+**Final recommendation:** **Stop at #07.** No micro-adjustment needed—this configuration has already achieved the optimal balance.
+✓ Success with anthropic
