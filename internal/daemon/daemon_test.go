@@ -153,6 +153,32 @@ func TestHandleCommandRoutesLightPrefix(t *testing.T) {
 	}
 }
 
+type blockingLightHandler struct {
+	mu       sync.Mutex
+	commands []string
+	started  chan struct{}
+	release  chan struct{}
+	once     sync.Once
+}
+
+func (h *blockingLightHandler) HandleCommand(cmd string) string {
+	h.mu.Lock()
+	h.commands = append(h.commands, cmd)
+	h.mu.Unlock()
+	if cmd == "brightness-delta 5" {
+		h.once.Do(func() { close(h.started) })
+		<-h.release
+		return "delta done"
+	}
+	return "status done"
+}
+
+func (h *blockingLightHandler) commandCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.commands)
+}
+
 func TestHandleCommandLightWithoutHandler(t *testing.T) {
 	d := New(testLogger())
 	if got := d.HandleCommand("light toggle"); got != "error: no light support" {
@@ -690,5 +716,78 @@ func TestLogCommandSuppressesRepeatedLightStatus(t *testing.T) {
 	}
 	if got := strings.Count(buf.String(), `"light toggle"`); got != 1 {
 		t.Fatalf("light toggle logged %d times, want 1:\n%s", got, buf.String())
+	}
+}
+
+func TestServeUDPSerializesDeltaBeforeNextDatagram(t *testing.T) {
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	handler := &blockingLightHandler{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	d := New(testLogger())
+	d.Light = handler
+	done := make(chan struct{})
+	go func() {
+		d.serveUDP(pc)
+		close(done)
+	}()
+
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(handler.release) }) }
+	defer func() {
+		release()
+		_ = pc.Close()
+		<-done
+	}()
+
+	serverAddr := pc.LocalAddr().(*net.UDPAddr)
+	first, err := net.DialUDP("udp", nil, serverAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := net.DialUDP("udp", nil, serverAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	_ = first.SetReadDeadline(time.Now().Add(time.Second))
+	_ = second.SetReadDeadline(time.Now().Add(time.Second))
+
+	if _, err := first.Write([]byte("light brightness-delta 5")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-handler.started:
+	case <-time.After(time.Second):
+		t.Fatal("delta handler did not start")
+	}
+	if _, err := second.Write([]byte("light status")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(25 * time.Millisecond)
+	if got := handler.commandCount(); got != 1 {
+		t.Fatalf("commands entered while delta was blocked = %d, want 1", got)
+	}
+
+	release()
+	readReply := func(conn *net.UDPConn) string {
+		buf := make([]byte, 128)
+		n, err := conn.Read(buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(buf[:n])
+	}
+	if got := readReply(first); got != "delta done" {
+		t.Fatalf("delta reply = %q, want %q", got, "delta done")
+	}
+	if got := readReply(second); got != "status done" {
+		t.Fatalf("second reply = %q, want %q", got, "status done")
 	}
 }

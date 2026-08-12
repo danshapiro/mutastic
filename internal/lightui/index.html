@@ -1,0 +1,499 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Mutastic light desk</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0e12;
+      --panel: #12171d;
+      --panel-2: #171e26;
+      --panel-3: #1d2630;
+      --line: #2b3743;
+      --line-strong: #405160;
+      --text: #edf3f7;
+      --muted: #94a4b1;
+      --dim: #647482;
+      --accent: #f2b35d;
+      --accent-strong: #ffca78;
+      --accent-ink: #21170b;
+      --cool: #80c8ef;
+      --green: #72d5a0;
+      --red: #ff8f86;
+      --shadow: 0 18px 50px rgba(0, 0, 0, .24);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 16px;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      background:
+        radial-gradient(circle at 92% -10%, rgba(242, 179, 93, .12), transparent 35rem),
+        var(--bg);
+      color: var(--text);
+    }
+
+    .sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+    .icon { width: 1.1rem; height: 1.1rem; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: 0 0 auto; }
+    .icon-fill { fill: currentColor; stroke: none; }
+
+    .shell { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 56px; }
+    .topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 24px; }
+    .brand { display: flex; align-items: center; gap: 13px; }
+    .brand-mark { width: 42px; height: 42px; border: 1px solid rgba(242, 179, 93, .55); border-radius: 13px; display: grid; place-items: center; color: var(--accent); background: rgba(242, 179, 93, .08); box-shadow: 0 0 0 5px rgba(242, 179, 93, .03); }
+    .brand-mark .icon { width: 22px; height: 22px; }
+    .eyebrow { margin: 0 0 4px; color: var(--accent); font-size: .69rem; font-weight: 760; letter-spacing: .13em; text-transform: uppercase; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { margin-bottom: 3px; font-size: 1.15rem; letter-spacing: -.02em; }
+    h2 { margin-bottom: 4px; font-size: 1.1rem; letter-spacing: -.02em; }
+    h3 { margin-bottom: 5px; font-size: 1rem; letter-spacing: -.015em; }
+    .subtle { margin: 0; max-width: 60ch; color: var(--muted); font-size: .86rem; line-height: 1.45; }
+
+    .connection { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 999px; padding: 8px 11px; color: var(--muted); font-size: .75rem; white-space: nowrap; }
+    .connection-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); box-shadow: 0 0 0 3px rgba(100, 116, 130, .12); }
+    .connection[data-state="online"] .connection-dot { background: var(--green); box-shadow: 0 0 0 3px rgba(114, 213, 160, .12); }
+    .connection[data-state="degraded"] .connection-dot { background: var(--accent); box-shadow: 0 0 0 3px rgba(242, 179, 93, .12); }
+
+    .panel { border: 1px solid var(--line); border-radius: 18px; background: linear-gradient(145deg, rgba(255,255,255,.025), transparent 55%), var(--panel); box-shadow: var(--shadow); }
+    .panel-inner { padding: 20px; }
+    .panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 20px; }
+    .panel-head .subtle { max-width: 72ch; }
+
+    button, input { font: inherit; }
+    button { min-height: 44px; border: 1px solid var(--line-strong); border-radius: 10px; padding: 9px 13px; background: var(--panel-2); color: var(--text); cursor: pointer; transition: background 120ms ease, border-color 120ms ease, color 120ms ease, transform 120ms ease; }
+    button:hover:not(:disabled) { border-color: var(--accent); background: var(--panel-3); }
+    button:active:not(:disabled) { transform: translateY(1px); }
+    button:focus-visible, input:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 3px; }
+    button:disabled, input:disabled { cursor: not-allowed; opacity: .42; }
+    .button-icon { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+    .button-primary { border-color: var(--accent); background: var(--accent); color: var(--accent-ink); font-weight: 760; }
+    .button-primary:hover:not(:disabled) { border-color: var(--accent-strong); background: var(--accent-strong); }
+    .button-quiet { color: var(--muted); }
+    .button-quiet:hover:not(:disabled) { color: var(--text); }
+    .button-warm { color: var(--accent-strong); }
+    .button-cool { color: var(--cool); }
+
+    .power-row { display: flex; flex-wrap: wrap; gap: 8px; }
+    .power-row button { min-width: 88px; }
+    .control-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+    .control-block { min-width: 0; border: 1px solid var(--line); border-radius: 13px; padding: 14px; background: rgba(255,255,255,.015); }
+    .control-block-wide { grid-column: 1 / -1; }
+    .control-label { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; color: var(--muted); font-size: .77rem; font-weight: 700; letter-spacing: .02em; }
+    output { color: var(--text); font-size: .95rem; font-variant-numeric: tabular-nums; }
+    .range-wrap { display: grid; gap: 8px; }
+    input[type="range"] { width: 100%; height: 26px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+    input[type="range"]::-webkit-slider-runnable-track { height: 6px; border-radius: 99px; background: linear-gradient(90deg, #cf975a, #f3bd73 35%, #d7e6ee 65%, #75bfe6); }
+    input[type="range"]::-moz-range-track { height: 6px; border-radius: 99px; background: linear-gradient(90deg, #cf975a, #f3bd73 35%, #d7e6ee 65%, #75bfe6); }
+    input[type="range"]::-webkit-slider-thumb { width: 20px; height: 20px; margin-top: -7px; border: 2px solid var(--bg); border-radius: 50%; background: var(--text); box-shadow: 0 0 0 2px var(--accent); -webkit-appearance: none; }
+    input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: 2px solid var(--bg); border-radius: 50%; background: var(--text); box-shadow: 0 0 0 2px var(--accent); }
+    .range-hints { display: flex; justify-content: space-between; color: var(--dim); font-size: .7rem; }
+    .trim-row { display: flex; flex-wrap: wrap; gap: 8px; }
+    .trim-row button { min-width: 58px; padding-inline: 10px; }
+    .semantics { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 18px; color: var(--muted); font-size: .74rem; }
+    .semantics span { display: inline-flex; align-items: center; gap: 6px; }
+    .semantics .icon { width: .9rem; height: .9rem; color: var(--accent); }
+
+    .section-title { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin: 34px 0 13px; }
+    .section-title p { margin: 0; color: var(--muted); font-size: .78rem; }
+    .lights-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 13px; }
+    .light-card { min-width: 0; border: 1px solid var(--line); border-radius: 16px; padding: 17px; background: var(--panel); box-shadow: 0 10px 24px rgba(0,0,0,.12); }
+    .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 17px; }
+    .card-meta { margin: 0; color: var(--muted); font-size: .73rem; font-variant-numeric: tabular-nums; }
+    .status-badge { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--line); border-radius: 999px; padding: 5px 8px; color: var(--muted); font-size: .66rem; font-weight: 740; text-transform: uppercase; letter-spacing: .06em; }
+    .status-badge[data-state="on"] { border-color: rgba(114, 213, 160, .35); color: var(--green); }
+    .status-badge[data-state="off"] { color: var(--muted); }
+    .status-badge[data-state="error"] { border-color: rgba(255, 143, 134, .4); color: var(--red); }
+    .status-badge[data-state="disconnected"] { color: var(--dim); }
+    .power-button { display: inline-flex; align-items: center; gap: 7px; min-height: 40px; padding: 7px 10px; color: var(--muted); }
+    .power-button[data-on="true"] { border-color: rgba(114, 213, 160, .45); color: var(--green); }
+    .card-control { display: grid; gap: 7px; margin-top: 14px; }
+    .card-control .control-label { margin-bottom: 0; }
+    .card-error { display: flex; align-items: flex-start; gap: 8px; margin-top: 14px; border: 1px solid rgba(255, 143, 134, .35); border-radius: 10px; padding: 9px 10px; color: var(--red); font-size: .75rem; line-height: 1.35; }
+    .card-error[hidden], .error-banner[hidden], .empty[hidden] { display: none; }
+    .card-error .icon { margin-top: 1px; width: .95rem; height: .95rem; flex: 0 0 auto; }
+    .empty { border: 1px dashed var(--line-strong); border-radius: 14px; padding: 30px 20px; color: var(--muted); text-align: center; }
+    .empty strong { display: block; margin-bottom: 5px; color: var(--text); }
+    .error-banner { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin: 16px 0 0; border: 1px solid rgba(255, 143, 134, .4); border-radius: 12px; padding: 12px 13px; color: var(--red); background: rgba(255, 143, 134, .06); font-size: .8rem; line-height: 1.4; }
+    .error-copy { display: flex; gap: 9px; }
+    .error-copy .icon { margin-top: 1px; width: 1rem; height: 1rem; flex: 0 0 auto; }
+    .error-banner button { min-height: 36px; padding: 6px 10px; color: var(--red); }
+    footer { margin-top: 25px; color: var(--dim); font-size: .7rem; text-align: center; }
+
+    @media (max-width: 720px) {
+      .shell { width: min(100% - 20px, 560px); padding-top: 18px; }
+      .topbar { align-items: stretch; flex-direction: column; gap: 15px; }
+      .connection { align-self: flex-start; }
+      .control-grid { grid-template-columns: 1fr; }
+      .control-block-wide { grid-column: auto; }
+      .panel-inner { padding: 15px; }
+      .panel-head { margin-bottom: 16px; }
+      .section-title { align-items: flex-start; flex-direction: column; gap: 4px; }
+      .lights-grid { grid-template-columns: 1fr; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+    }
+  </style>
+</head>
+<body>
+  <svg class="sprite" aria-hidden="true" focusable="false">
+    <symbol id="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.65 17.65l1.42 1.42M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.65 6.35l1.42-1.42"></path></symbol>
+    <symbol id="icon-power" viewBox="0 0 24 24"><path d="M12 2v10"></path><path d="M6.2 5.8a8 8 0 1 0 11.6 0"></path></symbol>
+    <symbol id="icon-refresh" viewBox="0 0 24 24"><path d="M20 11a8.1 8.1 0 0 0-14.5-3L4 10"></path><path d="M4 4v6h6"></path><path d="M4 13a8.1 8.1 0 0 0 14.5 3L20 14"></path><path d="M20 20v-6h-6"></path></symbol>
+    <symbol id="icon-minus" viewBox="0 0 24 24"><path d="M5 12h14"></path></symbol>
+    <symbol id="icon-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"></path></symbol>
+    <symbol id="icon-warm" viewBox="0 0 24 24"><path d="M12 3v18M5.6 6.2l12.8 11.6M18.4 6.2L5.6 17.8"></path><circle cx="12" cy="12" r="3.1"></circle></symbol>
+    <symbol id="icon-alert" viewBox="0 0 24 24"><path d="M12 3 2.8 20h18.4L12 3Z"></path><path d="M12 9v5M12 17h.01"></path></symbol>
+  </svg>
+
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark"><svg class="icon"><use href="#icon-sun"></use></svg></div>
+        <div>
+          <p class="eyebrow">Mutastic / local control</p>
+          <h1>Light desk</h1>
+          <p class="subtle">Tune each panel on its own, or move the whole rig together without losing your balance.</p>
+        </div>
+      </div>
+      <div id="connection" class="connection" data-state="degraded" role="status" aria-live="polite"><span class="connection-dot"></span><span id="connection-text">Connecting</span></div>
+    </header>
+
+    <section class="panel" aria-labelledby="all-lights-title">
+      <div class="panel-inner">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Gang controls</p>
+            <h2 id="all-lights-title">All lights</h2>
+            <p class="subtle">Match writes one absolute value to every connected panel. Trim nudges each panel relative to its current setting.</p>
+          </div>
+          <button id="refresh" class="button-quiet button-icon" type="button" title="Refresh light status"><svg class="icon"><use href="#icon-refresh"></use></svg><span>Refresh</span></button>
+        </div>
+
+        <div class="control-grid">
+          <div class="control-block control-block-wide">
+            <div class="control-label"><span>Power</span><span>whole rig</span></div>
+            <div class="power-row" role="group" aria-label="All lights power">
+              <button class="button-primary button-icon" type="button" data-group-action="on"><svg class="icon"><use href="#icon-power"></use></svg><span>All on</span></button>
+              <button class="button-icon" type="button" data-group-action="off"><svg class="icon"><use href="#icon-power"></use></svg><span>All off</span></button>
+              <button class="button-quiet" type="button" data-group-action="toggle">Toggle</button>
+            </div>
+          </div>
+
+          <div class="control-block">
+            <label class="control-label" for="group-brightness"><span>Match brightness</span><output id="group-brightness-output" for="group-brightness">Unknown</output></label>
+            <div class="range-wrap">
+              <input id="group-brightness" type="range" min="0" max="100" value="55" aria-label="Match brightness for all lights">
+              <div class="range-hints"><span>0%</span><span>100%</span></div>
+            </div>
+          </div>
+
+          <div class="control-block">
+            <label class="control-label" for="group-temp"><span>Match warmth</span><output id="group-temp-output" for="group-temp">Unknown</output></label>
+            <div class="range-wrap">
+              <input id="group-temp" type="range" min="0" max="18" value="9" aria-label="Match color temperature for all lights">
+              <div class="range-hints"><span>2900K warm</span><span>7000K cool</span></div>
+            </div>
+          </div>
+
+          <div class="control-block">
+            <div class="control-label"><span>Group brightness trim</span><span>relative</span></div>
+            <div class="trim-row" role="group" aria-label="Relative group brightness trim">
+              <button type="button" data-group-action="brightness-delta" data-value="-5">-5</button>
+              <button type="button" data-group-action="brightness-delta" data-value="-1">-1</button>
+              <button type="button" data-group-action="brightness-delta" data-value="1">+1</button>
+              <button type="button" data-group-action="brightness-delta" data-value="5">+5</button>
+            </div>
+          </div>
+
+          <div class="control-block">
+            <div class="control-label"><span>Group warmth trim</span><span>one hardware step</span></div>
+            <div class="trim-row" role="group" aria-label="Relative group warmth trim">
+              <button class="button-cool button-icon" type="button" data-group-action="temp-step-delta" data-value="1"><svg class="icon"><use href="#icon-plus"></use></svg><span>Cooler</span></button>
+              <button class="button-warm button-icon" type="button" data-group-action="temp-step-delta" data-value="-1"><svg class="icon"><use href="#icon-minus"></use></svg><span>Warmer</span></button>
+            </div>
+          </div>
+        </div>
+
+        <div id="error-banner" class="error-banner" hidden role="alert">
+          <div class="error-copy"><svg class="icon"><use href="#icon-alert"></use></svg><span id="error-text"></span></div>
+          <button id="retry" type="button">Retry</button>
+        </div>
+      </div>
+    </section>
+
+    <div class="section-title">
+      <div><p class="eyebrow">Individual controls</p><h2>Panels</h2></div>
+      <p id="light-count">Waiting for the daemon…</p>
+    </div>
+    <section id="lights-grid" class="lights-grid" aria-live="polite" aria-label="Individual lights"></section>
+    <div id="empty" class="empty" hidden><strong>No named or connected lights yet</strong><span>Start the mutastic daemon or plug in a PL81 PRO panel, then refresh.</span></div>
+
+    <footer>Loopback only · changes are persisted by the mutastic daemon · status refreshes every 750 ms</footer>
+  </main>
+
+  <script src="/mutation_queue.js"></script>
+  <script>
+    (() => {
+      "use strict";
+
+      const TEMP_STEPS = [2900, 3128, 3356, 3583, 3811, 4039, 4267, 4494, 4722, 4950, 5178, 5406, 5633, 5861, 6089, 6317, 6544, 6772, 7000];
+      const state = {
+        lights: [],
+        cardSignature: null,
+        active: new Set(),
+        timers: new Map(),
+        polling: false
+      };
+
+      const $ = (id) => document.getElementById(id);
+      const icon = (name) => `<svg class="icon" aria-hidden="true"><use href="#icon-${name}"></use></svg>`;
+      const escapeHTML = (value) => String(value).replace(/[&<>'"]/g, (char) => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", "'":"&#39;", '"':"&quot;"}[char]));
+      const temperatureIndex = (value) => TEMP_STEPS.indexOf(Number(value));
+      const lightKey = (port, field) => `${port}:${field}`;
+      const lightIsOn = (light) => light.connected && light.state === "on" && light.brightness != null && light.temp != null && temperatureIndex(light.temp) >= 0;
+
+      function setConnection(text, mode) {
+        $("connection").dataset.state = mode;
+        $("connection-text").textContent = text;
+      }
+
+      function showError(message) {
+        $("error-text").textContent = message;
+        $("error-banner").hidden = false;
+      }
+
+      function clearError() {
+        $("error-banner").hidden = true;
+      }
+
+      function errorMessage(data, response) {
+        if (data && data.details && data.details.length) {
+          return `${data.error || "Light operation failed"}: ${data.details.map((detail) => `${detail.target}: ${detail.error}`).join(" · ")}`;
+        }
+        return (data && data.error) || `Request failed (${response.status})`;
+      }
+
+      function cardMarkup(light) {
+        const port = escapeHTML(light.port);
+        const name = escapeHTML(light.name || light.port);
+        const on = lightIsOn(light);
+        const tempIndex = on ? temperatureIndex(light.temp) : 0;
+        const powerDisabled = light.connected ? "" : " disabled";
+        const sliderDisabled = on ? "" : " disabled";
+        const brightnessValue = on ? ` value="${light.brightness}"` : "";
+        const tempValue = on ? ` value="${tempIndex}"` : "";
+        const brightnessDisplay = on ? `${light.brightness}%` : "—";
+        const tempDisplay = on ? `${TEMP_STEPS[tempIndex]}K` : "Unknown";
+        return `<article class="light-card" id="light-${port}" data-port="${port}">
+          <div class="card-head">
+            <div><h3 class="light-name">${name}</h3><p class="card-meta">${port} · <span class="light-connection">${light.connected ? "connected" : "disconnected"}</span></p></div>
+            <div><span class="status-badge" data-state="${escapeHTML(light.connected ? light.state : "disconnected")}">${escapeHTML(light.connected ? light.state : "disconnected")}</span></div>
+          </div>
+          <button class="power-button button-icon" type="button" data-power${powerDisabled} aria-pressed="${light.state === "on"}">${icon("power")}<span class="power-label">${light.state === "on" ? "Turn off" : "Turn on"}</span></button>
+          <div class="card-control">
+            <label class="control-label" for="brightness-${port}"><span>Brightness</span><output id="brightness-output-${port}" for="brightness-${port}">${brightnessDisplay}</output></label>
+            <input id="brightness-${port}" data-field="brightness" type="range" min="0" max="100"${brightnessValue} aria-label="Brightness for ${name}"${sliderDisabled}>
+          </div>
+          <div class="card-control">
+            <label class="control-label" for="temp-${port}"><span>Color temperature</span><output id="temp-output-${port}" for="temp-${port}">${tempDisplay}</output></label>
+            <input id="temp-${port}" data-field="temp" type="range" min="0" max="18"${tempValue} aria-label="Color temperature for ${name}"${sliderDisabled}>
+            <div class="range-hints"><span>2900K warm</span><span>7000K cool</span></div>
+          </div>
+          <div class="card-error" hidden role="status">${icon("alert")}<span class="card-error-text"></span></div>
+        </article>`;
+      }
+
+      function renderCards(lights) {
+        const signature = lights.map((light) => `${light.port}|${light.name}`).join(",");
+        if (signature !== state.cardSignature) {
+          $("lights-grid").innerHTML = lights.map(cardMarkup).join("");
+          state.cardSignature = signature;
+          bindCards();
+        }
+        $("empty").hidden = lights.length !== 0;
+        $("light-count").textContent = lights.length === 1 ? "1 panel" : `${lights.length} panels`;
+        lights.forEach(updateCard);
+        updateGroupDefaults(lights);
+      }
+
+      function updateCard(light) {
+        const card = $(`light-${light.port}`);
+        if (!card) return;
+        const status = card.querySelector(".status-badge");
+        const connection = card.querySelector(".light-connection");
+        const power = card.querySelector("[data-power]");
+        const brightness = card.querySelector('[data-field="brightness"]');
+        const temp = card.querySelector('[data-field="temp"]');
+        const brightnessOutput = card.querySelector("output[id^=brightness-output]");
+        const tempOutput = card.querySelector("output[id^=temp-output]");
+        const cardError = card.querySelector(".card-error");
+        const on = lightIsOn(light);
+        status.dataset.state = light.connected ? light.state : "disconnected";
+        status.textContent = light.connected ? light.state : "disconnected";
+        connection.textContent = light.connected ? "connected" : "disconnected";
+        power.disabled = !light.connected;
+        power.dataset.on = light.state === "on" ? "true" : "false";
+        power.setAttribute("aria-pressed", light.state === "on" ? "true" : "false");
+        power.querySelector(".power-label").textContent = light.state === "on" ? "Turn off" : "Turn on";
+        brightness.disabled = !on;
+        temp.disabled = !on;
+        const brightnessKey = lightKey(light.port, "brightness");
+        const tempKey = lightKey(light.port, "temp");
+        if (on && !state.active.has(brightnessKey) && document.activeElement !== brightness) brightness.value = light.brightness;
+        if (on && !state.active.has(tempKey) && document.activeElement !== temp) temp.value = temperatureIndex(light.temp);
+        brightnessOutput.textContent = on ? `${light.brightness}%` : "—";
+        tempOutput.textContent = on ? `${TEMP_STEPS[temperatureIndex(light.temp)]}K` : "Unknown";
+        if (light.error) {
+          cardError.hidden = false;
+          card.querySelector(".card-error-text").textContent = light.error;
+        } else {
+          cardError.hidden = true;
+        }
+      }
+
+      function updateGroupDefaults(lights) {
+        const brightness = $("group-brightness");
+        const temp = $("group-temp");
+        const onLights = lights.filter(lightIsOn);
+        const brightnessValues = onLights.map((light) => light.brightness);
+        const tempValues = onLights.map((light) => temperatureIndex(light.temp));
+        const brightnessActive = state.active.has("group:brightness") || document.activeElement === brightness;
+        const tempActive = state.active.has("group:temp") || document.activeElement === temp;
+
+        if (!brightnessActive) {
+          if (brightnessValues.length === 0) {
+            $("group-brightness-output").textContent = "Unknown";
+          } else if (brightnessValues.every((value) => value === brightnessValues[0])) {
+            brightness.value = brightnessValues[0];
+            $("group-brightness-output").textContent = `${brightnessValues[0]}%`;
+          } else {
+            $("group-brightness-output").textContent = "Mixed";
+          }
+        }
+        if (!tempActive) {
+          if (tempValues.length === 0) {
+            $("group-temp-output").textContent = "Unknown";
+          } else if (tempValues.every((value) => value === tempValues[0])) {
+            temp.value = tempValues[0];
+            $("group-temp-output").textContent = `${TEMP_STEPS[tempValues[0]]}K`;
+          } else {
+            $("group-temp-output").textContent = "Mixed";
+          }
+        }
+      }
+
+      function bindCards() {
+        document.querySelectorAll(".light-card").forEach((card) => {
+          const port = card.dataset.port;
+          const target = port;
+          const power = card.querySelector("[data-power]");
+          power.addEventListener("click", () => enqueueMutation(`power:${port}`, "/api/light", {target, action: "toggle"}, false));
+          card.querySelectorAll("input[type=range]").forEach((input) => {
+            const field = input.dataset.field;
+            const key = lightKey(port, field);
+            input.addEventListener("focus", () => state.active.add(key));
+            input.addEventListener("blur", () => state.active.delete(key));
+            input.addEventListener("pointerdown", () => state.active.add(key));
+            input.addEventListener("pointerup", () => { if (document.activeElement !== input) state.active.delete(key); });
+            input.addEventListener("input", () => {
+              const value = Number(input.value);
+              const output = card.querySelector(`output[id^=${field}-output]`);
+              output.textContent = field === "brightness" ? `${value}%` : `${TEMP_STEPS[value]}K`;
+              scheduleSlider(key, "/api/light", {target, action: field, value: field === "brightness" ? value : TEMP_STEPS[value]});
+            });
+          });
+        });
+      }
+
+      function scheduleSlider(key, endpoint, body) {
+        clearTimeout(state.timers.get(key));
+        state.timers.set(key, setTimeout(() => enqueueMutation(key, endpoint, body, true), 100));
+      }
+
+      async function refreshLights(silent) {
+        if (state.polling) return;
+        state.polling = true;
+        let panelReached = false;
+        try {
+          const response = await fetch("/api/lights", {cache: "no-store"});
+          panelReached = true;
+          const data = await response.json();
+          if (data.lights) {
+            state.lights = data.lights;
+            renderCards(state.lights);
+          }
+          if (!response.ok) throw new Error(errorMessage(data, response));
+          setConnection("Daemon connected", "online");
+          if (!silent) clearError();
+        } catch (error) {
+          setConnection(panelReached ? "Daemon issue" : "Panel offline", "degraded");
+          showError(error.message || "Cannot reach the light controller");
+        } finally {
+          state.polling = false;
+        }
+      }
+
+      const mutationQueue = LightMutationQueue({
+        post: async (mutation) => {
+          const response = await fetch(mutation.endpoint, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(mutation.body), cache: "no-store"});
+          const data = await response.json();
+          if (data.lights) {
+            state.lights = data.lights;
+            renderCards(state.lights);
+          }
+          if (!response.ok) throw new Error(errorMessage(data, response));
+          return data;
+        },
+        onSuccess: () => clearError(),
+        onFailure: (error) => {
+          setConnection("Daemon issue", "degraded");
+          showError(error.message || "Light operation failed");
+          refreshLights(true);
+        }
+      });
+
+      function enqueueMutation(key, endpoint, body, replace) {
+        mutationQueue.enqueue({key, endpoint, body, replace});
+      }
+
+      function bindTopControls() {
+        $("refresh").addEventListener("click", () => refreshLights(false));
+        $("retry").addEventListener("click", () => refreshLights(false));
+        document.querySelectorAll("[data-group-action]").forEach((button) => {
+          if (button.dataset.groupAction === "brightness-delta" || button.dataset.groupAction === "temp-step-delta") {
+            button.addEventListener("click", () => enqueueMutation(`group-trim:${Date.now()}`, "/api/group", {action: button.dataset.groupAction, value: Number(button.dataset.value)}, false));
+          } else {
+            button.addEventListener("click", () => enqueueMutation(`group-power:${button.dataset.groupAction}`, "/api/group", {action: button.dataset.groupAction}, false));
+          }
+        });
+        const brightness = $("group-brightness");
+        const temp = $("group-temp");
+        brightness.addEventListener("focus", () => state.active.add("group:brightness"));
+        brightness.addEventListener("blur", () => state.active.delete("group:brightness"));
+        brightness.addEventListener("input", () => {
+          $("group-brightness-output").textContent = `${brightness.value}%`;
+          scheduleSlider("group:brightness", "/api/group", {action: "set-brightness", value: Number(brightness.value)});
+        });
+        temp.addEventListener("focus", () => state.active.add("group:temp"));
+        temp.addEventListener("blur", () => state.active.delete("group:temp"));
+        temp.addEventListener("input", () => {
+          $("group-temp-output").textContent = `${TEMP_STEPS[Number(temp.value)]}K`;
+          scheduleSlider("group:temp", "/api/group", {action: "set-temp", value: TEMP_STEPS[Number(temp.value)]});
+        });
+      }
+
+      bindTopControls();
+      refreshLights(false);
+      window.setInterval(() => refreshLights(true), 750);
+    })();
+  </script>
+</body>
+</html>

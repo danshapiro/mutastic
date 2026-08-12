@@ -66,6 +66,8 @@ loop-free:
   | `mutastic light on \| off \| status` | power / status, all lights |
   | `mutastic light brightness <0-100>` | set brightness, all lights |
   | `mutastic light temp <2900-7000>` | set color temperature, all lights |
+  | `mutastic light brightness-delta <-20..20>` | adjust every connected, known, on light by a relative brightness delta atomically |
+  | `mutastic light temp-step-delta <-3..3>` | adjust every connected, known, on light by relative hardware temperature steps atomically |
   | `mutastic light preset <cold\|sunlight\|afternoon\|sunset\|candle>` | apply a preset, all lights |
   | `mutastic light list` | every known light: port, name (`-` if none), connected/disconnected, state |
   | `mutastic light name <COMx> <name>` | give a light a persistent name (case-insensitive; reassigning moves it) |

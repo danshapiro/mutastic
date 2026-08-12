@@ -505,6 +505,99 @@ func TestMultiToggleAllOffTurnsAllOnRestoringLooks(t *testing.T) {
 	}
 }
 
+func TestMultiBrightnessDeltaPreservesOffsetsAndSkips(t *testing.T) {
+	fastTimings(t)
+	fleet := newFakeFleet("COM4", "COM7", "COM12", "COM15")
+	mm, ctx := newTestMulti(t, fleet, "")
+	mm.rescan(ctx)
+	waitConnected(t, mm, "COM4", "COM7", "COM12", "COM15")
+
+	sessionManager(t, mm, "COM4").state.Set(20, 0)
+	sessionManager(t, mm, "COM7").state.Set(99, 18)
+	sessionManager(t, mm, "COM12").state.Set(0, 9)
+	if got := mm.HandleCommand("name COM21 spare"); got != "named COM21 spare" {
+		t.Fatalf("name disconnected light = %q", got)
+	}
+
+	got := mm.HandleCommand("brightness-delta -20")
+	want := "COM4: on 1% 2900K\n" +
+		"COM7: on 79% 7000K\n" +
+		"COM12: off\n" +
+		"COM15: unknown\n" +
+		"COM21 spare: disconnected"
+	if got != want {
+		t.Fatalf("brightness delta = %q, want %q", got, want)
+	}
+}
+
+func TestMultiTemperatureDeltaClampsAndPreservesBrightness(t *testing.T) {
+	fastTimings(t)
+	fleet := newFakeFleet("COM4", "COM7")
+	mm, ctx := newTestMulti(t, fleet, "")
+	mm.rescan(ctx)
+	waitConnected(t, mm, "COM4", "COM7")
+
+	sessionManager(t, mm, "COM4").state.Set(37, 0)
+	sessionManager(t, mm, "COM7").state.Set(42, 18)
+
+	if got := mm.HandleCommand("temp-step-delta -3"); got != "COM4: on 37% 2900K\nCOM7: on 42% 6317K" {
+		t.Fatalf("temperature floor delta = %q", got)
+	}
+	if got := mm.HandleCommand("temp-step-delta 3"); got != "COM4: on 37% 3583K\nCOM7: on 42% 7000K" {
+		t.Fatalf("temperature ceiling delta = %q", got)
+	}
+}
+
+func TestMultiDeltaGrammarAndPartialFailure(t *testing.T) {
+	fastTimings(t)
+	healthy := newFakePort()
+	broken := newFailAfterWakePort()
+	enumerate := func() ([]string, error) { return []string{"COM4", "COM7"}, nil }
+	open := func(name string) (Port, error) {
+		if name == "COM7" {
+			return broken, nil
+		}
+		return healthy, nil
+	}
+	mm := NewMultiManager(testLogger(), "", NewRegistry(""), enumerate, open)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel()
+		mm.stopAll()
+	})
+	mm.rescan(ctx)
+	waitConnected(t, mm, "COM4", "COM7")
+	sessionManager(t, mm, "COM4").state.Set(20, 0)
+	sessionManager(t, mm, "COM7").state.Set(20, 0)
+
+	for _, command := range []string{
+		"brightness-delta",
+		"brightness-delta -21",
+		"brightness-delta 21",
+		"brightness-delta nope",
+	} {
+		if got := mm.HandleCommand(command); got != "error: brightness-delta must be between -20 and 20" {
+			t.Errorf("%q = %q, want brightness delta validation error", command, got)
+		}
+	}
+	for _, command := range []string{
+		"temp-step-delta",
+		"temp-step-delta -4",
+		"temp-step-delta 4",
+		"temp-step-delta nope",
+	} {
+		if got := mm.HandleCommand(command); got != "error: temp-step-delta must be between -3 and 3" {
+			t.Errorf("%q = %q, want temperature delta validation error", command, got)
+		}
+	}
+
+	got := mm.HandleCommand("brightness-delta 5")
+	want := "COM4: on 25% 2900K\nCOM7: error: simulated write failure"
+	if got != want {
+		t.Fatalf("partial brightness delta = %q, want %q", got, want)
+	}
+}
+
 func TestMultiListAndNaming(t *testing.T) {
 	fastTimings(t)
 	dir := t.TempDir()
@@ -591,6 +684,32 @@ func TestMultiUsageErrors(t *testing.T) {
 		}
 	}
 }
+
+type failAfterWakePort struct {
+	mu     sync.Mutex
+	writes int
+}
+
+func newFailAfterWakePort() *failAfterWakePort {
+	return &failAfterWakePort{}
+}
+
+func (p *failAfterWakePort) Write(_ []byte) (int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.writes++
+	if p.writes == 1 {
+		return 4, nil
+	}
+	return 0, errors.New("simulated write failure")
+}
+
+func (p *failAfterWakePort) Read(_ []byte) (int, error) {
+	time.Sleep(10 * time.Millisecond)
+	return 0, nil
+}
+
+func (p *failAfterWakePort) Close() error { return nil }
 
 // stuckPort completes the first Write (the wake, so the session connects)
 // then blocks forever on every later Write and on Read - a light that

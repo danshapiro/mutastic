@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -304,6 +305,24 @@ func (mm *MultiManager) HandleCommand(cmd string) string {
 			return "error: unknown light command"
 		}
 		return mm.list()
+	case "brightness-delta":
+		if len(fields) != 2 {
+			return "error: brightness-delta must be between -20 and 20"
+		}
+		delta, err := strconv.Atoi(fields[1])
+		if err != nil || delta < -20 || delta > 20 {
+			return "error: brightness-delta must be between -20 and 20"
+		}
+		return mm.handleDelta(deltaKindBrightness, delta)
+	case "temp-step-delta":
+		if len(fields) != 2 {
+			return "error: temp-step-delta must be between -3 and 3"
+		}
+		delta, err := strconv.Atoi(fields[1])
+		if err != nil || delta < -3 || delta > 3 {
+			return "error: temp-step-delta must be between -3 and 3"
+		}
+		return mm.handleDelta(deltaKindTemperature, delta)
 	}
 	return mm.handleAll(cmd)
 }
@@ -355,6 +374,8 @@ func (mm *MultiManager) callLight(port string, call func() string) string {
 // the fleet or the daemon's UDP loop. "toggle" is fleet-level: if ANY
 // light is on, all go off; otherwise all go on (each restoring its own
 // persisted look; unknown - or timed out - counts as off).
+// The "status" verb is the cheap resident-poller path: Manager.HandleCommand
+// reads State only and does not touch the serial Port or its write mutex.
 func (mm *MultiManager) handleAll(cmd string) string {
 	mm.mu.Lock()
 	ports := mm.portsLocked()
@@ -402,6 +423,94 @@ func (mm *MultiManager) handleAll(cmd string) string {
 	}
 	wg.Wait()
 	return strings.Join(lines, "\n")
+}
+
+type deltaKind uint8
+
+const (
+	deltaKindBrightness deltaKind = iota
+	deltaKindTemperature
+)
+
+// handleDelta applies one relative fleet change from the daemon's single UDP
+// command loop. It does not issue a nested "list" or a sequence of targeted
+// UDP commands: all reads, calculations, and writes happen before the caller
+// returns to serveUDP and reads another datagram. Per-light calls are still
+// bounded and run in parallel, matching the existing collective operations.
+func (mm *MultiManager) handleDelta(kind deltaKind, delta int) string {
+	mm.mu.Lock()
+	ports := mm.portsLocked()
+	managers := make(map[string]*Manager, len(ports))
+	for _, port := range ports {
+		managers[port] = mm.sessions[port].m
+	}
+	mm.mu.Unlock()
+	for _, port := range mm.reg.All() {
+		if _, ok := managers[port]; ok {
+			continue
+		}
+		managers[port] = nil
+		ports = append(ports, port)
+	}
+	sortPorts(ports)
+	if len(ports) == 0 {
+		return "error: no light"
+	}
+
+	lines := make([]string, len(ports))
+	var wg sync.WaitGroup
+	for i, port := range ports {
+		wg.Add(1)
+		go func(i int, port string, manager *Manager) {
+			defer wg.Done()
+			if manager == nil {
+				lines[i] = mm.label(port) + ": disconnected"
+				return
+			}
+			reply := mm.callLight(port, func() string {
+				return applyDelta(manager, kind, delta)
+			})
+			lines[i] = mm.label(port) + ": " + reply
+		}(i, port, managers[port])
+	}
+	wg.Wait()
+	return strings.Join(lines, "\n")
+}
+
+// applyDelta reads and updates one connected, known, on light. The caller
+// bounds this function with callLight so a wedged serial write becomes a
+// stable per-light error instead of blocking the fleet command forever.
+func applyDelta(manager *Manager, kind deltaKind, delta int) string {
+	if !manager.Connected() {
+		return "disconnected"
+	}
+	on, brightness, temp, known := manager.state.Status()
+	if !known {
+		return "unknown"
+	}
+	if !on {
+		return "off"
+	}
+
+	switch kind {
+	case deltaKindBrightness:
+		return manager.apply(clampInt(brightness+delta, 1, 100), temp)
+	case deltaKindTemperature:
+		index := clampInt(int(temp)+delta, 0, int(maxTempByte))
+		return manager.apply(brightness, byte(index))
+	default:
+		return "error: unknown light delta"
+	}
+}
+
+func clampInt(value, min, max int) int {
+	if value < min {
+		return min
+	}
+	if value > max {
+		return max
+	}
+	return value
 }
 
 // label renders "COM4 desk" for named lights, bare "COM4" otherwise.

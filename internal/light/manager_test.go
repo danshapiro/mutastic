@@ -47,6 +47,40 @@ func (f *fakePort) Read(p []byte) (int, error) {
 
 func (f *fakePort) Close() error { return nil }
 
+type statusProbePort struct {
+	calls int
+}
+
+func (p *statusProbePort) Write(_ []byte) (int, error) {
+	p.calls++
+	return 0, errors.New("status must not write")
+}
+
+func (p *statusProbePort) Read(_ []byte) (int, error) {
+	p.calls++
+	return 0, errors.New("status must not read")
+}
+
+func (p *statusProbePort) Close() error {
+	p.calls++
+	return errors.New("status must not close")
+}
+
+type blockingStatusPort struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (p *blockingStatusPort) Write(data []byte) (int, error) {
+	p.once.Do(func() { close(p.started) })
+	<-p.release
+	return len(data), nil
+}
+
+func (p *blockingStatusPort) Read(_ []byte) (int, error) { return 0, nil }
+func (p *blockingStatusPort) Close() error               { return nil }
+
 func (f *fakePort) writeCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -75,6 +109,55 @@ func TestHandleCommandWithoutPort(t *testing.T) {
 	}
 	if got := m.HandleCommand("status"); got != "unknown" {
 		t.Fatalf("status needs no port; got %q, want unknown", got)
+	}
+}
+
+func TestHandleCommandStatusDoesNotTouchPort(t *testing.T) {
+	m := NewManager(testLogger(), "")
+	p := &statusProbePort{}
+	m.setPort(p)
+
+	if got := m.HandleCommand("status"); got != "unknown" {
+		t.Fatalf("status = %q, want unknown", got)
+	}
+	if p.calls != 0 {
+		t.Fatalf("status touched the serial port %d times", p.calls)
+	}
+}
+
+func TestHandleCommandStatusDoesNotWaitForBlockedSerialWrite(t *testing.T) {
+	setFastWrites(t)
+	m := NewManager(testLogger(), "")
+	p := &blockingStatusPort{started: make(chan struct{}), release: make(chan struct{})}
+	m.setPort(p)
+
+	writeDone := make(chan string, 1)
+	go func() { writeDone <- m.HandleCommand("brightness 40") }()
+	select {
+	case <-p.started:
+	case <-time.After(time.Second):
+		t.Fatal("serial write did not become blocked")
+	}
+
+	statusDone := make(chan string, 1)
+	go func() { statusDone <- m.HandleCommand("status") }()
+	select {
+	case got := <-statusDone:
+		if got != "unknown" {
+			t.Fatalf("status while serial write is blocked = %q, want unknown", got)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("status waited for the blocked serial write")
+	}
+
+	close(p.release)
+	select {
+	case got := <-writeDone:
+		if got != "on 40% 4950K" {
+			t.Fatalf("unblocked brightness = %q, want on 40%% 4950K", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("serial write did not finish after release")
 	}
 }
 

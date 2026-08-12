@@ -4,6 +4,7 @@
 //	mutastic daemon                     resident: HID + serial sessions + UDP server
 //	mutastic toggle|mute|unmute|status  one-shot client: mic hardware mute
 //	mutastic light <subcommand...>      one-shot client: light control
+//	mutastic ui                         local browser light control panel
 package main
 
 import (
@@ -61,6 +62,9 @@ func main() {
 	if os.Args[1] == "obs" {
 		os.Exit(runObs(os.Args[2:], os.Stdout, os.Stderr))
 	}
+	if os.Args[1] == "ui" {
+		os.Exit(runUI(os.Args[2:], os.Stdout, os.Stderr))
+	}
 	cmd, timeout, ok := clientCommand(os.Args[1:])
 	if !ok {
 		usage()
@@ -93,9 +97,11 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "       mutastic deckplugin -port <N> -pluginUUID <uuid> -registerEvent <event> [-info <json>]  (OpenDeck plugin mode)")
 	fmt.Fprintln(os.Stderr, "       mutastic light toggle|on|off|status|list  (bare light commands act on ALL lights)")
 	fmt.Fprintln(os.Stderr, "       mutastic light brightness <0-100> | temp <2900-7000> | preset <cold|sunlight|afternoon|sunset|candle>")
+	fmt.Fprintln(os.Stderr, "       mutastic light brightness-delta <-20..20> | temp-step-delta <-3..3>")
 	fmt.Fprintln(os.Stderr, "       mutastic light name <COMx> <name> | unname <name|COMx>")
 	fmt.Fprintln(os.Stderr, "       mutastic light@<name|COMx> <command>  (one light)")
 	fmt.Fprintln(os.Stderr, "       mutastic obs snapshot --out <path> [--source <name>] | obs list-sources  (OBS still capture)")
+	fmt.Fprintln(os.Stderr, "       mutastic ui [--port 42815] [--no-open]  (local browser light control panel)")
 }
 
 // runClient sends one UDP command to the daemon and prints the reply.

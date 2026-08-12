@@ -89,6 +89,9 @@ func (m *Manager) HandleCommand(cmd string) string {
 		if len(fields) != 1 {
 			return "error: unknown light command"
 		}
+		// Status is deliberately a memory-only snapshot. State.StatusString
+		// takes state.mu but never m.mu and never calls Port, so resident
+		// pollers remain responsive even while a serial write is wedged.
 		return m.state.StatusString()
 	case "on":
 		if len(fields) != 1 {
