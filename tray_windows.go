@@ -159,7 +159,7 @@ func trayOnReady(logger *slog.Logger) {
 		brightness.AddSubMenuItem(fmt.Sprintf("%d%%", pct), "").Click(lightCmd(fmt.Sprintf("light brightness %d", pct)))
 	}
 	for _, name := range []string{"cold", "sunlight", "afternoon", "sunset", "candle"} {
-		preset.AddSubMenuItem(name, "").Click(lightCmd("light preset "+name))
+		preset.AddSubMenuItem(name, "").Click(lightCmd("light preset " + name))
 	}
 	panel.Click(func() { go actions.onOpenPanel() })
 	quit.Click(func() { go actions.onQuit() })

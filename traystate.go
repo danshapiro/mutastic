@@ -100,11 +100,11 @@ func trayIconFor(s trayState) trayIcon {
 // thread: the Windows glue calls each one in its own goroutine.
 type trayActions struct {
 	ask           func(command string) (string, error) // one daemon round trip (production budget: lightClientTimeout)
-	openPanel     func() error                          // open/focus the browser light panel
-	injectSweep   func() error                          // one synthetic F24 (meeting-app sweep)
-	stopPanel     func() error                          // POST the light panel's /api/shutdown (Task 4 endpoint)
-	requestQuit   func()                                // leave the systray message loop
-	signalRefresh func()                                // ask the display loop to repoll
+	openPanel     func() error                         // open/focus the browser light panel
+	injectSweep   func() error                         // one synthetic F24 (meeting-app sweep)
+	stopPanel     func() error                         // POST the light panel's /api/shutdown (Task 4 endpoint)
+	requestQuit   func()                               // leave the systray message loop
+	signalRefresh func()                               // ask the display loop to repoll
 	logger        *slog.Logger
 }
 
