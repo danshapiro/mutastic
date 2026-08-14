@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -116,6 +117,9 @@ func (d *daemonDispatcher) sequence(fn func(daemonCall) error) error {
 type uiServer struct {
 	dispatcher *daemonDispatcher
 	port       int
+	// shutdown gracefully stops the owning http.Server after the reply
+	// flushes; runUI wires it. Nil: /api/shutdown answers 503.
+	shutdown func()
 }
 
 func newUIServer(port int, dispatcher *daemonDispatcher) *uiServer {
@@ -187,6 +191,23 @@ func (s *uiServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleGroup(w, r)
+	case "/api/shutdown":
+		if r.Method != http.MethodPost {
+			writeUIMethodError(w, http.MethodPost)
+			return
+		}
+		if !s.validPostOrigin(r) {
+			writeUIJSON(w, http.StatusForbidden, uiResponse{Error: "origin is not allowed"})
+			return
+		}
+		if s.shutdown == nil {
+			writeUIJSON(w, http.StatusServiceUnavailable, uiResponse{Error: "shutdown not wired"})
+			return
+		}
+		writeUIJSON(w, http.StatusOK, struct {
+			OK bool `json:"ok"`
+		}{OK: true})
+		s.shutdown()
 	default:
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			writeUIJSON(w, http.StatusNotFound, uiResponse{Error: "not found"})
@@ -785,11 +806,24 @@ func runUI(args []string, out, errOut io.Writer) int {
 		return 1
 	}
 
+	ui := newUIServer(*port, newDaemonDispatcher())
 	server := &http.Server{
-		Handler:           newUIServer(*port, newDaemonDispatcher()),
+		Handler:           ui,
 		ReadHeaderTimeout: uiReadHeaderTimeout,
 		IdleTimeout:       uiIdleTimeout,
 		MaxHeaderBytes:    uiMaxHeaderBytes,
+	}
+	ui.shutdown = func() {
+		// http.Server.Shutdown waits for in-flight requests - including the
+		// /api/shutdown request itself - so it must run after this handler
+		// returns. The small delay lets the reply hit the wire first (the
+		// same reply-first pattern as the daemon's UDP shutdown).
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			_ = server.Shutdown(ctx)
+		}()
 	}
 	if !*noOpen {
 		go func() {

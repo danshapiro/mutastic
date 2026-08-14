@@ -697,3 +697,102 @@ func TestUIProbeDoesNotAcceptWrongHealth(t *testing.T) {
 		t.Fatal("probeUI accepted ok=false")
 	}
 }
+
+func TestUIShutdownEndpointAnswersThenFiresHook(t *testing.T) {
+	server := newUIServer(42815, nil)
+	stopped := make(chan struct{}, 1)
+	server.shutdown = func() { stopped <- struct{}{} }
+	req := httptest.NewRequest(http.MethodPost, "/api/shutdown", nil)
+	req.Host = "127.0.0.1:42815"
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/shutdown status = %d, want 200", rec.Code)
+	}
+	var body struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || !body.OK {
+		t.Fatalf("POST /api/shutdown body = %q, want {\"ok\":true}", rec.Body.String())
+	}
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("shutdown hook was not called after the reply")
+	}
+}
+
+func TestUIShutdownEndpointGuards(t *testing.T) {
+	server := newUIServer(42815, nil)
+	server.shutdown = func() {}
+	// Method guard: GET is not a stop verb.
+	get := httptest.NewRequest(http.MethodGet, "/api/shutdown", nil)
+	get.Host = "127.0.0.1:42815"
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, get)
+	if rec.Code != http.StatusMethodNotAllowed || rec.Header().Get("Allow") != http.MethodPost {
+		t.Fatalf("GET /api/shutdown = %d (Allow %q), want 405 Allow: POST", rec.Code, rec.Header().Get("Allow"))
+	}
+	// Origin guard: same posture as the panel's other mutating endpoints.
+	req := httptest.NewRequest(http.MethodPost, "/api/shutdown", nil)
+	req.Host = "127.0.0.1:42815"
+	req.Header.Set("Origin", "http://evil.example")
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("POST /api/shutdown with foreign Origin = %d, want 403", rec.Code)
+	}
+	// Unwired shutdown answers 503, not a crash.
+	unwired := newUIServer(42815, nil)
+	unwiredReq := httptest.NewRequest(http.MethodPost, "/api/shutdown", nil)
+	unwiredReq.Host = "127.0.0.1:42815"
+	rec = httptest.NewRecorder()
+	unwired.ServeHTTP(rec, unwiredReq)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("POST /api/shutdown unwired = %d, want 503", rec.Code)
+	}
+}
+
+// TestUIShutdownStopsTheRealServer is the end-to-end proof of the
+// reply-then-exit pattern: a real runUI server on an ephemeral port must
+// answer the POST AND exit cleanly afterwards.
+func TestUIShutdownStopsTheRealServer(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	_ = listener.Close()
+	url := fmt.Sprintf("http://127.0.0.1:%d/", port)
+
+	var out, errOut bytes.Buffer
+	done := make(chan int, 1)
+	go func() { done <- runUI([]string{"--port", strconv.Itoa(port), "--no-open"}, &out, &errOut) }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for !probeUI(url) {
+		if time.Now().After(deadline) {
+			t.Fatalf("ui server did not start: stderr %q", errOut.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	resp, err := http.Post(url+"api/shutdown", "", nil)
+	if err != nil {
+		t.Fatalf("shutdown POST failed before the server could answer: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("shutdown status = %d, want 200 (the reply must land before the server stops)", resp.StatusCode)
+	}
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("runUI exit = %d, want 0 (stderr %q)", code, errOut.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runUI did not return after /api/shutdown")
+	}
+	if probeUI(url) {
+		t.Fatal("ui server still answers health after shutdown")
+	}
+}
