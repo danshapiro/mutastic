@@ -3,20 +3,25 @@
 One press mutes everything — the mic's own mute button or the Stream Deck
 mute key toggles the meeting apps AND the microphone itself.
 
-The center pedal of the iKKEGOL USB triple foot pedal is still
-firmware-programmed to send `F14`, but its handler in
-`ahk/MuteAllMeetings.ahk` is deliberately disabled because accidental presses
-were too easy. The active mute paths remain:
+The iKKEGOL USB triple foot pedal remains firmware-programmed to emit `F13`,
+`F14`, and `F15`; its firmware is not being changed. The left and center
+handlers in `ahk/MuteAllMeetings.ahk` are deliberately disabled and consumed
+by wildcard no-ops:
+
+- **Left pedal (`F13`)** — disabled 2026-08-12; the consumed no-op prevents
+  it from falling through to the foreground application.
+- **Center pedal (`F14`)** — disabled 2026-08-09 because of accidental
+  presses; its consumed no-op also prevents fall-through.
+
+The right pedal (`F15`) remains Winpepper's push-to-talk hold key. Light
+control remains available through the browser UI, the Stream Deck Lights
+action, and `mutastic light ...` commands. The active mute paths remain:
 
 1. **Physical Yeti X mute button** — the `mutastic` daemon observes the
    hardware event and injects `F24`; `ahk/MuteAllMeetings.ahk` handles `F24`
    by sweeping every running meeting app.
 2. **Stream Deck Mutastic Mute key** — the OpenDeck plugin toggles the Yeti X
    through the daemon and injects the same `F24` app sweep.
-
-The left pedal (`F13`) still toggles the NEEWER PL81 PRO LED streaming lights:
-the AHK script runs `mutastic.exe light toggle`, and the same daemon drives the
-lights over their CH340 USB-serial ports.
 
 Pressing the **mute button on the Yeti X itself** keeps the meeting apps
 in sync: the daemon sees the mic's `0x21` DeviceMute event (emitted only for
@@ -64,7 +69,7 @@ hardware state. The active paths are loop-free:
 
   | Command | Effect |
   |---|---|
-  | `mutastic light toggle` | if ANY light is on, ALL turn off; otherwise ALL turn on, each restoring its own last look (this is the F13 pedal behavior) |
+  | `mutastic light toggle` | if ANY light is on, ALL turn off; otherwise ALL turn on, each restoring its own last look (the same collective semantics used by the Stream Deck Lights action) |
   | `mutastic light on \| off \| status` | power / status, all lights |
   | `mutastic light brightness <0-100>` | set brightness, all lights |
   | `mutastic light temp <2900-7000>` | set color temperature, all lights |
@@ -93,9 +98,11 @@ hardware state. The active paths are loop-free:
   light attached, the old single-light `light-state.json` is migrated to
   that light's per-port file; with several lights attached the old file is
   ambiguous and defaults apply.
-- **`ahk/MuteAllMeetings.ahk`** — the F14/center-pedal handler is
-  deliberately commented out because of accidental presses. The active F13
-  handler runs `mutastic.exe light toggle` hidden and non-blocking. The active
+- **`ahk/MuteAllMeetings.ahk`** — actively consumes F13 and F14 with wildcard
+  no-op handlers, disabled on 2026-08-12 and 2026-08-09 respectively, so
+  neither pedal key falls through to the foreground application. F15 is not
+  bound here; Winpepper owns it as push-to-talk. Light control remains in the
+  browser UI, Stream Deck, and `mutastic light ...` commands. The active
   `*F24` handler — used by the physical Yeti button and the Stream Deck mute
   action — runs the meeting-app sweep alone, with no `mutastic.exe` call, so
   nothing loops back.
@@ -116,11 +123,11 @@ the binary auto-detects the leading `-port` flag as plugin mode
   sweep (no cmd/AHK hop; both halves run even if the other fails).
 - **Mute icon** = the TRUE mic state. The plugin polls the daemon's
   `status` every 750ms and drives the icon via `setState`, so physical
-  mic-button presses, the pedal, and the CLI all show up on the deck.
-  `unknown` (fresh daemon) keeps the last icon.
+  mic-button presses, Stream Deck mute actions, and CLI state changes are
+  reflected on the deck. `unknown` (fresh daemon) keeps the last icon.
 - **Lights press** = `light toggle` to the daemon over UDP 42814: if ANY
   light is on, ALL turn off; otherwise ALL turn on, each restoring its
-  own last look (the same collective semantics as the pedal). No F24.
+  own last look (the same collective semantics as the CLI command). No F24.
 - **Lights icon** = whether ANY connected light is on. Polled with
   `light status` on the same 750ms tick (one extra UDP round trip, not a
   second timer). All-unknown or an unreachable daemon keeps the last

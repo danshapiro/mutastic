@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"regexp"
 	"strings"
@@ -50,6 +51,116 @@ func TestMutasticAutostartVBSContract(t *testing.T) {
 			t.Errorf("run %d starts bare 'mutastic.exe ui'; login startup must use ui --no-open", i+1)
 		}
 	}
+}
+
+func TestMuteAllMeetingsHotkeyContract(t *testing.T) {
+	raw, err := os.ReadFile("ahk/MuteAllMeetings.ahk")
+	if err != nil {
+		t.Fatalf("read MuteAllMeetings AHK script: %v", err)
+	}
+	if !bytes.HasPrefix(raw, []byte{0xef, 0xbb, 0xbf}) {
+		t.Fatal("MuteAllMeetings.ahk must retain its UTF-8 BOM")
+	}
+	if !bytes.Contains(raw, []byte("\r\n")) {
+		t.Fatal("MuteAllMeetings.ahk must use CRLF line endings")
+	}
+	withoutCRLF := bytes.ReplaceAll(raw, []byte("\r\n"), nil)
+	if bytes.Contains(withoutCRLF, []byte("\n")) {
+		t.Fatal("MuteAllMeetings.ahk contains a bare LF")
+	}
+
+	lines := normalizedAHKCodeLines(string(raw))
+	if countSourceLine(lines, "*f13::return") != 1 {
+		t.Fatalf("active F13 handler must be exactly '*F13::return'; lines=%v", lines)
+	}
+	if countSourceLine(lines, "*f14::return") != 1 {
+		t.Fatalf("active F14 handler must be exactly '*F14::return'; lines=%v", lines)
+	}
+	for _, line := range lines {
+		if strings.Contains(line, "f13::") && line != "*f13::return" {
+			t.Fatalf("unexpected active F13 handler: %q", line)
+		}
+		if strings.Contains(line, "f14::") && line != "*f14::return" {
+			t.Fatalf("unexpected active F14 handler: %q", line)
+		}
+		if strings.Contains(line, "f15::") {
+			t.Fatalf("F15 must remain unbound, found active declaration: %q", line)
+		}
+		if strings.Contains(line, "~f13") || strings.Contains(line, "~f14") {
+			t.Fatalf("F13/F14 must be consumed, not pass through: %q", line)
+		}
+	}
+	code := strings.Join(lines, "\n")
+	if strings.Contains(code, "light toggle") {
+		t.Fatal("active AHK must not invoke mutastic light toggle")
+	}
+
+	wantF24 := []string{"*f24::", "toggleallmeetings()", "return"}
+	matches := 0
+	for i := 0; i+len(wantF24) <= len(lines); i++ {
+		if strings.Join(lines[i:i+len(wantF24)], "\x00") == strings.Join(wantF24, "\x00") {
+			matches++
+		}
+	}
+	if matches != 1 {
+		t.Fatalf("active F24 path must contain exactly one three-line sequence %q; found %d", wantF24, matches)
+	}
+
+	var trayTips []string
+	for _, line := range lines {
+		if strings.HasPrefix(line, "menu, tray, tip,") {
+			trayTips = append(trayTips, line)
+		}
+	}
+	if len(trayTips) != 1 {
+		t.Fatalf("expected exactly one tray tooltip declaration, found %d", len(trayTips))
+	}
+	for _, fragment := range []string{"f13/f14 disabled", "f15 winpepper", "f24", "yeti", "stream deck", "meeting sweep"} {
+		if !strings.Contains(trayTips[0], fragment) {
+			t.Errorf("tray tooltip %q does not contain %q", trayTips[0], fragment)
+		}
+	}
+
+	docRaw, err := os.ReadFile("docs/pedal-and-mute.md")
+	if err != nil {
+		t.Fatalf("read pedal documentation: %v", err)
+	}
+	docLines := normalizedSourceLines(string(docRaw))
+	findUniqueSourceLine(t, docLines,
+		"| left | `f13` | disabled 2026-08-12; consumed no-op (light control remains in browser ui, stream deck, and `mutastic light ...`) |",
+	)
+	findUniqueSourceLine(t, docLines,
+		"| center | `f14` | disabled 2026-08-09; consumed no-op because of accidental presses |",
+	)
+	findUniqueSourceLine(t, docLines,
+		"| right | `f15` | winpepper push-to-talk hold hotkey |",
+	)
+}
+
+func normalizedAHKCodeLines(source string) []string {
+	source = strings.TrimPrefix(source, "\ufeff")
+	source = strings.ReplaceAll(source, "\r\n", "\n")
+	var lines []string
+	for _, line := range strings.Split(source, "\n") {
+		if comment := strings.IndexByte(line, ';'); comment >= 0 {
+			line = line[:comment]
+		}
+		line = strings.ToLower(strings.Join(strings.Fields(line), " "))
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+func countSourceLine(lines []string, want string) int {
+	count := 0
+	for _, line := range lines {
+		if line == want {
+			count++
+		}
+	}
+	return count
 }
 
 func TestDeployCMDMutasticAutostartContract(t *testing.T) {

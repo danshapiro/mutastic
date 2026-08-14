@@ -148,10 +148,11 @@ echo: 3A 02 03 01 00 09 00 49   <- ACK, light turned off
    `mutastic light temp 2900` → `7000` in ~228 K steps at fixed brightness
    and watch where visible change stops, to confirm the 19-step clamp
    (byte 0x12) on this unit. (Pre-existing TODO, still open.)
-2. **Real pedal press:** press the LEFT pedal (F13) and confirm the light
-   toggles; confirm F14 deliberately does nothing and F15 (Winpepper) still
-   behaves. Separately confirm the physical Yeti button/F24 path and Stream
-   Deck mute action still perform the active full-mute flow.
+2. **Real pedal press:** press the LEFT pedal (F13) and CENTER pedal (F14)
+   and confirm both are consumed with no light or mute action; confirm the
+   RIGHT pedal (F15) still behaves as Winpepper push-to-talk. Separately
+   confirm the physical Yeti button/F24 path and Stream Deck mute action
+   still perform the active full-mute flow.
 3. **Knob broadcast + panel-off capture:** touch the physical knob while
    the daemon runs, then check the log for `light: frame` lines to finally
    capture a broadcast transcript (expected: CCT-shaped 8-byte frames).
@@ -164,8 +165,9 @@ echo: 3A 02 03 01 00 09 00 49   <- ACK, light turned off
    opened` returns. This settles the CH340 surprise-removal behavior,
    which was validated only at source level.
 5. **Long-idle re-sleep check:** after the daemon has been connected and
-   idle for some hours, press F13 (or run `mutastic light on`) and confirm
-   the light actually responds — settles whether wake-once-per-session
+   idle for some hours, use the browser UI, the Stream Deck Lights action,
+   or run `mutastic light on` and confirm the light actually responds —
+   settles whether wake-once-per-session
    suffices.
 6. When the two additional PL81 PRO panels arrive: plug each in, confirm
    the daemon discovers it within ~5 s (`light list` gains a row; log

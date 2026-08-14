@@ -1,8 +1,13 @@
 ﻿; MuteAllMeetings.ahk  (AutoHotkey v1.1)
 ;
-; Center USB foot pedal (F14) is deliberately disabled because of accidental
-; presses; the Yeti physical button/F24 path and Stream Deck mute remain active.
-; Left pedal (F13) toggles the NEEWER PL81 PRO light via mutastic.
+; Left USB foot pedal (F13) is disabled 2026-08-12 by request.
+; Center USB foot pedal (F14) is disabled 2026-08-09 because of accidental
+; presses. Both keys are consumed by active wildcard no-op hotkeys.
+; Right USB foot pedal (F15) remains Winpepper's push-to-talk hold hotkey.
+; Light control remains available through the browser UI, Stream Deck, and
+; mutastic light commands.
+; The physical Yeti X mute button and Stream Deck mute inject F24 for the
+; meeting-app sweep; F24 remains the active meeting control.
 ;
 ; How it works: for every matching window, briefly activate it, send that
 ; app's own in-app mute-toggle hotkey, then return focus to where you were.
@@ -21,20 +26,15 @@ SetWorkingDir %A_ScriptDir%
 DetectHiddenWindows, Off
 
 Menu, Tray, Icon, %A_ScriptDir%\mic_mute_light.ico
-Menu, Tray, Tip, MuteAllMeetings - F13 toggles light (F14 pedal disabled)
+Menu, Tray, Tip, MuteAllMeetings - F13/F14 disabled - F15 Winpepper - F24 Yeti/Stream Deck meeting sweep
 
-; F14 (middle pedal) DISABLED 2026-08-09 by request - accidental presses.
-; The mic's physical mute button still does the full flow (hardware mute
-; via firmware + app sweep via daemon-injected F24). To re-enable the
-; pedal, uncomment these four lines and redeploy.
-;F14::
-;Run, "%A_ScriptDir%\mutastic.exe" toggle, %A_ScriptDir%, Hide UseErrorLevel
-;ToggleAllMeetings()
-;return
+; F13 (left pedal) DISABLED 2026-08-12 by request.
+; Consume it so it cannot fall through to the foreground application.
+*F13::return
 
-F13::
-Run, "%A_ScriptDir%\mutastic.exe" light toggle, %A_ScriptDir%, Hide UseErrorLevel
-return
+; F14 (center pedal) DISABLED 2026-08-09 because of accidental presses.
+; Consume it so it cannot fall through to the foreground application.
+*F14::return
 
 ; F24 is injected by the mutastic daemon when the mic's own mute
 ; button is pressed (0x21 DeviceMute event). Sweep the meeting apps

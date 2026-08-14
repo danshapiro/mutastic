@@ -4,8 +4,8 @@
 
 | Pedal | Key | Used by |
 |-------|-----|---------|
-| Left | `F13` | Mutastic light toggle (all NEEWER PL81 PRO panels) |
-| Center | `F14` | Deliberately disabled in `MuteAllMeetings.ahk` because of accidental presses |
+| Left | `F13` | Disabled 2026-08-12; consumed no-op (light control remains in browser UI, Stream Deck, and `mutastic light ...`) |
+| Center | `F14` | Disabled 2026-08-09; consumed no-op because of accidental presses |
 | Right | `F15` | Winpepper push-to-talk hold hotkey |
 
 Evidence: `footswitch -r` readback in Amplifier session `e1940e46` (2026-08-03):
@@ -18,14 +18,14 @@ To reprogram the pedal firmware, use the `reprogram-foot-pedal` skill in
 
 ## Active controls and mute flow
 
-The center pedal still emits `F14`, but the corresponding block in
-`ahk/MuteAllMeetings.ahk` is deliberately commented out. It must not toggle
-the mic or meeting apps unless that source block is explicitly re-enabled and
-redeployed. The active controls are:
+The pedal firmware is unchanged and still emits `F13`, `F14`, and `F15`. The
+left and center AHK bindings are active wildcard consumed no-ops, so neither
+key can fall through to the foreground application. The active controls are:
 
-- **Left pedal (`F13`)** — runs `mutastic.exe light toggle` hidden and
-  non-blocking. The daemon collectively toggles every attached PL81 PRO panel.
-- **Center pedal (`F14`)** — no action; disabled to prevent accidental presses.
+- **Left pedal (`F13`)** — consumed no-op; it does not toggle lights. Light
+  control remains available through the browser UI, the Stream Deck Lights
+  action, and `mutastic light ...` commands.
+- **Center pedal (`F14`)** — consumed no-op to prevent accidental presses.
 - **Right pedal (`F15`)** — remains Winpepper's push-to-talk hold key.
 - **Physical Yeti X mute button** — remains active. The mic changes its own
   hardware mute, the daemon observes the `0x21` event, and injects `F24`.
@@ -42,8 +42,8 @@ handler changes meeting apps only and never calls `mutastic.exe toggle`.
 
 `ToggleAllMeetings()` activates each matching window briefly, sends that
 application's own mute shortcut, restores focus, and shows a summary tooltip.
-It is currently reached through the active `*F24::` binding, not the disabled
-`F14` pedal binding.
+It is currently reached through the active `*F24::` binding, not either
+disabled pedal binding.
 
 | App | Window match | Hotkey sent |
 |-----|--------------|-------------|
