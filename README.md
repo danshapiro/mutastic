@@ -64,6 +64,9 @@ hardware state. The active paths are loop-free:
   `http://127.0.0.1:42815/`. Plain `mutastic ui` opens or focuses the panel in
   the browser, reusing an already-running server; `mutastic ui --no-open`
   starts or reuses the server without opening a browser and is the login mode.
+  The panel server also answers `POST /api/shutdown` (loopback, same
+  origin/CSRF posture as the panel's mutating endpoints): it replies, then
+  gracefully stops — the tray's Quit uses it.
 - **`mutastic tray`** — resident Windows notification-area icon, a pure UDP
   client of the daemon (like the deck plugin): it owns no hardware, so
   quitting or crashing never drops the mic. The icon mirrors the true mic
@@ -76,10 +79,9 @@ hardware state. The active paths are loop-free:
   meeting-app sweep, the same in-process flow as the Stream Deck mute key;
   both halves are attempted on every click and any failure is logged),
   **Toggle lights**, **Brightness** (applied in click order),
-  **Light preset**, **Light panel…**, and **Quit** — Quit sends the daemon's
-  `shutdown` command and then exits, stopping the daemon and the tray in one
-  click (the separate `mutastic ui` panel server stays up by design — it has
-  no shutdown path, and with the daemon gone it has no backend). With the
+  **Light preset**, **Light panel…**, and **Quit** — Quit stops everything
+  mutastic runs in one click: it sends the daemon's `shutdown` command,
+  posts the light-panel server's `/api/shutdown`, and exits the tray. With the
   daemon unreachable the action items gray out. Only one tray instance runs
   (loopback TCP 42816 is the single-instance lock, the same trick as the
   daemon's UDP bind). The tray logs JSONL with levels to
@@ -258,8 +260,8 @@ The script:
   single-instance lock — the running daemon owns it.
 - **Second tray exits immediately:** same idea — loopback TCP 42816 is the
   tray's single-instance lock. Remember the tray's **Quit also stops the
-  daemon** (the `mutastic ui` panel server stays up by design); to bring
-  everything back, rerun the `Mutastic Daemon` startup shortcut.
+  daemon**; to bring everything back (daemon, panel server, icon), rerun
+  the `Mutastic Daemon` startup shortcut.
 - **Tray icon missing after login:** the tray logs JSONL to
   `%LOCALAPPDATA%\mutastic\tray.log`, including the systray library's own
   error lines (its default logger is redirected there). A

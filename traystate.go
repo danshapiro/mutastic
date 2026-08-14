@@ -1,8 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"time"
 )
 
 // trayState is the collapsed tray display state derived from one daemon
@@ -99,6 +102,7 @@ type trayActions struct {
 	ask           func(command string) (string, error) // one daemon round trip (production budget: lightClientTimeout)
 	openPanel     func() error                          // open/focus the browser light panel
 	injectSweep   func() error                          // one synthetic F24 (meeting-app sweep)
+	stopPanel     func() error                          // POST the light panel's /api/shutdown (Task 4 endpoint)
 	requestQuit   func()                                // leave the systray message loop
 	signalRefresh func()                                // ask the display loop to repoll
 	logger        *slog.Logger
@@ -145,12 +149,38 @@ func (a *trayActions) onLight(command string) {
 	a.logger.Info("light command", "cmd", command, "reply", reply, "err", errString(err))
 }
 
-// onQuit stops the daemon (best effort) and then ALWAYS quits the tray: a
-// missing or late ack (serial queue, dead daemon) must never strand it.
+// onQuit stops everything mutastic runs - the daemon, the light-panel
+// server, and finally the tray itself. Every stop is best-effort: a dead
+// daemon or missing panel must never strand the tray or skip the other
+// stop.
 func (a *trayActions) onQuit() {
 	reply, err := a.ask("shutdown")
-	a.logger.Info("quit", "shutdown_reply", reply, "err", errString(err))
+	a.logger.Info("quit: daemon shutdown", "reply", reply, "err", errString(err))
+	if err := a.stopPanel(); err != nil {
+		a.logger.Error("quit: light panel shutdown failed", "err", errString(err))
+	}
 	a.requestQuit()
+}
+
+// stopLightPanel asks a running `mutastic ui` server to stop (Task 4's
+// endpoint). A transport failure means the panel is unreachable - dead or
+// never started, which is already Quit's goal state - so only an ALIVE but
+// refusing panel is an error worth logging.
+func stopLightPanel(baseURL string) error {
+	req, err := http.NewRequest(http.MethodPost, baseURL+"api/shutdown", nil)
+	if err != nil {
+		return err
+	}
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil // unreachable = not running = goal state
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("light panel shutdown answered status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 func errString(err error) string {

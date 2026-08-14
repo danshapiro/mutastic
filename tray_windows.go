@@ -93,7 +93,7 @@ func trayOnReady(logger *slog.Logger) {
 
 	systray.AddSeparator()
 	panel := systray.AddMenuItem("Light panel…", "open the full light controller in the browser")
-	quit := systray.AddMenuItem("Quit", "stop the mutastic daemon and exit")
+	quit := systray.AddMenuItem("Quit", "stop everything mutastic runs (daemon, light panel) and exit")
 
 	// All tray-visible state is refreshed by one goroutine fed by refreshCh:
 	// the ticker and the menu handlers only signal. (systray methods may be
@@ -116,6 +116,7 @@ func trayOnReady(logger *slog.Logger) {
 	actions := &trayActions{
 		ask:           func(cmd string) (string, error) { return askDaemon(cmd, udpAddr, lightClientTimeout) },
 		openPanel:     func() error { return openBrowser(trayPanelURL) },
+		stopPanel:     func() error { return stopLightPanel(trayPanelURL) },
 		requestQuit:   systray.Quit,
 		signalRefresh: signalRefresh,
 		logger:        logger,

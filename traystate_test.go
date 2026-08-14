@@ -7,6 +7,9 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -75,9 +78,10 @@ func TestTrayIconOnlyChangesOnDefinitiveAnswers(t *testing.T) {
 
 // traySpy records a handler's side-effect ORDER.
 type traySpy struct {
-	calls  []string
-	askErr error
-	injErr error
+	calls   []string
+	askErr  error
+	injErr  error
+	stopErr error
 }
 
 func (s *traySpy) actions() *trayActions {
@@ -85,6 +89,7 @@ func (s *traySpy) actions() *trayActions {
 		ask:           func(cmd string) (string, error) { s.calls = append(s.calls, "ask:"+cmd); return "", s.askErr },
 		openPanel:     func() error { s.calls = append(s.calls, "panel"); return nil },
 		injectSweep:   func() error { s.calls = append(s.calls, "inject"); return s.injErr },
+		stopPanel:     func() error { s.calls = append(s.calls, "panelstop"); return s.stopErr },
 		requestQuit:   func() { s.calls = append(s.calls, "quit") },
 		signalRefresh: func() { s.calls = append(s.calls, "refresh") },
 		logger:        slog.New(slog.NewJSONHandler(io.Discard, nil)),
@@ -156,19 +161,63 @@ func TestTrayMicToggleIsMuteEverything(t *testing.T) {
 	}
 }
 
-// TestTrayQuitStopsDaemonThenQuits pins the daemon-quitting Quit semantics
-// (the explicit requirement), including when the shutdown ack never arrives.
-func TestTrayQuitStopsDaemonThenQuits(t *testing.T) {
+// TestTrayQuitStopsEverythingThenQuits pins the Quit cascade: daemon
+// shutdown AND light-panel shutdown, then the tray exits — and each stop
+// failing must never strand the tray or skip the other stop.
+func TestTrayQuitStopsEverythingThenQuits(t *testing.T) {
 	spy := &traySpy{}
 	spy.actions().onQuit()
-	if got := spy.order(); got != "ask:shutdown,quit" {
-		t.Fatalf("onQuit side effects = %q, want %q", got, "ask:shutdown,quit")
+	if got := spy.order(); got != "ask:shutdown,panelstop,quit" {
+		t.Fatalf("onQuit side effects = %q, want %q", got, "ask:shutdown,panelstop,quit")
 	}
 
-	failing := &traySpy{askErr: errors.New("daemon dead")}
-	failing.actions().onQuit()
-	if got := failing.order(); got != "ask:shutdown,quit" {
-		t.Fatalf("onQuit with a dead daemon = %q, want %q (the tray must still quit)", got, "ask:shutdown,quit")
+	deadDaemon := &traySpy{askErr: errors.New("daemon dead")}
+	deadDaemon.actions().onQuit()
+	if got := deadDaemon.order(); got != "ask:shutdown,panelstop,quit" {
+		t.Fatalf("onQuit with a dead daemon = %q, want %q (panel stop and tray quit must still run)", got, "ask:shutdown,panelstop,quit")
+	}
+
+	deadPanel := &traySpy{stopErr: errors.New("panel refused")}
+	deadPanel.actions().onQuit()
+	if got := deadPanel.order(); got != "ask:shutdown,panelstop,quit" {
+		t.Fatalf("onQuit with a failing panel stop = %q, want %q (the tray must still quit)", got, "ask:shutdown,panelstop,quit")
+	}
+}
+
+func TestStopLightPanel(t *testing.T) {
+	var gotMethod, gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		writeUIJSON(w, http.StatusOK, struct {
+			OK bool `json:"ok"`
+		}{OK: true})
+	}))
+	defer server.Close()
+	if err := stopLightPanel(server.URL + "/"); err != nil {
+		t.Fatalf("stopLightPanel = %v, want nil", err)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/api/shutdown" {
+		t.Fatalf("panel received %s %s, want POST /api/shutdown", gotMethod, gotPath)
+	}
+
+	refusing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeUIJSON(w, http.StatusMethodNotAllowed, uiResponse{Error: "method not allowed"})
+	}))
+	defer refusing.Close()
+	if err := stopLightPanel(refusing.URL + "/"); err == nil || !strings.Contains(err.Error(), "405") {
+		t.Fatalf("stopLightPanel against a refusing panel = %v, want a status error", err)
+	}
+
+	// Unreachable panel (dead listener): the goal state of Quit already
+	// holds, so this is NOT an error.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dead := "http://" + listener.Addr().String() + "/"
+	_ = listener.Close()
+	if err := stopLightPanel(dead); err != nil {
+		t.Fatalf("stopLightPanel against a dead panel = %v, want nil (already the goal state)", err)
 	}
 }
 
