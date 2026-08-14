@@ -54,14 +54,36 @@ hardware state. The active paths are loop-free:
   independent reconnect loop per light, tracking each light's true state
   from its echo/broadcast frames and persisting each last look to
   `%LOCALAPPDATA%\mutastic\light-state-<COMx>.json`.
-- **One-shot client** — `mutastic toggle | mute | unmute | status` sends one
-  command to the daemon and prints the reply (`muted`, `unmuted`, `unknown`,
-  or `error: <reason>`). Exit codes: `0` = non-error reply, `1` = `error:`
+- **One-shot client** — `mutastic toggle | mute | unmute | status | shutdown`
+  sends one command to the daemon and prints the reply. Mic replies are
+  `muted`, `unmuted`, or `unknown`; `shutdown` replies `shutting down` (then
+  the daemon process stops — the tray icon's Quit uses it). Errors are
+  `error: <reason>`. Exit codes: `0` = non-error reply, `1` = `error:`
   reply, `2` = no daemon reachable / bad usage.
 - **`mutastic ui`** — serves the loopback-only light controller at
   `http://127.0.0.1:42815/`. Plain `mutastic ui` opens or focuses the panel in
   the browser, reusing an already-running server; `mutastic ui --no-open`
   starts or reuses the server without opening a browser and is the login mode.
+- **`mutastic tray`** — resident Windows notification-area icon, a pure UDP
+  client of the daemon (like the deck plugin): it owns no hardware, so
+  quitting or crashing never drops the mic. The icon mirrors the true mic
+  state (white mic = live, red muted, polled every 2 s; it starts as a
+  neutral gray unknown icon, and an unknown or unreachable daemon keeps the
+  last definitive icon — it never repaints a muted mic as live, the same
+  keep-last-icon convention as the Stream Deck plugin). Left-click
+  opens/focuses the light panel; right-click shows the menu: a synced
+  **Muted** check item (mute-everything — mic toggle plus the F24
+  meeting-app sweep, the same in-process flow as the Stream Deck mute key;
+  both halves are attempted on every click and any failure is logged),
+  **Toggle lights**, **Brightness** (applied in click order),
+  **Light preset**, **Light panel…**, and **Quit** — Quit sends the daemon's
+  `shutdown` command and then exits, stopping the daemon and the tray in one
+  click (the separate `mutastic ui` panel server stays up by design — it has
+  no shutdown path, and with the daemon gone it has no backend). With the
+  daemon unreachable the action items gray out. Only one tray instance runs
+  (loopback TCP 42816 is the single-instance lock, the same trick as the
+  daemon's UDP bind). The tray logs JSONL with levels to
+  `%LOCALAPPDATA%\mutastic\tray.log`.
 - **Light commands** — every attached PL81 PRO is discovered automatically.
   Bare `mutastic light <cmd>` acts on ALL lights, one reply line per light
   (`COM4 desk: on 30% 2900K`); `mutastic light@<name|COMx> <cmd>` targets
@@ -149,9 +171,10 @@ longer uses it.
 
 The user Startup shortcut `Mutastic Daemon.lnk` runs the deployed
 `C:\Users\dan\code\mutastic-deploy\mutastic-daemon.vbs` through
-`wscript.exe`. The launcher starts `mutastic.exe daemon` first and then
-`mutastic.exe ui --no-open`, both hidden and asynchronously. Login therefore
-starts the hardware daemon and the light-controller server but **does not open
+`wscript.exe`. The launcher starts `mutastic.exe daemon`, then
+`mutastic.exe ui --no-open`, then `mutastic.exe tray`, all hidden and
+asynchronously. Login therefore starts the hardware daemon, the
+light-controller server, and the tray icon but **does not open
 Chrome or any other browser**. `MuteAllMeetings.lnk` separately starts the
 AutoHotkey app-sweep script.
 
@@ -191,13 +214,14 @@ The script:
   it can find one),
 - creates/updates two Startup shortcuts — `MuteAllMeetings.lnk` (AutoHotkey
   v1 running the deployed script) and `Mutastic Daemon.lnk` (`wscript.exe`
-  running the deployed VBS, which starts both the daemon and `ui --no-open`),
+  running the deployed VBS, which starts the daemon, `ui --no-open`, and the
+  tray icon),
 - removes and then verifies the absence of the filename-keyed
   `StartupApproved\StartupFolder` value for `Mutastic Daemon.lnk`; deployment
   intentionally re-enables Mutastic autostart even if Windows previously
   disabled that entry,
-- relaunches the daemon, UI server, AHK script, and OpenDeck. The UI relaunch
-  uses `--no-open`, so deployment does not force-open a browser.
+- relaunches the daemon, UI server, tray icon, AHK script, and OpenDeck. The
+  UI relaunch uses `--no-open`, so deployment does not force-open a browser.
 
 > **Deploying from WSL:** run `deploy.cmd` via `cmd.exe` with output
 > redirected to a file — the `start` of the hidden launcher inherits the interop
@@ -232,6 +256,20 @@ The script:
   known after the first mute command or device event.
 - **Second daemon exits immediately:** UDP port 42814 doubles as the
   single-instance lock — the running daemon owns it.
+- **Second tray exits immediately:** same idea — loopback TCP 42816 is the
+  tray's single-instance lock. Remember the tray's **Quit also stops the
+  daemon** (the `mutastic ui` panel server stays up by design); to bring
+  everything back, rerun the `Mutastic Daemon` startup shortcut.
+- **Tray icon missing after login:** the tray logs JSONL to
+  `%LOCALAPPDATA%\mutastic\tray.log`, including the systray library's own
+  error lines (its default logger is redirected there). A
+  `mutastic tray starting` line with no `tray ready`, or a library icon
+  error in the same file, means Windows refused the icon; rerun the
+  `Mutastic Daemon` startup shortcut.
+- **Tray icon only in the taskbar corner overflow:** Windows 11 parks new
+  notification-area icons under the overflow chevron by design; drag the
+  mutastic icon onto the corner once (or Settings → Personalization →
+  Taskbar → Other system tray icons → mutastic → On).
 - **Mic unplugged/replugged:** the daemon logs the session ending and
   reopens the device automatically.
 - **Light unplugged/replugged:** same as the mic — the daemon logs

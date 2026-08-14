@@ -20,19 +20,19 @@ func TestMutasticAutostartVBSContract(t *testing.T) {
 	}
 
 	// Parse every shell.Run line rather than pinning indentation or spacing. The
-	// startup contract is exactly two hidden, asynchronous commands in this order.
+	// startup contract is exactly three hidden, asynchronous commands in this order.
 	runTokenRE := regexp.MustCompile(`(?i)\.\s*Run\b`)
 	runLineRE := regexp.MustCompile(`(?im)^\s*shell\s*\.\s*Run\s+"""([^"\r\n]+)""\s+([^"\r\n]+)"\s*,\s*([0-9]+)\s*,\s*(True|False)\s*$`)
-	if tokens := runTokenRE.FindAll(raw, -1); len(tokens) != 2 {
-		t.Fatalf("startup launcher contains %d .Run calls, want exactly 2", len(tokens))
+	if tokens := runTokenRE.FindAll(raw, -1); len(tokens) != 3 {
+		t.Fatalf("startup launcher contains %d .Run calls, want exactly 3", len(tokens))
 	}
 	runs := runLineRE.FindAllStringSubmatch(string(raw), -1)
-	if len(runs) != 2 {
-		t.Fatalf("parsed %d valid shell.Run lines, want exactly 2; launcher:\n%s", len(runs), raw)
+	if len(runs) != 3 {
+		t.Fatalf("parsed %d valid shell.Run lines, want exactly 3; launcher:\n%s", len(runs), raw)
 	}
 
 	const deployedExe = `C:\Users\dan\code\mutastic-deploy\mutastic.exe`
-	wantArgs := [][]string{{"daemon"}, {"ui", "--no-open"}}
+	wantArgs := [][]string{{"daemon"}, {"ui", "--no-open"}, {"tray"}}
 	for i, run := range runs {
 		if !strings.EqualFold(strings.TrimSpace(run[1]), deployedExe) {
 			t.Errorf("run %d executable = %q, want deployed %q", i+1, run[1], deployedExe)
