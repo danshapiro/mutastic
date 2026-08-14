@@ -127,6 +127,23 @@ func TestHandleCommandUnknown(t *testing.T) {
 	}
 }
 
+func TestHandleCommandShutdownWithoutHook(t *testing.T) {
+	d := New(testLogger())
+	if got := d.HandleCommand("shutdown"); got != "error: shutdown not supported" {
+		t.Fatalf("shutdown without hook = %q, want %q", got, "error: shutdown not supported")
+	}
+}
+
+func TestHandleCommandShutdownDoesNotFireHook(t *testing.T) {
+	// HandleCommand only answers; serveUDP fires the hook after writing
+	// the reply, or Run's cancel watcher could close pc before the send.
+	d := New(testLogger())
+	d.Shutdown = func() { t.Error("Shutdown fired inside HandleCommand; want it fired post-reply by serveUDP") }
+	if got := d.HandleCommand("shutdown"); got != "shutting down" {
+		t.Fatalf("shutdown = %q, want %q", got, "shutting down")
+	}
+}
+
 type fakeLightHandler struct {
 	reply string
 	got   []string
@@ -244,7 +261,7 @@ func startDaemonInject(t *testing.T, open OpenFunc, inject KeyInjector) (addr st
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		Run(ctx, open, nil, inject, pc, testLogger())
+		Run(ctx, open, nil, inject, nil, pc, testLogger())
 		close(done)
 	}()
 	t.Cleanup(func() {
@@ -357,6 +374,45 @@ func TestOpenFailureRetriesWithoutCrashing(t *testing.T) {
 	}
 	if got := ask("mute"); got != "error: no device" {
 		t.Fatalf("mute with no device = %q, want error: no device", got)
+	}
+}
+
+func TestShutdownOverUDPStopsDaemon(t *testing.T) {
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	open := func() (Device, error) { return newFakeDevice(), nil }
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		Run(ctx, open, nil, nil, cancel, pc, testLogger())
+		close(done)
+	}()
+	addr := pc.LocalAddr().String()
+	conn, err := net.Dial("udp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(2 * time.Second))
+	if _, err := conn.Write([]byte("shutdown")); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 256)
+	n, err := conn.Read(buf)
+	if err != nil {
+		t.Fatalf("no reply to shutdown: %v", err)
+	}
+	// The ack must arrive even though the daemon is tearing itself down:
+	// the tray's Quit treats a missing reply as "daemon unreachable".
+	if got := string(buf[:n]); got != "shutting down" {
+		t.Fatalf("shutdown reply = %q, want %q", got, "shutting down")
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after the shutdown command")
 	}
 }
 

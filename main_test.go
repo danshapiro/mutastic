@@ -112,6 +112,7 @@ func TestClientCommand(t *testing.T) {
 		{[]string{"toggle"}, "toggle", time.Second, true},
 		{[]string{"mute"}, "mute", time.Second, true},
 		{[]string{"unmute"}, "unmute", time.Second, true},
+		{[]string{"shutdown"}, "shutdown", lightClientTimeout, true},
 		{[]string{"light", "toggle"}, "light toggle", lightClientTimeout, true},
 		{[]string{"light", "list"}, "light list", lightClientTimeout, true},
 		{[]string{"light", "name", "COM4", "desk"}, "light name COM4 desk", lightClientTimeout, true},

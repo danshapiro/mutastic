@@ -3,6 +3,7 @@
 //
 //	mutastic daemon                     resident: HID + serial sessions + UDP server
 //	mutastic toggle|mute|unmute|status  one-shot client: mic hardware mute
+//	mutastic shutdown                   one-shot client: stop the daemon
 //	mutastic light <subcommand...>      one-shot client: light control
 //	mutastic ui                         local browser light control panel
 package main
@@ -83,6 +84,8 @@ func clientCommand(args []string) (cmd string, timeout time.Duration, ok bool) {
 	switch {
 	case args[0] == "toggle" || args[0] == "mute" || args[0] == "unmute" || args[0] == "status":
 		return args[0], time.Second, true
+	case args[0] == "shutdown":
+		return args[0], lightClientTimeout, true
 	case args[0] == "light" || strings.HasPrefix(args[0], "light@"):
 		if len(args) < 2 {
 			return "", 0, false
@@ -93,7 +96,7 @@ func clientCommand(args []string) (cmd string, timeout time.Duration, ok bool) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: mutastic daemon | toggle | mute | unmute | status")
+	fmt.Fprintln(os.Stderr, "usage: mutastic daemon | toggle | mute | unmute | status | shutdown")
 	fmt.Fprintln(os.Stderr, "       mutastic deckplugin -port <N> -pluginUUID <uuid> -registerEvent <event> [-info <json>]  (OpenDeck plugin mode)")
 	fmt.Fprintln(os.Stderr, "       mutastic light toggle|on|off|status|list  (bare light commands act on ALL lights)")
 	fmt.Fprintln(os.Stderr, "       mutastic light brightness <0-100> | temp <2900-7000> | preset <cold|sunlight|afternoon|sunset|candle>")
@@ -164,7 +167,8 @@ func runDaemon() int {
 		return 1
 	}
 	open := func() (daemon.Device, error) { return openYetiX(logger) }
-	ctx := context.Background()
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
 	stateDir := lightStateDir()
 	namesPath := ""
 	if stateDir != "" {
@@ -172,8 +176,17 @@ func runDaemon() int {
 	}
 	reg := light.NewRegistry(namesPath)
 	lights := light.NewMultiManager(logger, stateDir, reg, enumeratePL81Ports, openPL81Port)
-	go lights.Run(ctx)
-	daemon.Run(ctx, open, lights, newKeyInjector(), pc, logger)
+	lightsDone := make(chan struct{})
+	go func() {
+		lights.Run(ctx)
+		close(lightsDone)
+	}()
+	daemon.Run(ctx, open, lights, newKeyInjector(), stop, pc, logger)
+	// Join the light manager before exiting: its ctx-done teardown drains
+	// each serial session (bounded internally by drainTimeout per light),
+	// and process exit must not cut that off mid-write.
+	<-lightsDone
+	logger.Printf("mutastic daemon stopped")
 	return 0
 }
 

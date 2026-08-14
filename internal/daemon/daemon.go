@@ -38,6 +38,11 @@ type Daemon struct {
 	Logger *log.Logger
 	Light  CommandHandler // nil when no light support is wired in
 	Inject KeyInjector    // nil when no key injection is wired in (non-Windows builds)
+	// Shutdown requests daemon termination (production wires Run's ctx
+	// cancel). serveUDP invokes it only AFTER the "shutting down" reply is
+	// on the wire, so the Quit command always gets its ack. Nil: the
+	// shutdown command replies an error instead.
+	Shutdown func()
 
 	gate injectGate // debounces physical mute-button injections; session goroutine only
 
@@ -109,6 +114,14 @@ func (d *Daemon) HandleCommand(cmd string) string {
 			target = !muted
 		}
 		return d.setMute(target)
+	case "shutdown":
+		// The reply is all that happens here; serveUDP fires d.Shutdown
+		// itself after the reply has been written, or the cancel could
+		// race the send (Run's ctx watcher closes pc on cancellation).
+		if d.Shutdown == nil {
+			return "error: shutdown not supported"
+		}
+		return "shutting down"
 	default:
 		return "error: unknown command"
 	}
@@ -138,11 +151,14 @@ type OpenFunc func() (Device, error)
 
 // Run serves UDP commands on pc and maintains the device session until ctx
 // is cancelled. The caller owns pc; binding the production port
-// (127.0.0.1:42814) doubles as a single-instance lock.
-func Run(ctx context.Context, open OpenFunc, light CommandHandler, inject KeyInjector, pc net.PacketConn, logger *log.Logger) error {
+// (127.0.0.1:42814) doubles as a single-instance lock. shutdown (may be nil)
+// is invoked when a client sends the "shutdown" command; production passes
+// the cancellable ctx's cancel func so the command ends the daemon cleanly.
+func Run(ctx context.Context, open OpenFunc, light CommandHandler, inject KeyInjector, shutdown func(), pc net.PacketConn, logger *log.Logger) error {
 	d := New(logger)
 	d.Light = light
 	d.Inject = inject
+	d.Shutdown = shutdown
 	go func() {
 		<-ctx.Done()
 		pc.Close()
@@ -261,6 +277,12 @@ func (d *Daemon) serveUDP(pc net.PacketConn) {
 		d.logCommand(cmd, reply)
 		if _, err := pc.WriteTo([]byte(reply), addr); err != nil {
 			d.Logger.Printf("udp write to %s: %v (continuing)", addr, err)
+		}
+		// Reply first, then shut down: cancelling earlier could close pc
+		// before WriteTo runs. A failed WriteTo does not veto the shutdown
+		// - the caller asked to stop the daemon; the ack is best-effort.
+		if cmd == "shutdown" && d.Shutdown != nil {
+			d.Shutdown()
 		}
 	}
 }
