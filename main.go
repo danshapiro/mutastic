@@ -2,6 +2,7 @@
 // streaming light.
 //
 //	mutastic daemon                     resident: HID + serial sessions + UDP server
+//	mutastic tray                       resident: system tray icon (mic status + quick actions)
 //	mutastic toggle|mute|unmute|status  one-shot client: mic hardware mute
 //	mutastic shutdown                   one-shot client: stop the daemon
 //	mutastic light <subcommand...>      one-shot client: light control
@@ -66,6 +67,10 @@ func main() {
 	if os.Args[1] == "ui" {
 		os.Exit(runUI(os.Args[2:], os.Stdout, os.Stderr))
 	}
+	// Resident system tray icon (Windows only; stub elsewhere).
+	if os.Args[1] == "tray" {
+		os.Exit(runTray())
+	}
 	cmd, timeout, ok := clientCommand(os.Args[1:])
 	if !ok {
 		usage()
@@ -97,6 +102,7 @@ func clientCommand(args []string) (cmd string, timeout time.Duration, ok bool) {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: mutastic daemon | toggle | mute | unmute | status | shutdown")
+	fmt.Fprintln(os.Stderr, "       mutastic tray  (system tray icon: mic status + quick actions; Quit stops the daemon)")
 	fmt.Fprintln(os.Stderr, "       mutastic deckplugin -port <N> -pluginUUID <uuid> -registerEvent <event> [-info <json>]  (OpenDeck plugin mode)")
 	fmt.Fprintln(os.Stderr, "       mutastic light toggle|on|off|status|list  (bare light commands act on ALL lights)")
 	fmt.Fprintln(os.Stderr, "       mutastic light brightness <0-100> | temp <2900-7000> | preset <cold|sunlight|afternoon|sunset|candle>")

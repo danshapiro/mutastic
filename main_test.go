@@ -217,3 +217,12 @@ func TestRunTestInjectUnsupportedOffWindows(t *testing.T) {
 		t.Fatalf("runTestInject() output = %q, want the platform error", out.String())
 	}
 }
+
+func TestRunTrayUnsupportedOffWindows(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("exercises the non-Windows stub")
+	}
+	if got := runTray(); got != 1 {
+		t.Fatalf("runTray() = %d, want 1 on non-Windows builds", got)
+	}
+}
