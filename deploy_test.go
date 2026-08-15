@@ -106,19 +106,19 @@ func TestMuteAllMeetingsHotkeyContract(t *testing.T) {
 		t.Fatalf("active F24 path must contain exactly one three-line sequence %q; found %d", wantF24, matches)
 	}
 
-	var trayTips []string
+	// MuteAllMeetings must not own a tray icon: mic state and quit live on the
+	// mutastic tray icon now; this script is hotkeys only.
+	notray := 0
 	for _, line := range lines {
-		if strings.HasPrefix(line, "menu, tray, tip,") {
-			trayTips = append(trayTips, line)
+		if line == "#notrayicon" {
+			notray++
+		}
+		if strings.HasPrefix(line, "menu, tray,") {
+			t.Fatalf("MuteAllMeetings must not set tray icon/tip; found %q", line)
 		}
 	}
-	if len(trayTips) != 1 {
-		t.Fatalf("expected exactly one tray tooltip declaration, found %d", len(trayTips))
-	}
-	for _, fragment := range []string{"f13/f14 disabled", "f15 winpepper", "f24", "yeti", "stream deck", "meeting sweep"} {
-		if !strings.Contains(trayTips[0], fragment) {
-			t.Errorf("tray tooltip %q does not contain %q", trayTips[0], fragment)
-		}
+	if notray != 1 {
+		t.Fatalf("expected exactly one #NoTrayIcon directive, found %d", notray)
 	}
 
 	docRaw, err := os.ReadFile("docs/pedal-and-mute.md")
