@@ -98,7 +98,12 @@ hardware state. The active paths are loop-free:
   saves the current look under a chosen name: Save snapshots every
   known-state light, Apply restores one name, Delete removes it — the same
   `light settings save|apply|delete <name>` verbs the tray menu uses,
-  backed by `GET`/`POST /api/settings`. The daemon owns and persists the
+  backed by `GET`/`POST /api/settings`. Saved names are capped at 42
+  BYTES: the name input's `maxlength` counts characters (plain ASCII: up
+  to 42; CJK/emoji names fit fewer) and is only a UX hint — the daemon
+  validates authoritatively, so an over-long name surfaces the daemon's
+  own `error: settings name too long (max 42 bytes)` in the page. The
+  daemon owns and persists the
   store (`%LOCALAPPDATA%\mutastic\light-settings.json`), so the panel and
   the tray always see the same set. A partially successful apply replies
   200 with the full daemon fan-out as `detail`, so per-light skip errors

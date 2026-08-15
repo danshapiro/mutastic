@@ -596,7 +596,14 @@
 
       function showApplyDetail(detail) {
         if (!detail) return;
-        const failed = String(detail).split("\n").some((line) => line.trim().startsWith("error:"));
+        // Failure lines come in the daemon's two real shapes: line-initial
+        // "error:" (unreachable-key skips) and the label-prefixed per-light
+        // hardware failure "COM7: error: timeout". Good status lines
+        // ("COM4 desk: on 47% 2900K") never contain ": error:".
+        const failed = String(detail).split("\n").some((line) => {
+          const trimmed = line.trim();
+          return trimmed.startsWith("error:") || trimmed.includes(": error:");
+        });
         if (!failed) return;
         // Partial success is NEVER hidden: the full verbatim apply reply
         // renders into the error banner, skip lines included.

@@ -1335,6 +1335,35 @@ func TestUIAPISettingsValidatesAndPassesDaemonErrorsThrough(t *testing.T) {
 	}
 }
 
+// TestCountUIApplySuccesses pins the line-wise apply classifier directly:
+// BOTH daemon failure line shapes count as failures (a line-initial "error:"
+// skip/refusal AND the label-prefixed per-light failure like
+// "COM7: error: timeout" from callLight/Manager.apply in the settingsApply
+// fan-out), and the classifier can never misfire on the daemon's well-known
+// good lines ("COM4 desk: on 47% 2900K" - the label is a COM port plus an
+// [a-z0-9-] registry name and StatusString renders no colon; a
+// `saved "x" (2 lights)` mutation reply contains no ": error:" either).
+func TestCountUIApplySuccesses(t *testing.T) {
+	for _, testCase := range []struct {
+		name  string
+		reply string
+		want  int
+	}{
+		{name: "good status lines only", reply: "COM4 desk: on 47% 2900K\nCOM7: off\nCOM12 left: unknown", want: 3},
+		{name: "saved mutation reply never misfires", reply: `saved "work" (2 lights)`, want: 1},
+		{name: "line-initial error skip lines are failures", reply: "error: light \"COM4\": unreachable, skipped\nerror: light \"COM9\": unreachable, skipped", want: 0},
+		{name: "label-prefixed per-light failures are failures", reply: "COM4 desk: error: timeout\nCOM7: error: simulated write failure", want: 0},
+		{name: "mixed reply counts only the good lines", reply: "COM4 desk: on 47% 2900K\nCOM7: error: timeout\nCOM12 left: off", want: 2},
+		{name: "blank lines never count", reply: "\nCOM4: on 47% 2900K\n\n", want: 1},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := countUIApplySuccesses(testCase.reply); got != testCase.want {
+				t.Fatalf("countUIApplySuccesses(%q) = %d, want %d", testCase.reply, got, testCase.want)
+			}
+		})
+	}
+}
+
 // TestUIAPISettingsDaemonFailuresAre502 pins the 502 posture: 502 is reserved
 // for MUTATION failures only - a transport error on the verb, a single-line
 // "error:" reply on save/delete, or an apply reply with ZERO success lines.
@@ -1360,6 +1389,7 @@ func TestUIAPISettingsDaemonFailuresAre502(t *testing.T) {
 		{name: "save disabled store refusal", verb: "save", settingName: "x", verbReply: "error: settings persistence disabled", wantError: "error: settings persistence disabled"},
 		{name: "delete one line daemon error", verb: "delete", settingName: "nope", verbReply: `error: unknown setting "nope"`, wantError: `error: unknown setting "nope"`},
 		{name: "apply zero success lines is 502 verbatim", verb: "apply", settingName: "movie mode", verbReply: "error: light \"COM4\": unreachable, skipped\nerror: light \"COM9\": unreachable, skipped", wantError: "error: light \"COM4\": unreachable, skipped\nerror: light \"COM9\": unreachable, skipped"},
+		{name: "apply all label-prefixed per-light failures is 502 verbatim", verb: "apply", settingName: "movie mode", verbReply: "COM4 desk: error: timeout\nCOM7: error: simulated write failure", wantError: "COM4 desk: error: timeout\nCOM7: error: simulated write failure"},
 		{name: "apply single line error reply", verb: "apply", settingName: "nope", verbReply: `error: unknown setting "nope"`, wantError: `error: unknown setting "nope"`},
 		{name: "transport failure on the verb", verb: "apply", settingName: "x", verbErr: errors.New("connection refused"), wantError: "connection refused"},
 	} {
@@ -1423,6 +1453,48 @@ func TestUIAPISettingsDaemonFailuresAre502(t *testing.T) {
 		}
 		if body.Detail != verbReply {
 			t.Fatalf("detail = %q, want the full verbatim reply %q (partial success is never hidden)", body.Detail, verbReply)
+		}
+		wantCommands := []string{"light settings apply movie mode", "light settings list"}
+		if !reflect.DeepEqual(commands, wantCommands) {
+			t.Fatalf("daemon commands = %v, want %v", commands, wantCommands)
+		}
+	})
+	t.Run("apply with one label-prefixed per-light failure between successes is 200 with detail", func(t *testing.T) {
+		// The daemon's OTHER real failure shape (callLight's 2 s timeout or
+		// a write failure rendered as mm.label(key)+": "+reply in the
+		// settingsApply fan-out): COM7: error: timeout counts as a FAILURE
+		// for the success tally, never as success. Two good lines keep the
+		// apply at 200 with the full verbatim reply carried as detail, so the
+		// page's error banner can show the failure line (never hidden).
+		verbReply := "COM4 desk: on 47% 2900K\nCOM7: error: timeout\nCOM12 left: off"
+		var commands []string
+		server := newUIServer(42815, newTestDaemonDispatcher(func(command string) (string, error) {
+			commands = append(commands, command)
+			if command == "light settings list" {
+				return "focus", nil
+			}
+			return verbReply, nil
+		}))
+		recorder := post(server, `{"action":"apply","name":"movie mode"}`)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d, body %s; a partially successful apply is 200, never 502", recorder.Code, recorder.Body.String())
+		}
+		var body struct {
+			Names  []string `json:"names"`
+			Error  string   `json:"error"`
+			Detail string   `json:"detail"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(body.Names, []string{"focus"}) || body.Error != "" {
+			t.Fatalf("names/error = %v / %q, want [focus] and no error", body.Names, body.Error)
+		}
+		if body.Detail != verbReply {
+			t.Fatalf("detail = %q, want the full verbatim reply %q (partial success is never hidden)", body.Detail, verbReply)
+		}
+		if !strings.Contains(body.Detail, "COM7: error: timeout") {
+			t.Fatalf("detail = %q, want it to carry the daemon's failure line verbatim", body.Detail)
 		}
 		wantCommands := []string{"light settings apply movie mode", "light settings list"}
 		if !reflect.DeepEqual(commands, wantCommands) {
@@ -1649,6 +1721,59 @@ stubFetchScript({
 intervalCallback();
 await flush();
 assert.equal(document.getElementById("settings-empty").hidden, false, "the empty state must reappear when the error clears even though the names array did not change");
+`)
+}
+
+// TestEmbeddedLightUIApplyDetailBannerNodeDOMStub EXECUTES the embedded page
+// script under Node against the DOM stub and pins showApplyDetail's banner
+// gate against BOTH of the daemon's real failure line shapes: a detail
+// carrying a label-prefixed per-light failure ("COM7: error: timeout" - the
+// callLight/Manager.apply shape from the settingsApply fan-out) must raise
+// the error banner with the daemon's line verbatim, as must the
+// line-initial "error:" skip shape; a detail of ONLY good status lines
+// ("COM4 desk: on 47% 2900K", "COM7: off") must NOT raise it - the gate can
+// never misfire on a well-known good line.
+func TestEmbeddedLightUIApplyDetailBannerNodeDOMStub(t *testing.T) {
+	runPageScriptWithDOMStub(t, `
+const banner = document.getElementById("error-banner");
+const errorText = document.getElementById("error-text");
+
+stubFetchScript({
+	"/api/lights": {status: 200, body: {lights: []}},
+	"/api/mic": {status: 200, body: {state: "unmuted"}},
+	"/api/settings": {status: 200, body: {names: ["alpha", "beta"]}},
+	"POST /api/settings": {status: 200, body: {names: ["alpha", "beta"], detail: "COM4 desk: on 47% 2900K\nCOM7: off"}},
+});
+intervalCallback();
+await flush();
+banner.hidden = true;
+settingsApplyAlpha.click();
+await flush();
+assert.equal(banner.hidden, true, "an all-good apply detail must NOT raise the error banner");
+
+stubFetchScript({
+	"/api/lights": {status: 200, body: {lights: []}},
+	"/api/mic": {status: 200, body: {state: "unmuted"}},
+	"/api/settings": {status: 200, body: {names: ["alpha", "beta"]}},
+	"POST /api/settings": {status: 200, body: {names: ["alpha", "beta"], detail: "COM4 desk: on 47% 2900K\nCOM7: error: timeout"}},
+});
+settingsApplyBeta.click();
+await flush();
+assert.equal(banner.hidden, false, "a detail carrying a label-prefixed per-light failure must raise the error banner (partial failure is never hidden)");
+assert.equal(errorText.textContent.includes("COM7: error: timeout"), true, "the banner must carry the daemon's failure line verbatim");
+
+banner.hidden = true;
+errorText.textContent = "";
+stubFetchScript({
+	"/api/lights": {status: 200, body: {lights: []}},
+	"/api/mic": {status: 200, body: {state: "unmuted"}},
+	"/api/settings": {status: 200, body: {names: ["alpha", "beta"]}},
+	"POST /api/settings": {status: 200, body: {names: ["alpha", "beta"], detail: "COM4 desk: on 47% 2900K\nerror: light \"COM9\": unreachable, skipped"}},
+});
+settingsApplyAlpha.click();
+await flush();
+assert.equal(banner.hidden, false, "a detail carrying a line-initial error: skip line must keep raising the error banner");
+assert.equal(errorText.textContent.includes("error: light \"COM9\": unreachable, skipped"), true, "the banner must carry the skip line verbatim");
 `)
 }
 

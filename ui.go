@@ -600,20 +600,40 @@ func parseUISettingsNames(reply string) ([]string, error) {
 	return names, nil
 }
 
-// countUIApplySuccesses classifies an apply reply LINE-WISE (LB-4): lines
-// starting with "error:" are failures; every other non-blank line is a
+// countUIApplySuccesses classifies an apply reply LINE-WISE (LB-4): failure
+// lines (isUIApplyFailureLine) never count; every other non-blank line is a
 // successfully restored light. Zero successes means the apply restored
 // nothing at all and the whole reply is reported verbatim as the failure.
 func countUIApplySuccesses(reply string) int {
 	successes := 0
 	for _, line := range strings.Split(reply, "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "error:") {
+		if line == "" || isUIApplyFailureLine(line) {
 			continue
 		}
 		successes++
 	}
 	return successes
+}
+
+// isUIApplyFailureLine reports whether ONE trimmed apply-reply line is a
+// per-light failure. The daemon's settingsApply fan-out emits exactly two
+// failure shapes: a line-initial "error:" (whole-reply refusals such as
+// `error: unknown setting "x"`, or unreachable-key skips
+// `error: light "COM9": unreachable, skipped`) and the label-prefixed
+// per-light hardware failure `COM7: error: timeout` (callLight's deadline or
+// Manager.apply's write failure rendered as mm.label(key) + ": " + reply).
+// The ": error:" substring convention is the same one parseUICommandErrors
+// already uses for the fleet endpoints. The predicate cannot misfire on the
+// well-known good line shapes: a success line is label + ": " + StatusString
+// ("on 47% 2900K" / "off" / "unknown" - no colon anywhere in the status),
+// the label is a COM port plus an [a-z0-9-] registry name (so the label
+// itself can never contain ":"), and this classifier only ever sees APPLY
+// replies - no user-chosen settings name appears in one, and a daemon
+// mutation reply like `saved "x" (2 lights)` never contains ": error:" for
+// any ordinary name.
+func isUIApplyFailureLine(line string) bool {
+	return strings.HasPrefix(line, "error:") || strings.Contains(line, ": error:")
 }
 
 type uiMutationPlan func(call daemonCall) ([]uiDetail, error)
