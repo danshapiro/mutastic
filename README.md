@@ -86,7 +86,10 @@ hardware state. The active paths are loop-free:
   the tray stays up — click Quit again to retry. (A port that actively
   refuses connections counts as already stopped; a hang or silence keeps
   the tray up so nothing live gets silently left behind.) With the
-  daemon unreachable the action items gray out. Only one tray instance runs
+  daemon unreachable the action items gray out — and while the mic state
+  is *unknown* the **Muted** item stays gray (the tray never guesses the
+  mic state; establishing it takes one physical press or one CLI command).
+  Only one tray instance runs
   (loopback TCP 42816 is the single-instance lock, the same trick as the
   daemon's UDP bind). The tray logs JSONL with levels to
   `%LOCALAPPDATA%\mutastic\tray.log`.
