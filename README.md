@@ -63,13 +63,30 @@ hardware state. The active paths are loop-free:
   the daemon process stops — the tray icon's Quit uses it). Errors are
   `error: <reason>`. Exit codes: `0` = non-error reply, `1` = `error:`
   reply, `2` = no daemon reachable / bad usage.
-- **`mutastic ui`** — serves the loopback-only light controller at
-  `http://127.0.0.1:42815/`. Plain `mutastic ui` opens or focuses the panel in
-  the browser, reusing an already-running server; `mutastic ui --no-open`
-  starts or reuses the server without opening a browser and is the login mode.
-  The panel server also answers `POST /api/shutdown` (loopback, same
-  origin/CSRF posture as the panel's mutating endpoints): it replies, then
-  gracefully stops — the tray's Quit uses it.
+- **`mutastic ui`** — serves the loopback-only controller at
+  `http://127.0.0.1:42815/` (lights AND microphone — the page itself is
+  titled "Mutastic", no longer a lights-only surface). Plain `mutastic ui`
+  opens or focuses the panel in the browser, reusing an already-running
+  server; `mutastic ui --no-open` starts or reuses the server without
+  opening a browser and is the login mode. The panel server also answers
+  `POST /api/shutdown` (loopback, same origin/CSRF posture as the panel's
+  mutating endpoints): it replies, then gracefully stops — the tray's Quit
+  uses it. The **Mic card** polls `GET /api/mic`
+  (`{"state":"muted|unmuted|unknown|unreachable"}`) on the shared 750 ms
+  tick and sends its Mute, Unmute, and Toggle buttons to `POST /api/mic`
+  (`{"action":"mute|unmute|toggle"}`; Mute/Unmute are absolute verbs and
+  stay armed while the state is `unknown`, while Toggle waits for a
+  definitive state). Every panel→daemon call, mic and light alike, uses
+  the single 6 s `lightClientTimeout` budget: the daemon's `serveUDP` loop
+  is strictly serial and a wedged light call occupies ~2 s, so a thinner
+  mic-specific budget would flap the card to "unreachable" mid
+  light-operation and could misreport mutes the daemon still dequeued and
+  executed. Panel mic actions move the mic ONLY — no F24 meeting-app
+  sweep; the sweeping paths are the physical Yeti X mute button, the tray
+  mute item, and the Stream Deck mute key. App-sync therefore relies on
+  every sweeping path keeping apps and mic in sync; if they ever desync,
+  the recovery is the one the AHK file documents for the CLI/physical
+  paths: toggle the apps once manually, then they stay in sync.
 - **`mutastic tray`** — resident Windows notification-area icon, a pure UDP
   client of the daemon (like the deck plugin): it owns no hardware, so
   quitting or crashing never drops the mic. The icon mirrors the true mic

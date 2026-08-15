@@ -95,6 +95,14 @@ type daemonDispatcher struct {
 
 func newDaemonDispatcher() *daemonDispatcher {
 	return &daemonDispatcher{
+		// Every UI->daemon call - the mic verbs AND the light verbs - uses
+		// the single lightClientTimeout-class budget (the LB-3 ruling;
+		// tray_windows.go already uses it for every ask for the same
+		// reason): the daemon's serveUDP loop is strictly serial and a
+		// wedged light call occupies ~2 s, so a thinner mic-specific budget
+		// would flap the mic card to "unreachable" mid light-operation and
+		// could report failure for mutes the daemon still dequeued and
+		// executed. NO mic/light timeout split is introduced.
 		roundTrip: func(command string) (string, error) {
 			return askDaemon(command, udpAddr, lightClientTimeout)
 		},
@@ -193,6 +201,20 @@ func (s *uiServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleGroup(w, r)
+	case "/api/mic":
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			writeUIMethodError(w, http.MethodGet+", "+http.MethodPost)
+			return
+		}
+		if r.Method == http.MethodPost {
+			if !s.validPostOrigin(r) {
+				writeUIJSON(w, http.StatusForbidden, uiResponse{Error: "origin is not allowed"})
+				return
+			}
+			s.handleMic(w, r)
+			return
+		}
+		s.handleMicStatus(w)
 	case "/api/shutdown":
 		if r.Method != http.MethodPost {
 			writeUIMethodError(w, http.MethodPost)
@@ -276,6 +298,94 @@ func (s *uiServer) handleLights(w http.ResponseWriter) {
 		return
 	}
 	writeUIJSON(w, http.StatusOK, uiResponse{Lights: lights})
+}
+
+// uiMicStatus is the JSON shape of both /api/mic replies. GET always answers
+// state (the daemon's failure modes collapse to "unreachable", so there is
+// no in-band error field there); POST answers state after a fresh query, or
+// error on a failed verb.
+type uiMicStatus struct {
+	State string `json:"state,omitempty"`
+	Error string `json:"error,omitempty"`
+}
+
+type uiMicRequest struct {
+	Action string `json:"action"`
+}
+
+func (s *uiServer) handleMicStatus(w http.ResponseWriter) {
+	state := "unreachable"
+	_ = s.dispatcher.sequence(func(call daemonCall) error {
+		reply, err := call("status")
+		if err != nil {
+			return nil
+		}
+		state = parseUIMicState(reply)
+		return nil
+	})
+	writeUIJSON(w, http.StatusOK, uiMicStatus{State: state})
+}
+
+func (s *uiServer) handleMic(w http.ResponseWriter, r *http.Request) {
+	var req uiMicRequest
+	if err := decodeUIJSON(w, r, &req); err != nil {
+		writeUIJSON(w, http.StatusBadRequest, uiResponse{Error: err.Error()})
+		return
+	}
+	switch req.Action {
+	case "mute", "unmute", "toggle":
+	default:
+		// A bad action never reaches the daemon.
+		writeUIJSON(w, http.StatusBadRequest, uiResponse{Error: fmt.Sprintf("unknown mic action %q", req.Action)})
+		return
+	}
+	var (
+		state   = "unreachable"
+		failure error
+	)
+	_ = s.dispatcher.sequence(func(call daemonCall) error {
+		reply, err := call(req.Action)
+		if err != nil {
+			failure = err
+			return nil
+		}
+		// F6: a verb failure MUST surface as 502, never as a 200 the
+		// mutation queue would treat as success (and use to clear the error
+		// banner) for an audio action that never happened. The failure
+		// shape is exactly one line starting with "error:"; on that path
+		// the fresh status query is skipped.
+		if trimmed := strings.TrimSpace(reply); !strings.Contains(trimmed, "\n") && strings.HasPrefix(trimmed, "error:") {
+			failure = errors.New(trimmed)
+			return nil
+		}
+		// Verb accepted: re-query rather than trust the verb's ack, so the
+		// card reflects the daemon's tracked state.
+		status, err := call("status")
+		if err != nil {
+			state = "unreachable"
+			return nil
+		}
+		state = parseUIMicState(status)
+		return nil
+	})
+	if failure != nil {
+		writeUIJSON(w, http.StatusBadGateway, uiMicStatus{Error: failure.Error()})
+		return
+	}
+	writeUIJSON(w, http.StatusOK, uiMicStatus{State: state})
+}
+
+// parseUIMicState maps the daemon's tri-state mic reply onto the UI's state
+// vocabulary. Every non-state reply - including the daemon's one-line
+// "error:" refusal - collapses to "unreachable", the card's only honest
+// answer for "we could not learn the mic state".
+func parseUIMicState(reply string) string {
+	switch strings.TrimSpace(reply) {
+	case "muted", "unmuted", "unknown":
+		return strings.TrimSpace(reply)
+	default:
+		return "unreachable"
+	}
 }
 
 func (s *uiServer) handleLight(w http.ResponseWriter, r *http.Request) {

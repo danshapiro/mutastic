@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>Mutastic light desk</title>
+  <title>Mutastic</title>
   <style>
     :root {
       color-scheme: dark;
@@ -110,6 +110,12 @@
     .status-badge[data-state="off"] { color: var(--muted); }
     .status-badge[data-state="error"] { border-color: rgba(255, 143, 134, .4); color: var(--red); }
     .status-badge[data-state="disconnected"] { color: var(--dim); }
+    .status-badge[data-state="muted"] { border-color: rgba(255, 143, 134, .4); color: var(--red); }
+    .status-badge[data-state="unmuted"] { border-color: rgba(114, 213, 160, .35); color: var(--green); }
+    .status-badge[data-state="unknown"] { color: var(--dim); }
+    .status-badge[data-state="unreachable"] { border-style: dashed; border-color: rgba(255, 143, 134, .55); color: var(--red); background: rgba(255, 143, 134, .07); }
+    .panel + .panel { margin-top: 16px; }
+    #mic-line { margin: 0 0 14px; }
     .power-button { display: inline-flex; align-items: center; gap: 7px; min-height: 40px; padding: 7px 10px; color: var(--muted); }
     .power-button[data-on="true"] { border-color: rgba(114, 213, 160, .45); color: var(--green); }
     .card-control { display: grid; gap: 7px; margin-top: 14px; }
@@ -159,7 +165,7 @@
         <div class="brand-mark"><svg class="icon"><use href="#icon-sun"></use></svg></div>
         <div>
           <p class="eyebrow">Mutastic / local control</p>
-          <h1>Light desk</h1>
+          <h1>Mutastic</h1>
           <p class="subtle">Tune each panel on its own, or move the whole rig together without losing your balance.</p>
         </div>
       </div>
@@ -225,6 +231,25 @@
         <div id="error-banner" class="error-banner" hidden role="alert">
           <div class="error-copy"><svg class="icon"><use href="#icon-alert"></use></svg><span id="error-text"></span></div>
           <button id="retry" type="button">Retry</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="mic-title">
+      <div class="panel-inner">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Audio</p>
+            <h2 id="mic-title">Microphone</h2>
+            <p class="subtle">Yeti X mute state, straight from the daemon. These buttons move the mic only — the meeting-app sweep stays on the physical mic button, the tray mute item, and the Stream Deck key.</p>
+          </div>
+          <span id="mic-status" class="status-badge" data-state="unknown">unknown</span>
+        </div>
+        <p id="mic-line" class="subtle">Waiting for the daemon…</p>
+        <div class="power-row" role="group" aria-label="Microphone mute">
+          <button class="button-primary" type="button" data-mic-action="mute">Mute</button>
+          <button type="button" data-mic-action="unmute">Unmute</button>
+          <button class="button-quiet" type="button" data-mic-action="toggle">Toggle</button>
         </div>
       </div>
     </section>
@@ -449,6 +474,9 @@
             state.lights = data.lights;
             renderCards(state.lights);
           }
+          if (data.state) {
+            updateMic(data.state);
+          }
           if (!response.ok) throw new Error(errorMessage(data, response));
           return data;
         },
@@ -462,6 +490,55 @@
 
       function enqueueMutation(key, endpoint, body, replace) {
         mutationQueue.enqueue({key, endpoint, body, replace});
+      }
+
+      function micLineText(micState) {
+        switch (micState) {
+          case "muted":
+            return "The microphone is muted.";
+          case "unmuted":
+            return "The microphone is live.";
+          case "unknown":
+            return "Mic state is unknown since daemon start — Mute and Unmute still work (they are absolute); Toggle waits for a definitive state.";
+          default:
+            return "Mic state is unreachable — the daemon is not answering, so the buttons are disarmed.";
+        }
+      }
+
+      function updateMic(micState) {
+        const badge = $("mic-status");
+        badge.dataset.state = micState;
+        badge.textContent = micState;
+        $("mic-line").textContent = micLineText(micState);
+        document.querySelectorAll("[data-mic-action]").forEach((button) => {
+          if (button.dataset.micAction === "toggle") {
+            // Toggle at unknown resolves to an absolute mute the user cannot
+            // predict from the card, so it arms only at definitive states.
+            button.disabled = micState !== "muted" && micState !== "unmuted";
+          } else {
+            // Mute/Unmute are absolute verbs: only a dead daemon disarms them.
+            button.disabled = micState === "unreachable";
+          }
+        });
+      }
+
+      async function refreshMic() {
+        try {
+          const response = await fetch("/api/mic", {cache: "no-store"});
+          const data = await response.json();
+          updateMic(data && data.state ? data.state : "unreachable");
+        } catch (error) {
+          updateMic("unreachable");
+        }
+      }
+
+      function bindMicControls() {
+        document.querySelectorAll("[data-mic-action]").forEach((button) => {
+          button.addEventListener("click", () => {
+            const action = button.dataset.micAction;
+            enqueueMutation(`mic:${action}`, "/api/mic", {action}, false);
+          });
+        });
       }
 
       function bindTopControls() {
@@ -491,8 +568,10 @@
       }
 
       bindTopControls();
+      bindMicControls();
       refreshLights(false);
-      window.setInterval(() => refreshLights(true), 750);
+      refreshMic();
+      window.setInterval(() => { refreshLights(true); refreshMic(); }, 750);
     })();
   </script>
 </body>

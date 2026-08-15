@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
@@ -643,7 +644,7 @@ func TestUIHTTPMethodAndRoot(t *testing.T) {
 	req.Host = "localhost:42815"
 	recorder := httptest.NewRecorder()
 	server.ServeHTTP(recorder, req)
-	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte("Light desk")) || !bytes.Contains(recorder.Body.Bytes(), []byte(`src="/mutation_queue.js"`)) {
+	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte("<title>Mutastic</title>")) || !bytes.Contains(recorder.Body.Bytes(), []byte("<h1>Mutastic</h1>")) || !bytes.Contains(recorder.Body.Bytes(), []byte(`src="/mutation_queue.js"`)) {
 		t.Fatalf("root status/body = %d/%d", recorder.Code, recorder.Body.Len())
 	}
 	req = httptest.NewRequest(http.MethodGet, "/mutation_queue.js", nil)
@@ -816,5 +817,484 @@ func TestUIShutdownStopsTheRealServer(t *testing.T) {
 	}
 	if probeUI(url) {
 		t.Fatal("ui server still answers health after shutdown")
+	}
+}
+
+// TestUIMicStatusReportsDaemonState pins GET /api/mic: the daemon's mic state
+// word maps straight through, while a daemon "error:" reply AND a transport
+// error both collapse to "unreachable" - always at HTTP 200, always after
+// exactly one "status" daemon call.
+func TestUIMicStatusReportsDaemonState(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		reply     string
+		err       error
+		wantState string
+	}{
+		{name: "muted", reply: "muted", wantState: "muted"},
+		{name: "unmuted", reply: "unmuted", wantState: "unmuted"},
+		{name: "unknown", reply: "unknown", wantState: "unknown"},
+		{name: "daemon error reply", reply: "error: mic device gone", wantState: "unreachable"},
+		{name: "transport error", err: errors.New("connection refused"), wantState: "unreachable"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			var commands []string
+			server := newUIServer(42815, newTestDaemonDispatcher(func(command string) (string, error) {
+				commands = append(commands, command)
+				return testCase.reply, testCase.err
+			}))
+			req := httptest.NewRequest(http.MethodGet, "/api/mic", nil)
+			req.Host = "127.0.0.1:42815"
+			recorder := httptest.NewRecorder()
+			server.ServeHTTP(recorder, req)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, body %s; GET /api/mic always answers 200", recorder.Code, recorder.Body.String())
+			}
+			var body struct {
+				State string `json:"state"`
+				Error string `json:"error"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.State != testCase.wantState || body.Error != "" {
+				t.Fatalf("body = %+v, want state %q and no in-band error", body, testCase.wantState)
+			}
+			if !reflect.DeepEqual(commands, []string{"status"}) {
+				t.Fatalf("daemon commands = %v, want exactly [status]", commands)
+			}
+		})
+	}
+}
+
+// TestUIMicPostRunsVerbThenFreshStatus pins the POST success order: the verb
+// first, then ONE fresh status query, and the reply carries that fresh state
+// (F6 - the verb ack alone is not trusted for the card).
+func TestUIMicPostRunsVerbThenFreshStatus(t *testing.T) {
+	var commands []string
+	server := newUIServer(42815, newTestDaemonDispatcher(func(command string) (string, error) {
+		commands = append(commands, command)
+		switch command {
+		case "mute":
+			return "muted", nil
+		case "status":
+			return "muted", nil
+		default:
+			return "error: unexpected command", nil
+		}
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/api/mic", bytes.NewBufferString(`{"action":"mute"}`))
+	req.Host = "127.0.0.1:42815"
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	server.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", recorder.Code, recorder.Body.String())
+	}
+	var body struct {
+		State string `json:"state"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.State != "muted" || body.Error != "" {
+		t.Fatalf("body = %+v, want {\"state\":\"muted\"}", body)
+	}
+	if !reflect.DeepEqual(commands, []string{"mute", "status"}) {
+		t.Fatalf("daemon commands = %v, want [mute status] (verb, then ONE fresh status query)", commands)
+	}
+}
+
+// TestUIMicPostMapsDaemonFailuresTo502 pins the F6 failure mapping: a verb
+// reply of exactly one "error:" line, or a transport error on the verb,
+// answers HTTP 502 and SKIPS the fresh status query (a 200 there would make
+// the mutation queue treat a mute that never happened as success).
+func TestUIMicPostMapsDaemonFailuresTo502(t *testing.T) {
+	t.Run("one line daemon error reply", func(t *testing.T) {
+		var commands []string
+		server := newUIServer(42815, newTestDaemonDispatcher(func(command string) (string, error) {
+			commands = append(commands, command)
+			return "error: mic device gone", nil
+		}))
+		req := httptest.NewRequest(http.MethodPost, "/api/mic", bytes.NewBufferString(`{"action":"mute"}`))
+		req.Host = "127.0.0.1:42815"
+		req.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		server.ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusBadGateway {
+			t.Fatalf("status = %d, body %s; want 502", recorder.Code, recorder.Body.String())
+		}
+		var body struct {
+			State string `json:"state"`
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Error != "error: mic device gone" || body.State != "" {
+			t.Fatalf("body = %+v, want the daemon's error line verbatim and no state", body)
+		}
+		if !reflect.DeepEqual(commands, []string{"mute"}) {
+			t.Fatalf("daemon commands = %v, want [mute] - the fresh status query must be skipped on verb failure", commands)
+		}
+	})
+	t.Run("transport failure on the verb", func(t *testing.T) {
+		var commands []string
+		server := newUIServer(42815, newTestDaemonDispatcher(func(command string) (string, error) {
+			commands = append(commands, command)
+			return "", errors.New("connection refused")
+		}))
+		req := httptest.NewRequest(http.MethodPost, "/api/mic", bytes.NewBufferString(`{"action":"toggle"}`))
+		req.Host = "127.0.0.1:42815"
+		req.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		server.ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusBadGateway {
+			t.Fatalf("status = %d, body %s; want 502", recorder.Code, recorder.Body.String())
+		}
+		if !strings.Contains(recorder.Body.String(), "connection refused") {
+			t.Fatalf("body = %s, want the transport error", recorder.Body.String())
+		}
+		if !reflect.DeepEqual(commands, []string{"toggle"}) {
+			t.Fatalf("daemon commands = %v, want [toggle] - no status query after a transport failure", commands)
+		}
+	})
+	t.Run("multi line reply is not a verb failure", func(t *testing.T) {
+		var commands []string
+		server := newUIServer(42815, newTestDaemonDispatcher(func(command string) (string, error) {
+			commands = append(commands, command)
+			if command == "mute" {
+				return "muted\nerror: trailing noise", nil
+			}
+			return "muted", nil
+		}))
+		req := httptest.NewRequest(http.MethodPost, "/api/mic", bytes.NewBufferString(`{"action":"mute"}`))
+		req.Host = "127.0.0.1:42815"
+		req.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		server.ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d, body %s; only an exactly-one-line error: reply is a verb failure", recorder.Code, recorder.Body.String())
+		}
+		if !reflect.DeepEqual(commands, []string{"mute", "status"}) {
+			t.Fatalf("daemon commands = %v, want [mute status]", commands)
+		}
+	})
+}
+
+// TestUIMicPostValidatesActionHonorsGuardsAndMethods pins the route's guard
+// posture: bad or missing actions answer 400 and NEVER reach the daemon, a
+// foreign Origin answers 403, and wrong methods answer 405 with
+// Allow: GET, POST.
+func TestUIMicPostValidatesActionHonorsGuardsAndMethods(t *testing.T) {
+	var calls int
+	server := newUIServer(42815, newTestDaemonDispatcher(func(string) (string, error) {
+		calls++
+		return "unknown", nil
+	}))
+	post := func(body, origin string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/mic", strings.NewReader(body))
+		req.Host = "127.0.0.1:42815"
+		req.Header.Set("Content-Type", "application/json")
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		recorder := httptest.NewRecorder()
+		server.ServeHTTP(recorder, req)
+		return recorder
+	}
+	for _, body := range []string{`{"action":"explode"}`, `{"action":""}`, `{}`} {
+		if got := post(body, "").Code; got != http.StatusBadRequest {
+			t.Fatalf("body %s status = %d, want 400", body, got)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("invalid actions reached the daemon %d times; want zero calls", calls)
+	}
+	if got := post(`{"action":"mute"}`, "http://evil.example").Code; got != http.StatusForbidden {
+		t.Fatalf("foreign Origin status = %d, want 403", got)
+	}
+	if calls != 0 {
+		t.Fatalf("a foreign-Origin POST reached the daemon; want zero calls")
+	}
+	for _, method := range []string{http.MethodPut, http.MethodDelete} {
+		req := httptest.NewRequest(method, "/api/mic", nil)
+		req.Host = "127.0.0.1:42815"
+		recorder := httptest.NewRecorder()
+		server.ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusMethodNotAllowed || recorder.Header().Get("Allow") != "GET, POST" {
+			t.Fatalf("%s status = %d Allow %q, want 405 Allow: GET, POST", method, recorder.Code, recorder.Header().Get("Allow"))
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("wrong-method requests reached the daemon; want zero calls")
+	}
+}
+
+// TestEmbeddedLightUIMicCardUsesTheMicEndpoints pins the mic card's wiring
+// contract: badge/status-line ids, the three verb buttons, the queued
+// mutation string, the shared 750 ms poll - and the ABSENCE of any direct
+// fetch POST (mic mutations must go through the mutation queue).
+func TestEmbeddedLightUIMicCardUsesTheMicEndpoints(t *testing.T) {
+	source := string(lightUIHTML)
+	for _, fragment := range []string{
+		`id="mic-status"`,
+		`id="mic-line"`,
+		`data-mic-action="mute"`,
+		`data-mic-action="unmute"`,
+		`data-mic-action="toggle"`,
+		`.status-badge[data-state="unreachable"]`,
+		"enqueueMutation(`mic:${action}`, \"/api/mic\", {action}, false)",
+		`function refreshMic()`,
+		`function updateMic(`,
+		`function bindMicControls()`,
+		`window.setInterval(() => { refreshLights(true); refreshMic(); }, 750);`,
+	} {
+		if !strings.Contains(source, fragment) {
+			t.Fatalf("embedded UI is missing mic card fragment %q", fragment)
+		}
+	}
+	if strings.Contains(source, `fetch("/api/mic", {method: "POST"`) {
+		t.Fatal("mic mutations must go through the mutation queue, never a direct fetch POST")
+	}
+}
+
+// TestEmbeddedLightUIMicCardBehaviorNodeDOMStub EXECUTES the embedded page
+// script under Node against the shared hand-rolled DOM stub (NOT a browser,
+// no new dependencies) and pins the mic card's runtime behavior: each button
+// enqueues exactly the right /api/mic payload through the mutation queue and
+// nothing else; Toggle disarms at unknown/unreachable while the absolute
+// Mute/Unmute verbs stay armed at unknown and only disarm at unreachable.
+func TestEmbeddedLightUIMicCardBehaviorNodeDOMStub(t *testing.T) {
+	runPageScriptWithDOMStub(t, `
+stubFetchScript({
+	"/api/lights": {status: 200, body: {lights: []}},
+	"/api/mic": {status: 200, body: {state: "unknown"}},
+	"POST /api/mic": {status: 200, body: {state: "muted"}},
+});
+intervalCallback();
+await flush();
+assert.equal(micToggleButton.disabled, true, "toggle must be disabled while the mic state is unknown (the daemon's toggle would resolve to an unpredictable absolute mute)");
+assert.equal(micMuteButton.disabled, false, "mute must stay armed at unknown - it is an absolute verb");
+assert.equal(micUnmuteButton.disabled, false, "unmute must stay armed at unknown - it is an absolute verb");
+
+stubFetchScript({
+	"/api/lights": {status: 200, body: {lights: []}},
+	"/api/mic": {status: 200, body: {state: "unreachable"}},
+	"POST /api/mic": {status: 200, body: {state: "unreachable"}},
+});
+intervalCallback();
+await flush();
+assert.equal(micToggleButton.disabled, true, "toggle must be disabled while the daemon is unreachable");
+assert.equal(micMuteButton.disabled, true, "mute must be disabled while the daemon is unreachable");
+assert.equal(micUnmuteButton.disabled, true, "unmute must be disabled while the daemon is unreachable");
+
+for (const micState of ["muted", "unmuted"]) {
+	stubFetchScript({
+		"/api/lights": {status: 200, body: {lights: []}},
+		"/api/mic": {status: 200, body: {state: micState}},
+		"POST /api/mic": {status: 200, body: {state: micState}},
+	});
+	intervalCallback();
+	await flush();
+	assert.equal(micToggleButton.disabled, false, "toggle must be armed at " + micState);
+	assert.equal(micMuteButton.disabled, false, "mute must be armed at " + micState);
+	assert.equal(micUnmuteButton.disabled, false, "unmute must be armed at " + micState);
+}
+
+fetchCalls.length = 0;
+micMuteButton.click();
+micUnmuteButton.click();
+micToggleButton.click();
+await flush();
+const posts = fetchCalls
+	.filter((call) => call.options.method === "POST")
+	.map((call) => ({url: call.url, body: JSON.parse(call.options.body)}));
+assert.deepEqual(posts, [
+	{url: "/api/mic", body: {action: "mute"}},
+	{url: "/api/mic", body: {action: "unmute"}},
+	{url: "/api/mic", body: {action: "toggle"}},
+], "each mic button must enqueue exactly one /api/mic mutation through the queue, and nothing else");
+`)
+}
+
+// TestEmbeddedLightUIInlineScriptCompilesNode is the syntax gate for the
+// embedded page's inline IIFE: it must COMPILE under Node (a syntax error
+// would silently kill the whole page in the browser). Behavioral DOM-stub
+// execution lives in TestEmbeddedLightUIMicCardBehaviorNodeDOMStub.
+func TestEmbeddedLightUIInlineScriptCompilesNode(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatalf("node is required for the inline-script syntax gate: %v", err)
+	}
+	dir := t.TempDir()
+	pagePath := filepath.Join(dir, "inline.js")
+	if err := os.WriteFile(pagePath, []byte(extractUIInlineScript(t)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gatePath := filepath.Join(dir, "compile_gate.js")
+	gate := `"use strict";
+const fs = require("node:fs");
+const vm = require("node:vm");
+const source = fs.readFileSync(process.argv[2], "utf8");
+new vm.Script(source, {filename: "index.html-inline-script.js"});
+`
+	if err := os.WriteFile(gatePath, []byte(gate), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	output, err := exec.Command(node, gatePath, pagePath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("the inline IIFE must compile under Node: %v\n%s", err, output)
+	}
+}
+
+// extractUIInlineScript returns the source of the embedded panel's single
+// inline <script> block (the only attribute-less script tag; the mutation
+// queue loads from a sibling src tag).
+func extractUIInlineScript(t *testing.T) string {
+	t.Helper()
+	source := string(lightUIHTML)
+	const openTag = "<script>"
+	if got := strings.Count(source, openTag); got != 1 {
+		t.Fatalf("embedded UI must contain exactly one inline %s tag; found %d", openTag, got)
+	}
+	rest := source[strings.Index(source, openTag)+len(openTag):]
+	const closeTag = "</script>"
+	end := strings.Index(rest, closeTag)
+	if end < 0 {
+		t.Fatal("inline script block has no closing </script>")
+	}
+	script := rest[:end]
+	if strings.Contains(script, "<script") {
+		t.Fatal("inline script extraction swallowed a nested script tag")
+	}
+	return script
+}
+
+// Hand-rolled minimal DOM stub for the embedded panel script, in the same
+// Node harness style as TestLightMutationQueueNode. This is NOT a browser: it
+// covers exactly the elements and behaviors the cards use (getElementById
+// lookups, dataset flags, disabled/hidden toggles, click dispatch, scripted
+// fetch replies, the shared 750 ms interval callback). The driver runs after
+// the page's initial poll tick (flush drains it) and asserts behavior.
+const lightUIDOMStubPreludeJS = `"use strict";
+const assert = require("node:assert/strict");
+const LightMutationQueue = require("./mutation_queue.js");
+
+function makeElement(id) {
+	const element = {
+		id: id || "",
+		dataset: {},
+		hidden: false,
+		disabled: false,
+		value: "",
+		textContent: "",
+		innerHTML: "",
+		listeners: Object.create(null),
+		attributes: Object.create(null),
+		addEventListener(type, listener) {
+			(element.listeners[type] = element.listeners[type] || []).push(listener);
+		},
+		click() {
+			(element.listeners.click || []).forEach((listener) => listener());
+		},
+		setAttribute(name, value) {
+			element.attributes[name] = String(value);
+		},
+		getAttribute(name) {
+			return Object.prototype.hasOwnProperty.call(element.attributes, name) ? element.attributes[name] : null;
+		},
+		querySelector() {
+			return makeElement("");
+		},
+		querySelectorAll() {
+			return [];
+		},
+	};
+	return element;
+}
+
+const elementRegistry = new Map();
+function elementById(id) {
+	if (!elementRegistry.has(id)) {
+		elementRegistry.set(id, makeElement(id));
+	}
+	return elementRegistry.get(id);
+}
+const selectorRegistry = new Map();
+function stubRegister(selector, elements) {
+	selectorRegistry.set(selector, elements);
+}
+globalThis.document = {
+	getElementById: elementById,
+	activeElement: null,
+	querySelectorAll(selector) {
+		return selectorRegistry.get(selector) || [];
+	},
+};
+
+const fetchCalls = [];
+let fetchScript = {};
+function stubFetchScript(script) {
+	fetchScript = script || {};
+}
+globalThis.fetch = (url, options) => {
+	const method = (options && options.method) || "GET";
+	const key = method === "GET" ? String(url) : method + " " + String(url);
+	fetchCalls.push({url: String(url), options: options || {}});
+	const scripted = Object.prototype.hasOwnProperty.call(fetchScript, key) ? fetchScript[key] : fetchScript[String(url)];
+	if (scripted instanceof Error) {
+		return Promise.reject(scripted);
+	}
+	const status = scripted && scripted.status ? scripted.status : 200;
+	const body = scripted && Object.prototype.hasOwnProperty.call(scripted, "body") ? scripted.body : {};
+	return Promise.resolve({ok: status >= 200 && status < 300, status: status, json: () => Promise.resolve(body)});
+};
+
+let intervalCallback = null;
+globalThis.window = {
+	setInterval(callback) {
+		intervalCallback = callback;
+	},
+};
+
+async function flush() {
+	for (let round = 0; round < 20; round += 1) {
+		await new Promise((resolve) => setImmediate(resolve));
+	}
+}
+
+const micMuteButton = makeElement("mic-mute");
+micMuteButton.dataset.micAction = "mute";
+const micUnmuteButton = makeElement("mic-unmute");
+micUnmuteButton.dataset.micAction = "unmute";
+const micToggleButton = makeElement("mic-toggle");
+micToggleButton.dataset.micAction = "toggle";
+stubRegister("[data-mic-action]", [micMuteButton, micUnmuteButton, micToggleButton]);
+`
+
+// runPageScriptWithDOMStub executes the embedded page's inline script under
+// Node against the hand-rolled DOM stub above, then runs the driver source.
+// The real mutation_queue.js is loaded from disk so button clicks flow
+// through the production queue before the fetch stub sees them.
+func runPageScriptWithDOMStub(t *testing.T, driver string) {
+	t.Helper()
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatalf("node is required for the page DOM-stub behavioral tests: %v", err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "mutation_queue.js"), lightMutationQueueJS, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	program := lightUIDOMStubPreludeJS + "\n" + extractUIInlineScript(t) + "\n(async () => {\n\tawait flush();\n" + driver + "\n})().catch((error) => {\n\tconsole.error(error);\n\tprocess.exitCode = 1;\n});\n"
+	programPath := filepath.Join(dir, "page_behavior_test.js")
+	if err := os.WriteFile(programPath, []byte(program), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	output, err := exec.Command(node, programPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node %s failed: %v\n%s", programPath, err, output)
 	}
 }
