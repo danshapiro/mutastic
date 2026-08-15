@@ -118,6 +118,28 @@ func newTrayJSONLogger(w io.Writer) *slog.Logger {
 	return slog.New(slog.NewJSONHandler(w, nil))
 }
 
+// dstUnreachableErrnos classify "nothing is listening" across platforms.
+// Linux/production-other platforms surface ECONNREFUSED/ECONNRESET. Windows
+// surfaces raw Winsock codes as syscall.Errno inside the net.OpError chain:
+// Go's syscall package intentionally defines ECONNREFUSED/ECONNRESET there
+// as invented APPLICATION_ERROR values that never equal the Winsock codes,
+// and it does not define WSAECONNREFUSED at all - so the WSA codes are
+// matched numerically below and must stay in sync with winsock.h
+// (WSAECONNREFUSED=10061, WSAECONNRESET=10054).
+var dstUnreachableErrnos = []syscall.Errno{
+	syscall.ECONNREFUSED, syscall.ECONNRESET,
+	syscall.Errno(10061), syscall.Errno(10054),
+}
+
+func dstUnreachable(err error) bool {
+	for _, errno := range dstUnreachableErrnos {
+		if errors.Is(err, errno) {
+			return true
+		}
+	}
+	return false
+}
+
 // onMicToggle is the tray's mute-everything path, mirroring the Stream Deck
 // mute key (README): a hardware toggle to the daemon AND one F24 meeting-app
 // sweep, both attempted even when the other fails. (The daemon injects F24
@@ -176,7 +198,7 @@ func (a *trayActions) onQuit() {
 	case err == nil && reply != "shutting down":
 		daemonOK = false
 		a.logger.Error("quit: daemon refused shutdown", "reply", reply)
-	case err != nil && (errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET)):
+	case err != nil && dstUnreachable(err):
 		// Nothing is listening on the daemon's port: already the goal state.
 		a.logger.Info("quit: daemon port refuses connections, treated as stopped", "err", errString(err))
 	case err != nil:
@@ -216,9 +238,12 @@ func stopLightPanel(baseURL string) error {
 		// ECONNREFUSED proves nothing is listening: the panel is gone, which
 		// is Quit's goal state. Any other transport failure (timeout,
 		// reset) may be a live but wedged panel - that is a real error, and
-		// onQuit logs it at ERROR. (errors.Is reaches WSAECONNREFUSED on
-		// Windows through the net package's errno mapping.)
-		if errors.Is(err, syscall.ECONNREFUSED) {
+		// onQuit logs it at ERROR. On Windows the refusal instead arrives
+		// as a raw Winsock code in a syscall.Errno inside the net.OpError
+		// chain (WSAECONNREFUSED=10061/WSAECONNRESET=10054, never Go's
+		// invented ECONNREFUSED/ECONNRESET), so dstUnreachable matches
+		// both shapes.
+		if dstUnreachable(err) {
 			return nil
 		}
 		return err

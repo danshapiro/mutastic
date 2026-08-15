@@ -188,6 +188,13 @@ func TestTrayQuitStopsEverythingThenQuits(t *testing.T) {
 		t.Fatalf("onQuit with a refused daemon port = %q, want %q", got, "ask:shutdown,panelstop,quit")
 	}
 
+	// The Windows production shape: a raw Winsock code in the chain.
+	wsaRefused := &traySpy{askErr: fmt.Errorf("%w: %w", errNoReply, syscall.Errno(10061))}
+	wsaRefused.actions().onQuit()
+	if got := wsaRefused.order(); got != "ask:shutdown,panelstop,quit" {
+		t.Fatalf("onQuit with a Winsock-refused daemon = %q, want %q", got, "ask:shutdown,panelstop,quit")
+	}
+
 	// A timeout says nothing: the daemon may be live and wedged. The tray
 	// must stay so the user can retry.
 	timedOut := &traySpy{askErr: fmt.Errorf("%w", errNoReply)}
@@ -255,6 +262,21 @@ func TestStopLightPanel(t *testing.T) {
 	err = stopLightPanel(wedged.URL + "/")
 	if err == nil {
 		t.Fatal("stopLightPanel against a wedged panel = nil, want a transport error (only ECONNREFUSED counts as goal state)")
+	}
+}
+
+// TestDstUnreachableErrnos pins the "nothing is listening" classification:
+// both the unix errno shape and the raw Winsock code Windows surfaces in
+// production must count, while a bare timeout sentinel must not.
+func TestDstUnreachableErrnos(t *testing.T) {
+	if !dstUnreachable(fmt.Errorf("%w: %w", errNoReply, syscall.Errno(10061))) {
+		t.Fatal("Winsock-refused chain not classified as unreachable")
+	}
+	if !dstUnreachable(fmt.Errorf("%w", syscall.ECONNREFUSED)) {
+		t.Fatal("ECONNREFUSED chain not classified as unreachable")
+	}
+	if dstUnreachable(fmt.Errorf("%w", errNoReply)) {
+		t.Fatal("bare errNoReply (timeout class) must NOT be unreachable")
 	}
 }
 
