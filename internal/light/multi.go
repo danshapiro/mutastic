@@ -2,6 +2,7 @@ package light
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -62,7 +63,8 @@ type OpenPort func(name string) (Port, error)
 type MultiManager struct {
 	logger    *log.Logger
 	reg       *Registry
-	stateDir  string // per-port state files live here; "" disables persistence
+	settings  *SettingsStore // saved named settings at <stateDir>/light-settings.json
+	stateDir  string         // per-port state files live here; "" disables persistence
 	enumerate Enumerate
 	openPort  OpenPort
 
@@ -79,11 +81,17 @@ type lightSession struct {
 }
 
 // NewMultiManager wires the discovery/open callbacks; Run starts the
-// rescan loop.
+// rescan loop. The saved-settings store lives beside the per-port state
+// files in stateDir ("" stateDir disables it).
 func NewMultiManager(logger *log.Logger, stateDir string, reg *Registry, enumerate Enumerate, openPort OpenPort) *MultiManager {
+	settingsPath := ""
+	if stateDir != "" {
+		settingsPath = filepath.Join(stateDir, "light-settings.json")
+	}
 	return &MultiManager{
 		logger:    logger,
 		reg:       reg,
+		settings:  NewSettingsStore(settingsPath),
 		stateDir:  stateDir,
 		enumerate: enumerate,
 		openPort:  openPort,
@@ -271,7 +279,7 @@ func (mm *MultiManager) stopAll() {
 // HandleCommand implements the daemon's CommandHandler for the whole
 // fleet. The daemon strips the "light" prefix and trims, so cmd looks
 // like "toggle", "@desk brightness 40", "name COM4 desk", "unname desk",
-// or "list".
+// "list", or a "settings save|list|apply|delete" store verb.
 func (mm *MultiManager) HandleCommand(cmd string) string {
 	cmd = strings.TrimSpace(cmd)
 	if strings.HasPrefix(cmd, "@") {
@@ -305,6 +313,8 @@ func (mm *MultiManager) HandleCommand(cmd string) string {
 			return "error: unknown light command"
 		}
 		return mm.list()
+	case "settings":
+		return mm.handleSettings(cmd)
 	case "brightness-delta":
 		if len(fields) != 2 {
 			return "error: brightness-delta must be between -20 and 20"
@@ -511,6 +521,189 @@ func clampInt(value, min, max int) int {
 		return max
 	}
 	return value
+}
+
+// handleSettings answers the "settings save|list|apply|delete <name>"
+// sub-verbs against the daemon-owned store. The name is re-read from the
+// RAW suffix after the sub-verb (not from field-splitting) so an embedded
+// newline is never collapsed into a space before validation sees it; it is
+// then trimmed - names are outer-trimmed at the pipeline boundary, so
+// leading/trailing whitespace is never meaningful and "foo " IS "foo".
+func (mm *MultiManager) handleSettings(cmd string) string {
+	sub := strings.TrimSpace(strings.TrimPrefix(cmd, "settings"))
+	fields := strings.Fields(sub)
+	if len(fields) == 0 {
+		return "error: usage: light settings <save|list|apply|delete> [name]"
+	}
+	verb := fields[0]
+	name := strings.TrimSpace(sub[len(verb):])
+	if verb == "list" {
+		if name != "" {
+			return "error: usage: light settings <save|list|apply|delete> [name]"
+		}
+		if err := mm.settings.refusal(); err != nil {
+			return "error: " + err.Error()
+		}
+		return strings.Join(mm.settings.List(), "\n")
+	}
+	if verb != "save" && verb != "apply" && verb != "delete" {
+		return "error: usage: light settings <save|list|apply|delete> [name]"
+	}
+	// A disabled or disabled-corrupt store short-circuits every mutating
+	// verb with the same single-line refusal; then the name grammar
+	// (identical for save, apply, and delete) runs before any store work.
+	if err := mm.settings.refusal(); err != nil {
+		return "error: " + err.Error()
+	}
+	if invalid := validateSettingsName(name); invalid != "" {
+		return invalid
+	}
+	switch verb {
+	case "save":
+		return mm.settingsSave(name)
+	case "apply":
+		return mm.settingsApply(name)
+	default:
+		return mm.settingsDelete(name)
+	}
+}
+
+// settingsSave snapshots the live-connected, known-state fleet and stores
+// it under name (overwriting by exact name).
+func (mm *MultiManager) settingsSave(name string) string {
+	snap := mm.settingsSnapshot()
+	if len(snap.Lights) == 0 {
+		return "error: no known light state to save"
+	}
+	if err := mm.settings.Save(name, snap); err != nil {
+		if errors.Is(err, errSettingsCap) {
+			return "error: " + err.Error()
+		}
+		return fmt.Sprintf("error: settings save failed: %v", err)
+	}
+	return fmt.Sprintf("saved %q (%d lights)", name, len(snap.Lights))
+}
+
+// settingsSnapshot captures the same LIVE-CONNECTED light set the fleet
+// fan-out enumerates (mm.sessions under mm.mu - NEVER per-light
+// Manager.Connected, which takes the per-light mutex and can block behind
+// a wedged write). All reads are memory-only state reads, so a wedged
+// light cannot stall the UDP loop. Lights whose state is still UNKNOWN
+// (after a daemon restart, until an echo or knob event) are OMITTED:
+// snapshotting one would record invented defaults instead of the current
+// hardware look. Entries are keyed by COM port path ONLY; an off light
+// saves its restore-target brightness, not 0.
+func (mm *MultiManager) settingsSnapshot() SavedSetting {
+	mm.mu.Lock()
+	ports := mm.portsLocked()
+	managers := make(map[string]*Manager, len(ports))
+	for _, p := range ports {
+		managers[p] = mm.sessions[p].m
+	}
+	mm.mu.Unlock()
+	lights := make(map[string]SavedLightState, len(ports))
+	for _, p := range ports {
+		m := managers[p]
+		on, brightness, temp, known := m.state.Status()
+		if !known {
+			continue
+		}
+		entry := SavedLightState{On: on, Brightness: brightness, TempByte: temp}
+		if !on {
+			entry.Brightness, _ = m.state.TargetOn()
+		}
+		lights[p] = entry
+	}
+	return SavedSetting{Lights: lights}
+}
+
+// settingsApply replays one named snapshot across the fleet IN PARALLEL
+// exactly like the handleAll fan-out: goroutine per key, wg.Wait, reply
+// lines preallocated in keys-sorted order so the reply is deterministic.
+// Keys are COM port paths ONLY and resolve against the live session on
+// that port - never through the (mutable) registry - so a port with no
+// live session reports unreachable and is skipped while the rest apply.
+func (mm *MultiManager) settingsApply(name string) string {
+	snap, ok := mm.settings.Get(name)
+	if !ok {
+		return fmt.Sprintf("error: unknown setting %q", name)
+	}
+	mm.mu.Lock()
+	ports := mm.portsLocked()
+	managers := make(map[string]*Manager, len(ports))
+	for _, p := range ports {
+		managers[p] = mm.sessions[p].m
+	}
+	mm.mu.Unlock()
+	if len(ports) == 0 {
+		return "error: no lights connected"
+	}
+	keys := make([]string, 0, len(snap.Lights))
+	for k := range snap.Lights {
+		keys = append(keys, k)
+	}
+	sortPorts(keys)
+	lines := make([]string, len(keys))
+	var wg sync.WaitGroup
+	for i, key := range keys {
+		wg.Add(1)
+		go func(i int, key string, entry SavedLightState) {
+			defer wg.Done()
+			m := managers[key]
+			if m == nil {
+				lines[i] = fmt.Sprintf("error: light %q: unreachable, skipped", key)
+				return
+			}
+			// Each key's whole frame sequence runs inside ONE callLight, so
+			// a wedged light costs one bounded lightCallTimeout once. The
+			// fleet label still renders display names into reply lines;
+			// identity stays port-only.
+			reply := mm.callLight(key, func() string { return applySaved(m, entry) })
+			lines[i] = mm.label(key) + ": " + reply
+		}(i, key, snap.Lights[key])
+	}
+	wg.Wait()
+	return strings.Join(lines, "\n")
+}
+
+// applySaved replays one saved entry through the per-light command path
+// with the power-state frame ALWAYS LAST: an ON entry plays on ->
+// brightness -> temp; an OFF entry plays brightness -> temp -> off, so the
+// saved brightness/temp land in the light's restore targets BEFORE the off
+// frame parks it and a later "on" restores the saved look. Brightness/temp
+// writes to an off light briefly ENERGIZE it - firmware behavior; no
+// silent alternative exists - so applying an off entry flashes the light
+// momentarily before the off frame lands. The stored temp byte renders
+// through ByteToKelvin, re-quantizing to the same step.
+func applySaved(m *Manager, entry SavedLightState) string {
+	cmds := make([]string, 0, 3)
+	if entry.On {
+		cmds = append(cmds, "on")
+	}
+	cmds = append(cmds,
+		fmt.Sprintf("brightness %d", entry.Brightness),
+		fmt.Sprintf("temp %d", ByteToKelvin(entry.TempByte)),
+	)
+	if !entry.On {
+		cmds = append(cmds, "off")
+	}
+	reply := ""
+	for _, cmd := range cmds {
+		reply = m.HandleCommand(cmd)
+	}
+	return reply
+}
+
+// settingsDelete removes a saved name, persisting the store with the same
+// write→close→replace discipline as save.
+func (mm *MultiManager) settingsDelete(name string) string {
+	if err := mm.settings.Delete(name); err != nil {
+		if errors.Is(err, errUnknownSetting) {
+			return fmt.Sprintf("error: unknown setting %q", name)
+		}
+		return fmt.Sprintf("error: settings delete failed: %v", err)
+	}
+	return fmt.Sprintf("deleted %q", name)
 }
 
 // label renders "COM4 desk" for named lights, bare "COM4" otherwise.
