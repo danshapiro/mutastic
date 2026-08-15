@@ -113,7 +113,11 @@ hardware state. The active paths are loop-free:
   | `mutastic light list` | every known light: port, name (`-` if none), connected/disconnected, state |
   | `mutastic light name <COMx> <name>` | give a light a persistent name (case-insensitive; reassigning moves it) |
   | `mutastic light unname <name\|COMx>` | clear a name |
-  | `mutastic light@desk toggle` | any command above, one light (by name or COM port) |
+  | `mutastic light settings save <name>` | snapshot every connected light with known state under `<name>` (overwrites by exact name); replies `saved "<name>" (N lights)` |
+  | `mutastic light settings list` | the sorted saved names, one per line; an empty reply means none saved |
+  | `mutastic light settings apply <name>` | restore a saved snapshot across its lights; one reply line per light |
+  | `mutastic light settings delete <name>` | remove a saved name; replies `deleted "<name>"` |
+  | `mutastic light@desk toggle` | any per-light command above (the `settings` verbs are fleet-level), one light (by name or COM port) |
 
   Per-light replies: `on 64% 4950K`, `off`, `unknown`, or `error: <reason>`
   (same exit codes as the mic commands). Notes: OFF is brightness 0 (the
@@ -132,6 +136,43 @@ hardware state. The active paths are loop-free:
   light attached, the old single-light `light-state.json` is migrated to
   that light's per-port file; with several lights attached the old file is
   ambiguous and defaults apply.
+
+  The `settings` verbs manage named snapshots of the whole fleet, persisted
+  in `%LOCALAPPDATA%\mutastic\light-settings.json` with entries keyed by
+  COM port path only — a light's (mutable) registry name never decides
+  which hardware an entry restores, so a light moved to another USB jack
+  yields a different COM port and its old entries answer
+  `error: light "<port>": unreachable, skipped` on apply (the remedy is
+  delete + save under a new name). Names are trimmed at the command
+  boundary: leading/trailing whitespace is never meaningful, so
+  `settings save foo ` and `settings save foo` are the same setting; quote
+  multi-word names (`mutastic.exe light settings save "movie mode"`).
+  Empty names, names containing a newline, and names starting with
+  `error:` (case-insensitive) answer `error: invalid settings name`; names
+  over 42 bytes answer `error: settings name too long (max 42 bytes)` (42
+  is the daemon's 64-byte UDP receive buffer minus the 22-byte
+  `light settings delete ` prefix — a longer name would save fine but
+  truncate on delete/apply and could never be removed). The store caps at
+  100 names: a NEW name past the cap answers
+  `error: too many saved settings (max 100)` while overwriting an existing
+  name always fits; there is deliberately no rename verb (delete + save
+  covers it). `settings list` answers the sorted names newline-joined, or
+  an empty reply when none are saved. `settings save` counts only lights
+  whose state is known in its `saved "<name>" (N lights)` reply — a light
+  still `unknown` since daemon start is omitted, and when none are known
+  the reply is `error: no known light state to save` and nothing is
+  stored; a persistence failure answers `error: settings save failed:
+  <err>`. `settings apply` answers one line per saved light in the fleet
+  fan-out shape (`COM4 desk: on 47% 2900K`); an unknown name answers
+  `error: unknown setting "<name>"`, as does delete; apply with no lights
+  connected answers `error: no lights connected`; delete answers
+  `deleted "<name>"`. If settings persistence is disabled (no state
+  directory) every settings verb answers `error: settings persistence
+  disabled`; if the file is corrupt or unreadable every verb — including
+  `list`, never an empty success — answers `error: settings store corrupt
+  or unreadable: <path>` and no save ever replaces the broken file
+  (recovery: stop the daemon, rename or delete the file, start the
+  daemon).
 - **`ahk/MuteAllMeetings.ahk`** — actively consumes F13 and F14 with wildcard
   no-op handlers, disabled on 2026-08-12 and 2026-08-09 respectively, so
   neither pedal key falls through to the foreground application. F15 is not

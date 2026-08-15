@@ -47,7 +47,7 @@ func askDaemon(cmd, addr string, timeout time.Duration) (string, error) {
 	if _, err := conn.Write([]byte(cmd)); err != nil {
 		return "", err
 	}
-	buf := make([]byte, 2048) // multi-light list/fan-out replies exceed 256 bytes
+	buf := make([]byte, 8192) // a full saved-settings store's list fits: 100 names x <=42 bytes <= ~4.3 KB
 	n, err := conn.Read(buf)
 	if err != nil {
 		return "", fmt.Errorf("%w: %w", errNoReply, err)

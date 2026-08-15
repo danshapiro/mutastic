@@ -49,8 +49,9 @@ type Daemon struct {
 	// lastStatusReply is the reply of the last LOGGED "status" command,
 	// used by logCommand to suppress repeated identical status lines.
 	// Touched only by the single serveUDP goroutine, so no lock is needed.
-	lastStatusReply      string
-	lastLightStatusReply string // like lastStatusReply, for the lights key's "light status" poller
+	lastStatusReply            string
+	lastLightStatusReply       string // like lastStatusReply, for the lights key's "light status" poller
+	lastLightSettingsListReply string // like lastStatusReply, for the tray's "light settings list" poller
 
 	mu  sync.Mutex
 	dev Device
@@ -288,12 +289,13 @@ func (d *Daemon) serveUDP(pc net.PacketConn) {
 }
 
 // logCommand logs one served UDP command. Non-poll commands always log.
-// The two resident-poller commands ("status" from the mute key,
-// "light status" from the lights key, each every ~750ms) log only when
-// their reply differs from the previously logged reply for that
+// The resident-poller commands ("status" from the mute key, "light
+// status" from the lights key, each every ~750ms, and "light settings
+// list" from the tray's saved-settings reconciliation every 2s) log only
+// when their reply differs from the previously logged reply for that
 // command: rotation runs only at daemon start, so unconditional logging
-// would grow the log unbounded. Called only from the single serveUDP
-// goroutine, so the latches need no lock.
+// would grow the log unbounded. Each latch is independent. Called only
+// from the single serveUDP goroutine, so the latches need no lock.
 func (d *Daemon) logCommand(cmd, reply string) {
 	switch cmd {
 	case "status":
@@ -306,6 +308,11 @@ func (d *Daemon) logCommand(cmd, reply string) {
 			return
 		}
 		d.lastLightStatusReply = reply
+	case "light settings list":
+		if reply == d.lastLightSettingsListReply {
+			return
+		}
+		d.lastLightSettingsListReply = reply
 	}
 	d.Logger.Printf("command %q -> %q", cmd, reply)
 }

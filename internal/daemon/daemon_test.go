@@ -246,13 +246,27 @@ func inputReport(op, value byte) []byte {
 // and returns the UDP address plus a UDP request helper.
 func startDaemon(t *testing.T, open OpenFunc) (addr string, ask func(cmd string) string) {
 	t.Helper()
-	return startDaemonInject(t, open, nil)
+	return startDaemonAll(t, open, nil, nil)
 }
 
 // startDaemonInject is startDaemon with a KeyInjector wired into Run.
-// It is startDaemon's previous body moved verbatim; the ONLY change is
-// the added inject argument in the Run call.
 func startDaemonInject(t *testing.T, open OpenFunc, inject KeyInjector) (addr string, ask func(cmd string) string) {
+	t.Helper()
+	return startDaemonAll(t, open, nil, inject)
+}
+
+// startDaemonLight is startDaemon with a light CommandHandler wired into
+// Run.
+func startDaemonLight(t *testing.T, open OpenFunc, light CommandHandler) (addr string, ask func(cmd string) string) {
+	t.Helper()
+	return startDaemonAll(t, open, light, nil)
+}
+
+// startDaemonAll is the single shared body behind the startDaemon helpers:
+// it runs Run() with the given OpenFunc (plus optional light handler and
+// injector) on an ephemeral UDP port and returns the UDP address plus a
+// UDP request helper.
+func startDaemonAll(t *testing.T, open OpenFunc, light CommandHandler, inject KeyInjector) (addr string, ask func(cmd string) string) {
 	t.Helper()
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
@@ -261,7 +275,7 @@ func startDaemonInject(t *testing.T, open OpenFunc, inject KeyInjector) (addr st
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		Run(ctx, open, nil, inject, nil, pc, testLogger())
+		Run(ctx, open, light, inject, nil, pc, testLogger())
 		close(done)
 	}()
 	t.Cleanup(func() {
@@ -772,6 +786,97 @@ func TestLogCommandSuppressesRepeatedLightStatus(t *testing.T) {
 	}
 	if got := strings.Count(buf.String(), `"light toggle"`); got != 1 {
 		t.Fatalf("light toggle logged %d times, want 1:\n%s", got, buf.String())
+	}
+}
+
+// TestLogCommandSuppressesRepeatedSettingsList: the tray reconciles its
+// Saved-settings menu by polling "light settings list" every 2 s — the
+// same log-growth bound as the status pollers (rotation runs only at
+// daemon start), so the repeated-reply latch applies exactly like
+// "status"/"light status". Non-poll settings verbs (save/apply/delete)
+// always log, even identical repeats, and each latch stays independent.
+func TestLogCommandSuppressesRepeatedSettingsList(t *testing.T) {
+	var buf bytes.Buffer
+	d := &Daemon{Logger: log.New(&buf, "", 0)}
+	d.logCommand("light settings list", "alpha") // first: logs
+	d.logCommand("light settings list", "alpha") // identical: suppressed
+	d.logCommand("light settings list", "beta")  // changed: logs
+	d.logCommand("light settings list", "beta")  // identical: suppressed
+	d.logCommand("light settings save movie", `saved "movie" (2 lights)`)
+	d.logCommand("light settings save movie", `saved "movie" (2 lights)`) // repeat: still logs
+	d.logCommand("status", "muted")                                       // separate latch, first logs
+	d.logCommand("status", "muted")                                       // suppressed
+	if got := strings.Count(buf.String(), `"light settings list"`); got != 2 {
+		t.Fatalf("light settings list logged %d times, want 2 (first + change):\n%s", got, buf.String())
+	}
+	if got := strings.Count(buf.String(), `"light settings save movie"`); got != 2 {
+		t.Fatalf("settings save logged %d times, want 2 (non-poll verbs always log, even identical repeats):\n%s", got, buf.String())
+	}
+	if got := strings.Count(buf.String(), `"status"`); got != 1 {
+		t.Fatalf("status logged %d times, want 1 (latches are independent):\n%s", got, buf.String())
+	}
+}
+
+// scriptedSettingsFleet is a scripted stand-in for the light fleet's
+// settings verbs: it answers from a fixed reply script and records the
+// exact commands it received, proving datagrams traverse the daemon's
+// "light"-prefix routing verbatim.
+type scriptedSettingsFleet struct {
+	mu      sync.Mutex
+	replies map[string]string
+	got     []string
+}
+
+func (f *scriptedSettingsFleet) HandleCommand(cmd string) string {
+	f.mu.Lock()
+	f.got = append(f.got, cmd)
+	f.mu.Unlock()
+	return f.replies[cmd]
+}
+
+func (f *scriptedSettingsFleet) commands() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.got...)
+}
+
+// TestLightSettingsVerbsTraverseDaemonOverUDP is characterization coverage
+// for the settings verbs' route through the daemon: "light settings ..."
+// datagrams reach the light handler unchanged (a colliding top-level
+// "settings" verb must never shadow them) and the replies round-trip
+// byte-for-byte over real UDP — including the empty-string list reply of
+// an empty store, a zero-length UDP datagram.
+func TestLightSettingsVerbsTraverseDaemonOverUDP(t *testing.T) {
+	fleet := &scriptedSettingsFleet{replies: map[string]string{
+		"settings save movie":   `saved "movie" (2 lights)`,
+		"settings list":         "",
+		"settings apply movie":  "COM4: on 47% 2900K\nCOM7: off",
+		"settings apply nope":   `error: unknown setting "nope"`,
+		"settings delete movie": `deleted "movie"`,
+	}}
+	open := func() (Device, error) { return newFakeDevice(), nil }
+	_, ask := startDaemonLight(t, open, fleet)
+
+	for _, c := range []struct{ cmd, want string }{
+		{"light settings save movie", `saved "movie" (2 lights)`},
+		{"light settings list", ""}, // empty store: the zero-length datagram
+		{"light settings apply movie", "COM4: on 47% 2900K\nCOM7: off"},
+		{"light settings apply nope", `error: unknown setting "nope"`},
+		{"light settings delete movie", `deleted "movie"`},
+	} {
+		if got := ask(c.cmd); got != c.want {
+			t.Errorf("ask(%q) = %q, want %q (byte-for-byte round trip)", c.cmd, got, c.want)
+		}
+	}
+	want := []string{
+		"settings save movie",
+		"settings list",
+		"settings apply movie",
+		"settings apply nope",
+		"settings delete movie",
+	}
+	if got := fleet.commands(); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("handler received %v, want the verbatim command sequence %v", got, want)
 	}
 }
 
