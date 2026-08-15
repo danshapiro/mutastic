@@ -813,12 +813,14 @@ func runUI(args []string, out, errOut io.Writer) int {
 		IdleTimeout:       uiIdleTimeout,
 		MaxHeaderBytes:    uiMaxHeaderBytes,
 	}
+	drainDone := make(chan struct{})
 	ui.shutdown = func() {
 		// http.Server.Shutdown waits for in-flight requests - including the
 		// /api/shutdown request itself - so it must run after this handler
 		// returns. The small delay lets the reply hit the wire first (the
 		// same reply-first pattern as the daemon's UDP shutdown).
 		go func() {
+			defer close(drainDone)
 			time.Sleep(100 * time.Millisecond)
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
@@ -840,9 +842,19 @@ func runUI(args []string, out, errOut io.Writer) int {
 		_ = listener.Close()
 		return 1
 	}
-	if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		fmt.Fprintln(errOut, "ui:", err)
+	serveErr := server.Serve(listener)
+	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+		fmt.Fprintln(errOut, "ui:", serveErr)
 		return 1
+	}
+	// If Serve ended because of the shutdown hook, join the drain before
+	// the process exits (the entry point os.Exit()s immediately after this
+	// returns). Bounded so a wedged in-flight request cannot hang the exit.
+	if errors.Is(serveErr, http.ErrServerClosed) {
+		select {
+		case <-drainDone:
+		case <-time.After(4 * time.Second):
+		}
 	}
 	return 0
 }
