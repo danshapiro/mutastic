@@ -264,10 +264,13 @@ The script:
   the `Mutastic Daemon` startup shortcut.
 - **Tray icon missing after login:** the tray logs JSONL to
   `%LOCALAPPDATA%\mutastic\tray.log`, including the systray library's own
-  error lines (its default logger is redirected there). A
-  `mutastic tray starting` line with no `tray ready`, or a library icon
-  error in the same file, means Windows refused the icon; rerun the
-  `Mutastic Daemon` startup shortcut.
+  error lines (its default logger is redirected there). If Windows never
+  installs the icon, a startup watchdog exits the tray after a startup
+  window so the single-instance lock is released and rerunning the
+  `Mutastic Daemon` startup shortcut actually retries. If the tray stays
+  "ready" but iconless, look for repeated `systray error:` lines every
+  ~10 minutes: icon updates keep retrying on that heartbeat, so a
+  repeating error means a permanent refusal.
 - **Tray icon only in the taskbar corner overflow:** Windows 11 parks new
   notification-area icons under the overflow chevron by design; drag the
   mutastic icon onto the corner once (or Settings → Personalization →
