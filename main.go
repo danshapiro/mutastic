@@ -6,7 +6,7 @@
 //	mutastic toggle|mute|unmute|status  one-shot client: mic hardware mute
 //	mutastic shutdown                   one-shot client: stop the daemon
 //	mutastic light <subcommand...>      one-shot client: light control
-//	mutastic ui                         local browser light control panel
+//	mutastic ui                         local browser control panel (lights, mic, saved settings)
 package main
 
 import (
@@ -110,7 +110,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "       mutastic light name <COMx> <name> | unname <name|COMx>")
 	fmt.Fprintln(os.Stderr, "       mutastic light@<name|COMx> <command>  (one light)")
 	fmt.Fprintln(os.Stderr, "       mutastic obs snapshot --out <path> [--source <name>] | obs list-sources  (OBS still capture)")
-	fmt.Fprintln(os.Stderr, "       mutastic ui [--port 42815] [--no-open]  (local browser light control panel)")
+	fmt.Fprintln(os.Stderr, "       mutastic ui [--port 42815] [--no-open]  (local browser control panel: lights, mic, saved settings)")
 }
 
 // runClient sends one UDP command to the daemon and prints the reply.

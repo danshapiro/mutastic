@@ -110,12 +110,14 @@ func trayOnReady(logger *slog.Logger) {
 	// The mic item is an ACTION item (never checkable) that always displays
 	// the verb its click performs: "Mute" when live, "Unmute" when muted,
 	// the neutral "Mute/Unmute" while indefinite. Its displayed title and
-	// the click's armed premise are ONE atomic snapshot (F7): the refresh
-	// loop stores the whole pair once per tick and draws the item's title
-	// and enabled bit from the stored value; the click handler loads it
-	// back exactly once. The initial neutral snapshot matches the item's
-	// startup title + disabled state, so a click before the first tick
-	// reads a premise that cannot fire.
+	// the click's armed premise are ONE atomic pair (F7), computed once per
+	// tick: the refresh loop paints the native title/enabled bit FIRST and
+	// stores the pair LAST (see trayRefreshLoop - store-last keeps a racing
+	// click on a stale-or-current premise, degrading to the probe-gated
+	// no-op instead of executing the opposite of the just-painted verb).
+	// The click handler loads the pair back exactly once. The initial
+	// neutral snapshot matches the item's startup title + disabled state,
+	// so a click before the first tick reads a premise that cannot fire.
 	var muteSnap atomic.Value
 	muteSnap.Store(trayMuteSnapshot{Title: trayMuteTitle(trayStateUnknown), Armed: trayStateUnknown})
 	loadMuteSnap := func() trayMuteSnapshot { return muteSnap.Load().(trayMuteSnapshot) }
@@ -279,18 +281,31 @@ func trayRefreshLoop(logger *slog.Logger, refreshCh <-chan struct{}, header, mic
 		systray.SetTooltip(trayTitle(state))
 		header.SetTitle(trayTitle(state))
 		// The mic item's displayed verb and the click's armed premise are
-		// ONE atomic pair: compute the snapshot once per tick, store it
-		// before any visible mutation, and draw BOTH the title and the
-		// enabled bit from the stored value - so what the user reads and
-		// what a click re-checks can never be a mixture of ticks (F7).
+		// ONE atomic pair, computed once per tick and drawn from the same
+		// value - so what the user reads and what a click re-checks can
+		// never be a mixture of ticks (F7). The NATIVE updates land FIRST
+		// (SetTitle, then Enable/Disable per the computed pair) and the
+		// premise snapshot is stored LAST: a click executes concurrently in
+		// its own goroutine, and store-first could arm the click to the NEW
+		// pair while the menu still shows the OLD verb - the matching probe
+		// then fires the opposite of the displayed action. Stored last, the
+		// premise is never FRESHER than the painted title, so a click
+		// racing the draw degrades to the probe-gated no-op (stale premise
+		// vs fresh probe -> decline + refresh). The residual sub-poll
+		// window - the PAINTED title itself lagging the daemon - is
+		// structurally unkillable without a read-back of what the user saw;
+		// the probe gate bounds it (any state change after premise capture
+		// mismatches the probe and the click declines).
+		// Linux can't drive the native menu, so this paint/store ordering
+		// is review-verified only - no automated test can observe it.
 		snap := trayMuteSnapshot{Title: trayMuteTitle(state), Armed: state}
-		muteSnap.Store(snap)
 		mic.SetTitle(snap.Title)
 		if trayMuteEnabled(snap.Armed) {
 			mic.Enable()
 		} else {
 			mic.Disable()
 		}
+		muteSnap.Store(snap)
 		// Mic vs. lights get different gates: the mic acts only on definitive
 		// answers (see trayMuteEnabled), light actions only need a reachable
 		// daemon (unknown is a mic-state concept). The savedSettings submenu
@@ -354,8 +369,12 @@ func syncSavedSettingsMenu(parent *systray.MenuItem, children []*systray.MenuIte
 		// reveal a hidden orphan (a plain field assignment, no native
 		// update - see the function comment), so the binding is final
 		// before anything can render the item.
+		// The display/command split is raw-vs-Title: spec.Title is the
+		// menu-ESCAPED display string ("&" -> "&&"), spec.raw the VERBATIM
+		// saved name - the command must use raw, because the daemon's
+		// store keys names raw and an escaped title would apply nothing.
 		if spec.Enabled {
-			item.Click(lightCmd("light settings apply " + spec.Title))
+			item.Click(lightCmd("light settings apply " + spec.raw))
 		} else {
 			item.Click(nil) // unbound: a placeholder never fires
 		}

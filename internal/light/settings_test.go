@@ -2,12 +2,16 @@ package light
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // cctStep decodes one tag-0x02 frame's (brightness, temp) payload.
@@ -437,6 +441,200 @@ func TestSavedSettingsApplySkipsUnreachableKeys(t *testing.T) {
 	}
 	if got := fleet.port("COM4").writeCount() - from4; got != 3 {
 		t.Fatalf("COM4 frames = %d, want 3 (live-port entries still apply)", got)
+	}
+}
+
+// scriptedFailPort completes every write EXCEPT the ones whose 1-based
+// index (the wake counts as write 1) is scripted to fail - one light whose
+// chosen intermediate frame errors while the rest of its restore sequence
+// still runs. Reads time out like failAfterWakePort so the session stays
+// connected.
+type scriptedFailPort struct {
+	mu     sync.Mutex
+	writes [][]byte
+	fail   map[int]error
+}
+
+func newScriptedFailPort(fail map[int]error) *scriptedFailPort {
+	return &scriptedFailPort{fail: fail}
+}
+
+func (p *scriptedFailPort) Write(b []byte) (int, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	c := make([]byte, len(b))
+	copy(c, b)
+	p.writes = append(p.writes, c)
+	if err, bad := p.fail[len(p.writes)]; bad {
+		return 0, err
+	}
+	return len(b), nil
+}
+
+func (p *scriptedFailPort) Read(b []byte) (int, error) {
+	time.Sleep(10 * time.Millisecond)
+	return 0, nil // timeout, no data
+}
+
+func (p *scriptedFailPort) Close() error { return nil }
+
+func (p *scriptedFailPort) writeCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.writes)
+}
+
+// newPartialFailureMulti builds a two-light MultiManager whose COM7 session
+// runs on a scripted-failure port while COM4 is healthy: the harness for
+// pinning per-key apply aggregation through the wire reply.
+func newPartialFailureMulti(t *testing.T, fail map[int]error) (*MultiManager, context.Context, *fakePort, *scriptedFailPort) {
+	t.Helper()
+	healthy := newFakePort()
+	flaky := newScriptedFailPort(fail)
+	enumerate := func() ([]string, error) { return []string{"COM4", "COM7"}, nil }
+	open := func(name string) (Port, error) {
+		if name == "COM7" {
+			return flaky, nil
+		}
+		return healthy, nil
+	}
+	mm := NewMultiManager(testLogger(), t.TempDir(), NewRegistry(""), enumerate, open)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel()
+		mm.stopAll()
+	})
+	return mm, ctx, healthy, flaky
+}
+
+// TestSavedSettingsApplyReportsFailedStepOnEntry pins the per-key
+// sub-step aggregation for an ON entry end-to-end through the wire reply:
+// when the intermediate BRIGHTNESS frame fails, the key's line reports the
+// failed step in the established label-prefixed error shape - never the
+// final frame's "ok" status - while the other key still applies and ALL of
+// the failing key's frames still run.
+func TestSavedSettingsApplyReportsFailedStepOnEntry(t *testing.T) {
+	fastTimings(t)
+	// COM7's writes: 1 = wake, 2 = "on" frame, 3 = "brightness 47" frame
+	// (scripted to fail), 4 = "temp 2900" frame.
+	mm, ctx, healthy, flaky := newPartialFailureMulti(t, map[int]error{3: errors.New("scripted brightness failure")})
+	mm.rescan(ctx)
+	waitConnected(t, mm, "COM4", "COM7")
+	if got := mm.HandleCommand("name COM7 desk"); got != "named COM7 desk" {
+		t.Fatalf("name = %q", got)
+	}
+	m4, m7 := sessionManager(t, mm, "COM4"), sessionManager(t, mm, "COM7")
+	m4.state.Set(50, 9)
+	m7.state.Set(47, 0)
+	if got := mm.HandleCommand("settings save look"); got != `saved "look" (2 lights)` {
+		t.Fatalf("save = %q", got)
+	}
+	// Disturb both lights so the restore (and the missing piece of it) is
+	// observable in the tracked state.
+	m4.state.Set(90, 18)
+	m7.state.Set(90, 18)
+
+	from4, from7 := healthy.writeCount(), flaky.writeCount()
+	got := mm.HandleCommand("settings apply look")
+	want := "COM4: on 50% 4950K\nCOM7 desk: error: brightness: scripted brightness failure"
+	if got != want {
+		t.Fatalf("apply = %q, want %q", got, want)
+	}
+	// Every frame still ran on BOTH lights (the failing key's parking
+	// sequence is never short-circuited by an intermediate error).
+	if got := healthy.writeCount() - from4; got != 3 {
+		t.Fatalf("COM4 frames = %d, want 3", got)
+	}
+	if got := flaky.writeCount() - from7; got != 3 {
+		t.Fatalf("COM7 frames = %d, want 3 (a failed brightness frame must not skip the temp frame)", got)
+	}
+	// The partial restore is real, not just reporting: COM7 ended on with
+	// the saved TEMP but the DISTURBED brightness (its brightness write
+	// failed), while COM4 holds the fully saved look.
+	if got := m7.HandleCommand("status"); got != "on 90% 2900K" {
+		t.Fatalf("COM7 status = %q, want the partially restored %q", got, "on 90% 2900K")
+	}
+	if got := m4.HandleCommand("status"); got != "on 50% 4950K" {
+		t.Fatalf("COM4 status = %q, want the saved look", got)
+	}
+}
+
+// TestSavedSettingsApplyReportsFailedStepOffEntry pins the same aggregation
+// for an OFF entry: when the intermediate TEMP frame fails, the key reports
+// the failed step even though the trailing "off" frame SUCCEEDS (and the
+// parking frame still lands, so the light is not left energized by the
+// brightness write).
+func TestSavedSettingsApplyReportsFailedStepOffEntry(t *testing.T) {
+	fastTimings(t)
+	// COM7's writes: 1 = wake, 2 = "brightness 30" frame, 3 = "temp 4039"
+	// frame (scripted to fail), 4 = the parking "off" frame.
+	mm, ctx, healthy, flaky := newPartialFailureMulti(t, map[int]error{3: errors.New("scripted temp failure")})
+	mm.rescan(ctx)
+	waitConnected(t, mm, "COM4", "COM7")
+	if got := mm.HandleCommand("name COM7 desk"); got != "named COM7 desk" {
+		t.Fatalf("name = %q", got)
+	}
+	m4, m7 := sessionManager(t, mm, "COM4"), sessionManager(t, mm, "COM7")
+	m4.state.Set(50, 9)
+	m7.state.Set(30, 9)
+	m7.state.Set(0, 9) // off with restore target (30, 9) - the saved OFF entry
+	if got := mm.HandleCommand("settings save look"); got != `saved "look" (2 lights)` {
+		t.Fatalf("save = %q", got)
+	}
+	// Disturb both.
+	m4.state.Set(90, 18)
+	m7.state.Set(80, 0)
+	m7.state.Set(0, 0) // off with restore target (80, 0)
+
+	from4, from7 := healthy.writeCount(), flaky.writeCount()
+	got := mm.HandleCommand("settings apply look")
+	want := "COM4: on 50% 4950K\nCOM7 desk: error: temp: scripted temp failure"
+	if got != want {
+		t.Fatalf("apply = %q, want %q", got, want)
+	}
+	if got := healthy.writeCount() - from4; got != 3 {
+		t.Fatalf("COM4 frames = %d, want 3", got)
+	}
+	if got := flaky.writeCount() - from7; got != 3 {
+		t.Fatalf("COM7 frames = %d, want 3 (a failed temp frame must not skip the parking off frame)", got)
+	}
+	// COM7 parked off with the saved brightness restored but the DISTURBED
+	// temp (its temp write failed) - the aggregation reports exactly that
+	// step instead of the off frame's "off" success.
+	if got := m7.HandleCommand("status"); got != "off" {
+		t.Fatalf("COM7 status = %q, want off (the parking frame did land)", got)
+	}
+	if b, temp := m7.state.TargetOn(); b != 30 || temp != 0 {
+		t.Fatalf("COM7 restore target = (%d, %d), want the partially restored (30, 0)", b, temp)
+	}
+	if got := m4.HandleCommand("status"); got != "on 50% 4950K" {
+		t.Fatalf("COM4 status = %q, want the saved look", got)
+	}
+}
+
+// TestSavedSettingsAmpersandNameAppliesVerbatim pins the daemon's side of
+// the tray's "&" display escaping: the store knows nothing about
+// menu-title escaping, so the VERBATIM name applies and the escaped
+// display title stays unknown - the tray glue must always build the apply
+// command from the raw name (traystate.go), never the escaped title.
+func TestSavedSettingsAmpersandNameAppliesVerbatim(t *testing.T) {
+	fastTimings(t)
+	dir := t.TempDir()
+	fleet := newFakeFleet("COM4")
+	mm, ctx := newTestMulti(t, fleet, dir)
+	mm.rescan(ctx)
+	waitConnected(t, mm, "COM4")
+	sessionManager(t, mm, "COM4").state.Set(50, 0)
+	if got := mm.HandleCommand("settings save A&B"); got != `saved "A&B" (1 lights)` {
+		t.Fatalf("save A&B = %q", got)
+	}
+	// The exact command string the tray glue builds from the RAW name.
+	if got, want := mm.HandleCommand("settings apply A&B"), "COM4: on 50% 2900K"; got != want {
+		t.Fatalf("apply A&B = %q, want %q", got, want)
+	}
+	// The escaped display title must never reach the store: it is unknown.
+	if got, want := mm.HandleCommand("settings apply A&&B"), `error: unknown setting "A&&B"`; got != want {
+		t.Fatalf("apply escaped name = %q, want %q", got, want)
 	}
 }
 

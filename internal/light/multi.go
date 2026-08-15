@@ -666,6 +666,14 @@ func (mm *MultiManager) settingsApply(name string) string {
 	return strings.Join(lines, "\n")
 }
 
+// applyStep is one replayed frame of a saved entry: the step name is what
+// the per-key aggregation reports when the frame fails ("error: brightness:
+// ..."), so a partial restore names WHICH sub-call failed.
+type applyStep struct {
+	name string
+	cmd  string
+}
+
 // applySaved replays one saved entry through the per-light command path
 // with the power-state frame ALWAYS LAST: an ON entry plays on ->
 // brightness -> temp; an OFF entry plays brightness -> temp -> off, so the
@@ -675,21 +683,39 @@ func (mm *MultiManager) settingsApply(name string) string {
 // silent alternative exists - so applying an off entry flashes the light
 // momentarily before the off frame lands. The stored temp byte renders
 // through ByteToKelvin, re-quantizing to the same step.
+// The key's result AGGREGATES its sub-steps: every frame still runs (a
+// failed brightness/temp write on an off entry must not skip its parking
+// off frame), but when ANY frame's reply is an "error:" line the key
+// reports the FIRST failed step as "error: <step>: <the frame's own error
+// text>" - never a later frame's success - so the wire line carries the
+// established label-prefixed fleet error shape ("COM4 desk: error:
+// brightness: timeout") and both UI surfaces classify the key as failed.
+// Only when EVERY sub-step succeeded does the key report the final frame's
+// status string.
 func applySaved(m *Manager, entry SavedLightState) string {
-	cmds := make([]string, 0, 3)
+	steps := make([]applyStep, 0, 3)
 	if entry.On {
-		cmds = append(cmds, "on")
+		steps = append(steps, applyStep{"on", "on"})
 	}
-	cmds = append(cmds,
-		fmt.Sprintf("brightness %d", entry.Brightness),
-		fmt.Sprintf("temp %d", ByteToKelvin(entry.TempByte)),
+	steps = append(steps,
+		applyStep{"brightness", fmt.Sprintf("brightness %d", entry.Brightness)},
+		applyStep{"temp", fmt.Sprintf("temp %d", ByteToKelvin(entry.TempByte))},
 	)
 	if !entry.On {
-		cmds = append(cmds, "off")
+		steps = append(steps, applyStep{"off", "off"})
 	}
 	reply := ""
-	for _, cmd := range cmds {
-		reply = m.HandleCommand(cmd)
+	for _, step := range steps {
+		result := m.HandleCommand(step.cmd)
+		if strings.HasPrefix(result, "error:") {
+			if !strings.HasPrefix(reply, "error:") {
+				reply = fmt.Sprintf("error: %s: %s", step.name, strings.TrimSpace(strings.TrimPrefix(result, "error:")))
+			}
+			continue
+		}
+		if !strings.HasPrefix(reply, "error:") {
+			reply = result
+		}
 	}
 	return reply
 }

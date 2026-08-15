@@ -304,7 +304,9 @@
         settingsSignature: null,
         active: new Set(),
         timers: new Map(),
-        polling: false
+        polling: false,
+        micPolling: false,
+        settingsPolling: false
       };
 
       const $ = (id) => document.getElementById(id);
@@ -573,13 +575,21 @@
         });
       }
 
+      // In-flight guard, same shape as refreshLights: a hung daemon parks
+      // every request on the shared dispatcher's 6 s timeout, so without it
+      // the 750 ms interval would stack mic polls faster than they time out
+      // (an unbounded backlog that also delays user mutations).
       async function refreshMic() {
+        if (state.micPolling) return;
+        state.micPolling = true;
         try {
           const response = await fetch("/api/mic", {cache: "no-store"});
           const data = await response.json();
           updateMic(data && data.state ? data.state : "unreachable");
         } catch {
           updateMic("unreachable");
+        } finally {
+          state.micPolling = false;
         }
       }
 
@@ -627,7 +637,13 @@
         $("settings-empty").hidden = names.length !== 0;
       }
 
+      // In-flight guard, same shape as refreshLights: a hung daemon parks
+      // every request on the shared dispatcher's 6 s timeout, so without it
+      // the 750 ms interval would stack settings polls faster than they
+      // time out (an unbounded backlog that also delays user mutations).
       async function refreshSettings() {
+        if (state.settingsPolling) return;
+        state.settingsPolling = true;
         try {
           const response = await fetch("/api/settings", {cache: "no-store"});
           const data = await response.json();
@@ -641,6 +657,8 @@
           }
         } catch {
           $("settings-line").textContent = "Saved settings are unreachable — the daemon is not answering.";
+        } finally {
+          state.settingsPolling = false;
         }
       }
 

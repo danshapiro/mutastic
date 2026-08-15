@@ -504,9 +504,18 @@ func TestTraySavedSettingsMenuSpec(t *testing.T) {
 		}
 	}
 	saved := traySavedSettings([]string{"work", "movie mode"}, true)
-	wantSaved := []trayMenuSpec{{Title: "work", Enabled: true}, {Title: "movie mode", Enabled: true}}
+	wantSaved := []trayMenuSpec{{Title: "work", raw: "work", Enabled: true}, {Title: "movie mode", raw: "movie mode", Enabled: true}}
 	if !reflect.DeepEqual(saved, wantSaved) {
 		t.Errorf("traySavedSettings([work movie mode], true) = %+v, want %+v (input order PRESERVED - the pair is deliberately non-sorted so a sorting mutation fails this)", saved, wantSaved)
+	}
+	// A "&" in a name must NOT mangle on screen: the Title escapes "&" as
+	// "&&" (Windows' mnemonic marker) while raw keeps the VERBATIM name -
+	// the glue builds the apply command from raw by index (never from the
+	// escaped Title), and both placeholder strings contain no "&".
+	esc := traySavedSettings([]string{"A&B", "R&D dept"}, true)
+	wantEsc := []trayMenuSpec{{Title: "A&&B", raw: "A&B", Enabled: true}, {Title: "R&&D dept", raw: "R&D dept", Enabled: true}}
+	if !reflect.DeepEqual(esc, wantEsc) {
+		t.Errorf("traySavedSettings([A&B R&D dept], true) = %+v, want %+v (escaped Title zipped with the verbatim raw name by index)", esc, wantEsc)
 	}
 }
 
@@ -561,8 +570,14 @@ func TestTraySameMenuSpecs(t *testing.T) {
 		t.Error("a title change must trigger a rebuild")
 	}
 	placeholder := []trayMenuSpec{{Title: "(settings unavailable)", Enabled: false}}
-	real := []trayMenuSpec{{Title: "(settings unavailable)", Enabled: true}}
+	real := []trayMenuSpec{{Title: "(settings unavailable)", raw: "(settings unavailable)", Enabled: true}}
 	if traySameMenuSpecs(placeholder, real) || traySameMenuSpecs(real, placeholder) {
 		t.Error("placeholder<->real with identical titles must compare DIFFERENT via the enabled bit (the pair differs, so the menu rebuilds)")
+	}
+	// The raw field participates in whole-struct equality: an escaped
+	// Title glued to the WRONG raw name (a glue zip bug) must never
+	// compare equal to the correct pairing.
+	if traySameMenuSpecs([]trayMenuSpec{{Title: "A&&B", raw: "A&B", Enabled: true}}, []trayMenuSpec{{Title: "A&&B", raw: "A&&B", Enabled: true}}) {
+		t.Error("a raw-name mismatch behind an identical escaped Title must compare DIFFERENT (the click command uses raw)")
 	}
 }

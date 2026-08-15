@@ -136,14 +136,26 @@ func trayIconFor(s trayState) trayIcon {
 }
 
 // trayMenuSpec is one "Saved settings" submenu entry as a {title, enabled}
-// PAIR: a real saved name renders enabled (click applies it); the two
-// placeholder rows render disabled. The pair is compared whole by
+// PAIR plus the VERBATIM settings name (raw): a real saved name renders
+// enabled (click applies the raw name); the two placeholder rows render
+// disabled and carry no raw name. The struct is compared whole by
 // traySameMenuSpecs because the settings-name grammar permits a literal
 // saved name equal to a placeholder string - title-only comparison would
 // leave a real setting grayed (or a placeholder clickable) across a
 // placeholder<->real transition.
 type trayMenuSpec struct {
-	Title   string
+	// Title is the DISPLAY string: traySavedSettings escapes "&" as "&&"
+	// because a Windows menu title treats a bare "&" as a mnemonic
+	// underline marker and would mangle the name on screen; escaping is
+	// injective, so distinct raw names never share an escaped Title.
+	Title string
+	// raw is the VERBATIM saved name the click command applies ("" for
+	// the placeholders, which never fire): the daemon's store knows
+	// nothing about menu-title escaping, and Title must not be unescaped
+	// back (escaping is only safe to APPLY, not reverse-guess).
+	raw string
+	// Enabled is the click gate: real entries fire their apply command,
+	// placeholders stay disabled and unbound.
 	Enabled bool
 }
 
@@ -157,9 +169,13 @@ const traySavedSettingsListCmd = "light settings list"
 // regimes: daemon not-ok (transport down OR store broken) -> one DISABLED
 // "(settings unavailable)" placeholder (one wording covers both honestly);
 // ok with no names -> one DISABLED "(no saved settings)" placeholder;
-// otherwise one {name, ENABLED} per name in input order (the daemon emits
-// them sorted). Both placeholder strings are tray-side UI text, NEVER sent
-// by the daemon.
+// otherwise one {escaped name, ENABLED} per name in input order (the daemon
+// emits them sorted). Both placeholder strings are tray-side UI text, NEVER
+// sent by the daemon - and neither contains "&", so they need no escaping.
+// A REAL name's Title escapes "&" as "&&" (Windows would otherwise eat a
+// bare "&" as a mnemonic marker and mangle the displayed name) while raw
+// keeps the VERBATIM name for the click command; the raw field pins the
+// title<->name pairing by index, so the glue never re-derives it.
 func traySavedSettings(names []string, daemonOK bool) []trayMenuSpec {
 	if !daemonOK {
 		return []trayMenuSpec{{Title: "(settings unavailable)"}}
@@ -169,7 +185,7 @@ func traySavedSettings(names []string, daemonOK bool) []trayMenuSpec {
 	}
 	specs := make([]trayMenuSpec, 0, len(names))
 	for _, name := range names {
-		specs = append(specs, trayMenuSpec{Title: name, Enabled: true})
+		specs = append(specs, trayMenuSpec{Title: strings.ReplaceAll(name, "&", "&&"), raw: name, Enabled: true})
 	}
 	return specs
 }
@@ -195,8 +211,10 @@ func trayParseSettingsList(reply string, err error) (names []string, daemonOK bo
 }
 
 // traySameMenuSpecs reports whether two rendered spec lists are identical,
-// comparing {Title, Enabled} pairs element-wise (struct equality on
-// trayMenuSpec is exactly the pair comparison, never titles only). The
+// comparing the whole trayMenuSpec struct element-wise - {Title, raw,
+// Enabled}, never titles only (raw tracks Title by construction - escaping
+// is injective - so a name change still forces the rebuild; the raw field
+// matters for whole-struct honesty, not as a second diff source). The
 // refresh loop rebuilds the submenu children exactly when this reports
 // false; two nils compare equal (the state before the first poll).
 func traySameMenuSpecs(a, b []trayMenuSpec) bool {

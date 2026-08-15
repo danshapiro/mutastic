@@ -1354,6 +1354,9 @@ func TestCountUIApplySuccesses(t *testing.T) {
 		{name: "line-initial error skip lines are failures", reply: "error: light \"COM4\": unreachable, skipped\nerror: light \"COM9\": unreachable, skipped", want: 0},
 		{name: "label-prefixed per-light failures are failures", reply: "COM4 desk: error: timeout\nCOM7: error: simulated write failure", want: 0},
 		{name: "mixed reply counts only the good lines", reply: "COM4 desk: on 47% 2900K\nCOM7: error: timeout\nCOM12 left: off", want: 2},
+		// The applySaved aggregation's per-key step failure line - the same
+		// label-prefixed shape with a step name inside the error text.
+		{name: "aggregated sub-step failure lines are failures", reply: "COM4 desk: on 47% 2900K\nCOM7 desk: error: brightness: scripted write failure", want: 1},
 		{name: "blank lines never count", reply: "\nCOM4: on 47% 2900K\n\n", want: 1},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -1774,6 +1777,46 @@ settingsApplyAlpha.click();
 await flush();
 assert.equal(banner.hidden, false, "a detail carrying a line-initial error: skip line must keep raising the error banner");
 assert.equal(errorText.textContent.includes("error: light \"COM9\": unreachable, skipped"), true, "the banner must carry the skip line verbatim");
+`)
+}
+
+// TestEmbeddedLightUIPollersHaveInFlightGuards EXECUTES the embedded page
+// script under Node against the shared DOM stub and pins the in-flight guard
+// on ALL THREE pollers, identical in shape to refreshLights': while one
+// poll's request is still pending, back-to-back interval ticks must NOT
+// stack new requests - a hung daemon parks every request on the shared
+// dispatcher's 6 s timeout, so unguarded 750 ms polls would build an
+// unbounded fetch backlog that also delays user mutations. Once the pending
+// request completes, the next tick polls again. The fetch STUB resolves
+// immediately, but each poller only clears its guard in the finally after
+// its awaits - a microtask later - so three SYNCHRONOUS ticks issue exactly
+// one request per endpoint when the guard holds.
+func TestEmbeddedLightUIPollersHaveInFlightGuards(t *testing.T) {
+	runPageScriptWithDOMStub(t, `
+stubFetchScript({
+	"/api/lights": {status: 200, body: {lights: []}},
+	"/api/mic": {status: 200, body: {state: "unmuted"}},
+	"/api/settings": {status: 200, body: {names: []}},
+});
+fetchCalls.length = 0;
+const countGets = (url) => fetchCalls.filter((call) => call.url === url && !(call.options && call.options.method)).length;
+// Three back-to-back ticks with nothing resolved in between: each poller
+// must still show exactly ONE request - the second and third ticks find
+// the first poll in flight and skip.
+intervalCallback();
+intervalCallback();
+intervalCallback();
+assert.equal(countGets("/api/lights"), 1, "refreshLights' in-flight guard: a pending poll issues no new /api/lights request");
+assert.equal(countGets("/api/mic"), 1, "a pending refreshMic request must suppress further /api/mic polls");
+assert.equal(countGets("/api/settings"), 1, "a pending refreshSettings request must suppress further /api/settings polls");
+// Once the pending requests complete, the next tick polls every endpoint
+// again - the guards reset, the page keeps refreshing.
+await flush();
+intervalCallback();
+await flush();
+assert.equal(countGets("/api/lights"), 2, "after completion the next /api/lights poll fires");
+assert.equal(countGets("/api/mic"), 2, "after completion the next /api/mic poll fires");
+assert.equal(countGets("/api/settings"), 2, "after completion the next /api/settings poll fires");
 `)
 }
 
