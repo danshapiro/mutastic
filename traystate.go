@@ -1,10 +1,12 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"syscall"
 	"time"
 )
 
@@ -163,9 +165,10 @@ func (a *trayActions) onQuit() {
 }
 
 // stopLightPanel asks a running `mutastic ui` server to stop (Task 4's
-// endpoint). A transport failure means the panel is unreachable - dead or
-// never started, which is already Quit's goal state - so only an ALIVE but
-// refusing panel is an error worth logging.
+// endpoint). ECONNREFUSED proves nothing is listening - dead or never
+// started, which is already Quit's goal state - so only an ALIVE panel (a
+// non-OK status, or a wedged listener that never answers) is an error
+// worth logging.
 func stopLightPanel(baseURL string) error {
 	req, err := http.NewRequest(http.MethodPost, baseURL+"api/shutdown", nil)
 	if err != nil {
@@ -174,7 +177,15 @@ func stopLightPanel(baseURL string) error {
 	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil // unreachable = not running = goal state
+		// ECONNREFUSED proves nothing is listening: the panel is gone, which
+		// is Quit's goal state. Any other transport failure (timeout,
+		// reset) may be a live but wedged panel - that is a real error, and
+		// onQuit logs it at ERROR. (errors.Is reaches WSAECONNREFUSED on
+		// Windows through the net package's errno mapping.)
+		if errors.Is(err, syscall.ECONNREFUSED) {
+			return nil
+		}
+		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {

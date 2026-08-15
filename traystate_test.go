@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTrayStateFor(t *testing.T) {
@@ -218,6 +219,17 @@ func TestStopLightPanel(t *testing.T) {
 	_ = listener.Close()
 	if err := stopLightPanel(dead); err != nil {
 		t.Fatalf("stopLightPanel against a dead panel = %v, want nil (already the goal state)", err)
+	}
+
+	// Wedged panel: it accepts and hangs past the client timeout, so the
+	// transport error is NOT ECONNREFUSED and must surface as an error.
+	wedged := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(5 * time.Second)
+	}))
+	defer wedged.Close()
+	err = stopLightPanel(wedged.URL + "/")
+	if err == nil {
+		t.Fatal("stopLightPanel against a wedged panel = nil, want a transport error (only ECONNREFUSED counts as goal state)")
 	}
 }
 
