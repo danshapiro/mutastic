@@ -83,8 +83,9 @@ hardware state. The active paths are loop-free:
   mutastic runs in one click: it sends the daemon's `shutdown` command,
   posts the light-panel server's `/api/shutdown`, and exits the tray.
   If a live daemon or panel *refuses* to stop, Quit logs the failure and
-  the tray stays up — click Quit again to retry (things that simply can't
-  be reached count as already stopped). With the
+  the tray stays up — click Quit again to retry. (A port that actively
+  refuses connections counts as already stopped; a hang or silence keeps
+  the tray up so nothing live gets silently left behind.) With the
   daemon unreachable the action items gray out. Only one tray instance runs
   (loopback TCP 42816 is the single-instance lock, the same trick as the
   daemon's UDP bind). The tray logs JSONL with levels to
