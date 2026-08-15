@@ -81,6 +81,26 @@ type uiActionRequest struct {
 	Value  *int   `json:"value"`
 }
 
+// uiSettingsResponse is the JSON shape of every /api/settings reply. Names
+// is a REAL array (never null) in every reply that produced one: GET always
+// lists (an empty store lists []), and POST lists on a successful follow-up
+// refresh. Only the F6 path - the mutation COMMITTED but the follow-up
+// settings list refresh failed - leaves Names nil so it marshals as null
+// beside the refresh-failure error; a 502 there would misreport a mutation
+// that already happened. Detail carries a successful apply's full verbatim
+// daemon reply so the page's error banner can show partial-success skip
+// lines; it is never hidden.
+type uiSettingsResponse struct {
+	Names  []string `json:"names"`
+	Error  string   `json:"error,omitempty"`
+	Detail string   `json:"detail,omitempty"`
+}
+
+type uiSettingsRequest struct {
+	Action string `json:"action"`
+	Name   string `json:"name"`
+}
+
 // daemonCall is deliberately tiny: tests can provide a scripted fake while
 // production uses the existing askDaemon UDP client.
 type daemonCall func(command string) (string, error)
@@ -201,6 +221,20 @@ func (s *uiServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleGroup(w, r)
+	case "/api/settings":
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			writeUIMethodError(w, http.MethodGet+", "+http.MethodPost)
+			return
+		}
+		if r.Method == http.MethodPost {
+			if !s.validPostOrigin(r) {
+				writeUIJSON(w, http.StatusForbidden, uiResponse{Error: "origin is not allowed"})
+				return
+			}
+			s.handleSettings(w, r)
+			return
+		}
+		s.handleSettingsList(w)
 	case "/api/mic":
 		if r.Method != http.MethodGet && r.Method != http.MethodPost {
 			writeUIMethodError(w, http.MethodGet+", "+http.MethodPost)
@@ -418,6 +452,168 @@ func (s *uiServer) handleGroup(w http.ResponseWriter, r *http.Request) {
 	}
 	status, response := s.mutate(plan)
 	writeUIJSON(w, status, response)
+}
+
+// handleSettingsList answers GET /api/settings. It ALWAYS answers HTTP 200
+// (F5): the light polling loop already owns the page's error banner, so the
+// settings list degrades in band - a daemon transport failure collapses to
+// the bare word "unreachable" (the same convention as the mic card) while a
+// daemon single-line "error:" refusal (a disabled or corrupt store) is
+// carried through verbatim. Names is a real array in every reply.
+func (s *uiServer) handleSettingsList(w http.ResponseWriter) {
+	response := uiSettingsResponse{Names: []string{}}
+	_ = s.dispatcher.sequence(func(call daemonCall) error {
+		names, err := queryUISettings(call)
+		if err != nil {
+			if errors.Is(err, errUIDaemonUnreachable) {
+				response.Error = "unreachable"
+			} else {
+				response.Error = err.Error()
+			}
+			return nil
+		}
+		response.Names = names
+		return nil
+	})
+	writeUIJSON(w, http.StatusOK, response)
+}
+
+func (s *uiServer) handleSettings(w http.ResponseWriter, r *http.Request) {
+	var req uiSettingsRequest
+	if err := decodeUIJSON(w, r, &req); err != nil {
+		writeUIJSON(w, http.StatusBadRequest, uiResponse{Error: err.Error()})
+		return
+	}
+	switch req.Action {
+	case "save", "apply", "delete":
+	default:
+		// A bad action never reaches the daemon.
+		writeUIJSON(w, http.StatusBadRequest, uiResponse{Error: fmt.Sprintf("unknown settings action %q", req.Action)})
+		return
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		writeUIJSON(w, http.StatusBadRequest, uiResponse{Error: "settings name is required"})
+		return
+	}
+	if strings.ContainsAny(req.Name, "\r\n") {
+		writeUIJSON(w, http.StatusBadRequest, uiResponse{Error: "settings name must not contain a newline"})
+		return
+	}
+	command := buildSettingsCommand(req.Action, req.Name)
+	var (
+		names       []string
+		detail      string
+		mutationErr error
+		refreshErr  error
+	)
+	_ = s.dispatcher.sequence(func(call daemonCall) error {
+		reply, err := call(command)
+		if err != nil {
+			mutationErr = err
+			return nil
+		}
+		trimmed := strings.TrimSpace(reply)
+		if req.Action == "apply" {
+			// LB-4 ruling: apply replies are classified LINE-WISE. Each
+			// "error:"-prefixed line is a failure (e.g. an unreachable key,
+			// skipped) and every other non-blank line is a success. ZERO
+			// success lines means nothing was restored - the only apply
+			// failure shape, answered 502 with the verbatim reply.
+			if countUIApplySuccesses(trimmed) == 0 {
+				mutationErr = errors.New(trimmed)
+				return nil
+			}
+			// >=1 success: HTTP 200 with the FULL verbatim reply as detail,
+			// so the page's error banner shows per-light skip lines (a
+			// partial success is never hidden).
+			detail = trimmed
+		} else if !strings.Contains(trimmed, "\n") && strings.HasPrefix(trimmed, "error:") {
+			// save/delete fail whole-reply: exactly one "error:" line (the
+			// same shape as the mic verbs; multi-line noise is not a failure).
+			mutationErr = errors.New(trimmed)
+			return nil
+		}
+		// The mutation committed. Exactly ONE settings list refresh follows;
+		// its failure is NEVER a 502 (F6 - the mutation already happened).
+		names, refreshErr = queryUISettings(call)
+		return nil
+	})
+	if mutationErr != nil {
+		writeUIJSON(w, http.StatusBadGateway, uiSettingsResponse{Names: []string{}, Error: mutationErr.Error()})
+		return
+	}
+	if refreshErr != nil {
+		// F6: 200 with names null/omitted PLUS an error naming the refresh
+		// failure. The page's shared 750 ms poll recovers the list shortly
+		// afterward, and retrying the mutation is safe/idempotent by name -
+		// a retried delete surfaces the daemon's "error: unknown setting".
+		writeUIJSON(w, http.StatusOK, uiSettingsResponse{
+			Error:  "settings list refresh failed: " + refreshErr.Error(),
+			Detail: detail,
+		})
+		return
+	}
+	writeUIJSON(w, http.StatusOK, uiSettingsResponse{Names: names, Detail: detail})
+}
+
+// buildSettingsCommand renders one daemon store verb. The name passes
+// VERBATIM (spaces included): the daemon reads the raw suffix after the
+// sub-verb and trims there, and the UI has already rejected empty,
+// whitespace-only, and newline-bearing names before this point.
+func buildSettingsCommand(action, name string) string {
+	return "light settings " + action + " " + name
+}
+
+// errUIDaemonUnreachable marks a daemon TRANSPORT failure inside the
+// settings queries. GET /api/settings collapses it to the bare word
+// "unreachable" (the card's honest word for a dead daemon); the POST
+// refresh path keeps the wrapped transport detail inside its
+// refresh-failure message.
+var errUIDaemonUnreachable = errors.New("unreachable")
+
+func queryUISettings(call daemonCall) ([]string, error) {
+	reply, err := call("light settings list")
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errUIDaemonUnreachable, err)
+	}
+	return parseUISettingsNames(reply)
+}
+
+// parseUISettingsNames parses the "light settings list" reply:
+// newline-joined names, "" for an empty store (a REAL empty slice, never
+// nil), or a single-line "error:" refusal (disabled/corrupt store) whose
+// string is returned verbatim as the error.
+func parseUISettingsNames(reply string) ([]string, error) {
+	trimmed := strings.TrimSpace(reply)
+	if trimmed == "" {
+		return []string{}, nil
+	}
+	if !strings.Contains(trimmed, "\n") && strings.HasPrefix(trimmed, "error:") {
+		return nil, errors.New(trimmed)
+	}
+	names := []string{}
+	for _, line := range strings.Split(trimmed, "\n") {
+		if name := strings.TrimSpace(line); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
+// countUIApplySuccesses classifies an apply reply LINE-WISE (LB-4): lines
+// starting with "error:" are failures; every other non-blank line is a
+// successfully restored light. Zero successes means the apply restored
+// nothing at all and the whole reply is reported verbatim as the failure.
+func countUIApplySuccesses(reply string) int {
+	successes := 0
+	for _, line := range strings.Split(reply, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "error:") {
+			continue
+		}
+		successes++
+	}
+	return successes
 }
 
 type uiMutationPlan func(call daemonCall) ([]uiDetail, error)

@@ -1039,6 +1039,518 @@ func TestUIMicPostValidatesActionHonorsGuardsAndMethods(t *testing.T) {
 	}
 }
 
+// TestUIAPISettingsList pins GET /api/settings: exactly one
+// "light settings list" call per request, a REAL names array in every reply
+// (an empty store's "" reply parses to [], never null), and F5 in-band
+// degradation at HTTP 200 - a daemon TRANSPORT failure answers
+// {"names":[],"error":"unreachable"} while a daemon single-line "error:"
+// refusal (e.g. a disabled or corrupt store) is carried through verbatim.
+func TestUIAPISettingsList(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		reply     string
+		err       error
+		wantNames []string
+		wantError string
+	}{
+		{name: "daemon names in order", reply: "focus\nmovie mode", wantNames: []string{"focus", "movie mode"}},
+		{name: "empty store replies a real empty array", reply: "", wantNames: []string{}},
+		{name: "transport failure degrades in band", err: errors.New("connection refused"), wantNames: []string{}, wantError: "unreachable"},
+		{name: "daemon error reply degrades in band verbatim", reply: "error: settings persistence disabled", wantNames: []string{}, wantError: "error: settings persistence disabled"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			var commands []string
+			server := newUIServer(42815, newTestDaemonDispatcher(func(command string) (string, error) {
+				commands = append(commands, command)
+				return testCase.reply, testCase.err
+			}))
+			req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+			req.Host = "127.0.0.1:42815"
+			recorder := httptest.NewRecorder()
+			server.ServeHTTP(recorder, req)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, body %s; GET /api/settings always answers 200", recorder.Code, recorder.Body.String())
+			}
+			var body struct {
+				Names  []string `json:"names"`
+				Error  string   `json:"error"`
+				Detail string   `json:"detail"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Names == nil {
+				t.Fatalf("names must be a REAL array, never null/omitted: body %s", recorder.Body.String())
+			}
+			if !reflect.DeepEqual(body.Names, testCase.wantNames) {
+				t.Fatalf("names = %v, want %v", body.Names, testCase.wantNames)
+			}
+			if body.Error != testCase.wantError || body.Detail != "" {
+				t.Fatalf("error/detail = %q / %q, want error %q and no detail", body.Error, body.Detail, testCase.wantError)
+			}
+			if len(testCase.wantNames) == 0 && !strings.Contains(recorder.Body.String(), `"names":[]`) {
+				t.Fatalf("body %s must contain a literal \"names\":[]", recorder.Body.String())
+			}
+			if !reflect.DeepEqual(commands, []string{"light settings list"}) {
+				t.Fatalf("daemon commands = %v, want exactly [light settings list]", commands)
+			}
+		})
+	}
+}
+
+// TestUIAPISettingsSaveAndApplyRefreshTheList pins the POST order contract:
+// exactly [light settings <verb> <name>, light settings list] and HTTP 200
+// with the refreshed names in the POST reply itself (the page never re-GETs
+// after a POST). A successful apply additionally carries the full verbatim
+// daemon reply as detail. The F6 carve-out - mutation COMMITTED but the
+// follow-up refresh failed (transport error OR single-line "error:" reply) -
+// answers 200 with names null/omitted plus an error naming the REFRESH
+// failure; it is never a 502. The retry row pins that a delete retried after
+// a committed-but-unacknowledged first delete surfaces the daemon's
+// "error: unknown setting" verbatim as a 502.
+func TestUIAPISettingsSaveAndApplyRefreshTheList(t *testing.T) {
+	post := func(server *uiServer, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/settings", strings.NewReader(body))
+		req.Host = "127.0.0.1:42815"
+		req.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		server.ServeHTTP(recorder, req)
+		return recorder
+	}
+	for _, testCase := range []struct {
+		verb       string
+		verbReply  string
+		wantDetail bool
+	}{
+		{verb: "save", verbReply: `saved "movie mode" (2 lights)`},
+		{verb: "apply", verbReply: "COM4 desk: on 47% 2900K\nCOM7: off", wantDetail: true},
+		{verb: "delete", verbReply: `deleted "movie mode"`},
+	} {
+		t.Run(testCase.verb+" refreshes the list after the verb", func(t *testing.T) {
+			var commands []string
+			server := newUIServer(42815, newTestDaemonDispatcher(func(command string) (string, error) {
+				commands = append(commands, command)
+				switch command {
+				case "light settings " + testCase.verb + " movie mode":
+					return testCase.verbReply, nil
+				case "light settings list":
+					return "focus\nmovie mode", nil
+				default:
+					return "", fmt.Errorf("unexpected command %q", command)
+				}
+			}))
+			recorder := post(server, `{"action":"`+testCase.verb+`","name":"movie mode"}`)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, body %s", recorder.Code, recorder.Body.String())
+			}
+			var body struct {
+				Names  []string `json:"names"`
+				Error  string   `json:"error"`
+				Detail string   `json:"detail"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(body.Names, []string{"focus", "movie mode"}) {
+				t.Fatalf("names = %v, want the refreshed [focus movie mode]", body.Names)
+			}
+			if body.Error != "" {
+				t.Fatalf("error = %q, want none on a clean mutation+refresh", body.Error)
+			}
+			wantDetail := ""
+			if testCase.wantDetail {
+				wantDetail = testCase.verbReply
+			}
+			if body.Detail != wantDetail {
+				t.Fatalf("detail = %q, want %q", body.Detail, wantDetail)
+			}
+			wantCommands := []string{"light settings " + testCase.verb + " movie mode", "light settings list"}
+			if !reflect.DeepEqual(commands, wantCommands) {
+				t.Fatalf("daemon commands = %v, want %v (verb first, then exactly ONE list refresh)", commands, wantCommands)
+			}
+		})
+		t.Run(testCase.verb+" mutation committed with failed refresh answers 200", func(t *testing.T) {
+			for _, refreshFailure := range []struct {
+				name   string
+				reply  string
+				err    error
+				substr string
+			}{
+				{name: "refresh transport error", err: errors.New("connection refused"), substr: "connection refused"},
+				{name: "refresh daemon error reply", reply: "error: settings persistence disabled", substr: "error: settings persistence disabled"},
+			} {
+				t.Run(refreshFailure.name, func(t *testing.T) {
+					var commands []string
+					server := newUIServer(42815, newTestDaemonDispatcher(func(command string) (string, error) {
+						commands = append(commands, command)
+						if command == "light settings list" {
+							return refreshFailure.reply, refreshFailure.err
+						}
+						return testCase.verbReply, nil
+					}))
+					recorder := post(server, `{"action":"`+testCase.verb+`","name":"movie mode"}`)
+					if recorder.Code != http.StatusOK {
+						t.Fatalf("status = %d, body %s; a failed REFRESH after a committed mutation is never a 502", recorder.Code, recorder.Body.String())
+					}
+					var body struct {
+						Names  []string `json:"names"`
+						Error  string   `json:"error"`
+						Detail string   `json:"detail"`
+					}
+					if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+						t.Fatal(err)
+					}
+					if body.Names != nil {
+						t.Fatalf("names = %v, want null/omitted when the follow-up refresh failed", body.Names)
+					}
+					if !strings.Contains(body.Error, "settings list refresh failed") || !strings.Contains(body.Error, refreshFailure.substr) {
+						t.Fatalf("error = %q, want a refresh failure naming %q", body.Error, refreshFailure.substr)
+					}
+					wantDetail := ""
+					if testCase.wantDetail {
+						wantDetail = testCase.verbReply
+					}
+					if body.Detail != wantDetail {
+						t.Fatalf("detail = %q, want %q", body.Detail, wantDetail)
+					}
+					wantCommands := []string{"light settings " + testCase.verb + " movie mode", "light settings list"}
+					if !reflect.DeepEqual(commands, wantCommands) {
+						t.Fatalf("daemon commands = %v, want %v", commands, wantCommands)
+					}
+				})
+			}
+		})
+	}
+	t.Run("delete retried after a committed but unacknowledged delete", func(t *testing.T) {
+		var commands []string
+		server := newUIServer(42815, newTestDaemonDispatcher(func(command string) (string, error) {
+			commands = append(commands, command)
+			switch {
+			case command == "light settings delete movie mode" && len(commands) == 1:
+				// First attempt COMMITS on the daemon ...
+				return `deleted "movie mode"`, nil
+			case command == "light settings delete movie mode":
+				// ... but the retry arrives after the commit: the daemon refuses verbatim.
+				return `error: unknown setting "movie mode"`, nil
+			case command == "light settings list":
+				// The first attempt's refresh fails (that is the "unacknowledged" half).
+				return "", errors.New("connection refused")
+			default:
+				return "", fmt.Errorf("unexpected command %q", command)
+			}
+		}))
+		first := post(server, `{"action":"delete","name":"movie mode"}`)
+		if first.Code != http.StatusOK {
+			t.Fatalf("first delete status = %d, body %s; committed mutation with failed refresh must be 200", first.Code, first.Body.String())
+		}
+		second := post(server, `{"action":"delete","name":"movie mode"}`)
+		if second.Code != http.StatusBadGateway {
+			t.Fatalf("retried delete status = %d, body %s; the daemon's unknown-setting refusal must surface as 502", second.Code, second.Body.String())
+		}
+		var body struct {
+			Names []string `json:"names"`
+			Error string   `json:"error"`
+		}
+		if err := json.Unmarshal(second.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Error != `error: unknown setting "movie mode"` {
+			t.Fatalf("error = %q, want the daemon's refusal verbatim", body.Error)
+		}
+		wantCommands := []string{"light settings delete movie mode", "light settings list", "light settings delete movie mode"}
+		if !reflect.DeepEqual(commands, wantCommands) {
+			t.Fatalf("daemon commands = %v, want %v (no refresh after a failed verb)", commands, wantCommands)
+		}
+	})
+}
+
+// TestUIAPISettingsValidatesAndPassesDaemonErrorsThrough pins the guard and
+// failure posture: client-side validation (unknown action; empty, whitespace-
+// only, or newline-bearing names) answers 400 and NEVER reaches the daemon;
+// the origin check fires before action validation; wrong methods answer 405
+// Allow: GET, POST; a single-line "error:" mutation reply on save/delete
+// answers 502 verbatim with NO follow-up refresh; the apply reply is
+// classified LINE-WISE (LB-4) - all-error-lines (a two-port setting with both
+// ports unreachable) is 502 with the verbatim reply, while the one-vs-two
+// unreachable discrimination (one success line + one inline skip error) is
+// 200 with refreshed names AND the full reply carried as detail.
+func TestUIAPISettingsValidatesAndPassesDaemonErrorsThrough(t *testing.T) {
+	var calls int
+	server := newUIServer(42815, newTestDaemonDispatcher(func(string) (string, error) {
+		calls++
+		return "", nil
+	}))
+	post := func(body, origin string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/settings", strings.NewReader(body))
+		req.Host = "127.0.0.1:42815"
+		req.Header.Set("Content-Type", "application/json")
+		if origin != "" {
+			req.Header.Set("Origin", origin)
+		}
+		recorder := httptest.NewRecorder()
+		server.ServeHTTP(recorder, req)
+		return recorder
+	}
+	for _, body := range []string{
+		`{"action":"explode","name":"x"}`,
+		`{"action":"","name":"x"}`,
+		`{"name":"x"}`,
+		`{}`,
+		`{"action":"save","name":""}`,
+		`{"action":"apply","name":"   "}`,
+		`{"action":"delete","name":" \t "}`,
+		`{"action":"delete","name":"movie\nmode"}`,
+	} {
+		if got := post(body, "").Code; got != http.StatusBadRequest {
+			t.Fatalf("body %s status = %d, want 400", body, got)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("invalid actions/names reached the daemon %d times; want zero calls", calls)
+	}
+	if got := post(`{"action":"save","name":"x"}`, "http://evil.example").Code; got != http.StatusForbidden {
+		t.Fatalf("foreign Origin status = %d, want 403", got)
+	}
+	if calls != 0 {
+		t.Fatalf("a foreign-Origin POST reached the daemon; want zero calls")
+	}
+	if got := post(`{"action":"explode"}`, "http://evil.example").Code; got != http.StatusForbidden {
+		t.Fatalf("bad action with a foreign Origin status = %d, want 403 - the origin check must fire before validation", got)
+	}
+	if calls != 0 {
+		t.Fatalf("a foreign-Origin bad-action POST reached the daemon; want zero calls")
+	}
+	for _, method := range []string{http.MethodPut, http.MethodDelete, http.MethodPatch} {
+		req := httptest.NewRequest(method, "/api/settings", nil)
+		req.Host = "127.0.0.1:42815"
+		recorder := httptest.NewRecorder()
+		server.ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusMethodNotAllowed || recorder.Header().Get("Allow") != "GET, POST" {
+			t.Fatalf("%s status = %d Allow %q, want 405 Allow: GET, POST", method, recorder.Code, recorder.Header().Get("Allow"))
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("wrong-method requests reached the daemon; want zero calls")
+	}
+}
+
+// TestUIAPISettingsDaemonFailuresAre502 pins the 502 posture: 502 is reserved
+// for MUTATION failures only - a transport error on the verb, a single-line
+// "error:" reply on save/delete, or an apply reply with ZERO success lines.
+// Each 502 carries the failure verbatim and skips the follow-up refresh.
+func TestUIAPISettingsDaemonFailuresAre502(t *testing.T) {
+	post := func(server *uiServer, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/settings", strings.NewReader(body))
+		req.Host = "127.0.0.1:42815"
+		req.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		server.ServeHTTP(recorder, req)
+		return recorder
+	}
+	for _, testCase := range []struct {
+		name        string
+		verb        string
+		settingName string
+		verbReply   string
+		verbErr     error
+		wantError   string
+	}{
+		{name: "save one line daemon error", verb: "save", settingName: "x", verbReply: "error: too many saved settings (max 100)", wantError: "error: too many saved settings (max 100)"},
+		{name: "save disabled store refusal", verb: "save", settingName: "x", verbReply: "error: settings persistence disabled", wantError: "error: settings persistence disabled"},
+		{name: "delete one line daemon error", verb: "delete", settingName: "nope", verbReply: `error: unknown setting "nope"`, wantError: `error: unknown setting "nope"`},
+		{name: "apply zero success lines is 502 verbatim", verb: "apply", settingName: "movie mode", verbReply: "error: light \"COM4\": unreachable, skipped\nerror: light \"COM9\": unreachable, skipped", wantError: "error: light \"COM4\": unreachable, skipped\nerror: light \"COM9\": unreachable, skipped"},
+		{name: "apply single line error reply", verb: "apply", settingName: "nope", verbReply: `error: unknown setting "nope"`, wantError: `error: unknown setting "nope"`},
+		{name: "transport failure on the verb", verb: "apply", settingName: "x", verbErr: errors.New("connection refused"), wantError: "connection refused"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			var commands []string
+			server := newUIServer(42815, newTestDaemonDispatcher(func(command string) (string, error) {
+				commands = append(commands, command)
+				return testCase.verbReply, testCase.verbErr
+			}))
+			recorder := post(server, `{"action":"`+testCase.verb+`","name":"`+testCase.settingName+`"}`)
+			if recorder.Code != http.StatusBadGateway {
+				t.Fatalf("status = %d, body %s; want 502", recorder.Code, recorder.Body.String())
+			}
+			var body struct {
+				Names []string `json:"names"`
+				Error string   `json:"error"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Error != testCase.wantError {
+				t.Fatalf("error = %q, want the failure verbatim %q", body.Error, testCase.wantError)
+			}
+			if len(body.Names) != 0 {
+				t.Fatalf("names = %v, want empty on a 502", body.Names)
+			}
+			wantCommands := []string{"light settings " + testCase.verb + " " + testCase.settingName}
+			if !reflect.DeepEqual(commands, wantCommands) {
+				t.Fatalf("daemon commands = %v, want %v - the follow-up refresh must be skipped on verb failure", commands, wantCommands)
+			}
+		})
+	}
+	t.Run("apply with one reachable port is 200 with detail", func(t *testing.T) {
+		// The one-vs-two unreachable discrimination (LB-4): ONE success line
+		// plus ONE inline skip error is a partial success - HTTP 200 with the
+		// refreshed names AND the full verbatim reply as detail, rendered in
+		// the page's error banner (never hidden).
+		verbReply := "COM4 desk: on 47% 2900K\nerror: light \"COM9\": unreachable, skipped"
+		var commands []string
+		server := newUIServer(42815, newTestDaemonDispatcher(func(command string) (string, error) {
+			commands = append(commands, command)
+			if command == "light settings list" {
+				return "focus", nil
+			}
+			return verbReply, nil
+		}))
+		recorder := post(server, `{"action":"apply","name":"movie mode"}`)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d, body %s; a partially successful apply is 200, never 502", recorder.Code, recorder.Body.String())
+		}
+		var body struct {
+			Names  []string `json:"names"`
+			Error  string   `json:"error"`
+			Detail string   `json:"detail"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(body.Names, []string{"focus"}) || body.Error != "" {
+			t.Fatalf("names/error = %v / %q, want [focus] and no error", body.Names, body.Error)
+		}
+		if body.Detail != verbReply {
+			t.Fatalf("detail = %q, want the full verbatim reply %q (partial success is never hidden)", body.Detail, verbReply)
+		}
+		wantCommands := []string{"light settings apply movie mode", "light settings list"}
+		if !reflect.DeepEqual(commands, wantCommands) {
+			t.Fatalf("daemon commands = %v, want %v", commands, wantCommands)
+		}
+	})
+}
+
+// TestEmbeddedLightUIHasSavedSettingsSection pins the saved-settings card's
+// wiring contract: the section sits between the gang controls and the
+// individual controls; the Save form posts through the mutation queue (never
+// a direct fetch POST); every rendered name passes through escapeHTML and
+// round-trips verbatim through data-apply/data-delete; the POST reply's names
+// re-render the list from the queue's onSuccess; a successful apply also
+// triggers refreshLights(true) and renders the daemon's detail in the error
+// banner so a partial apply is never hidden; and the list refetches on the
+// shared 750 ms poll (the F6 refresh-failure recovery path).
+func TestEmbeddedLightUIHasSavedSettingsSection(t *testing.T) {
+	source := string(lightUIHTML)
+	for _, fragment := range []string{
+		`>Saved settings</h2>`,
+		`id="settings-form"`,
+		`id="settings-name"`,
+		`id="settings-list"`,
+		`id="settings-empty"`,
+		`function renderSettings(names) {`,
+		`function refreshSettings() {`,
+		`function bindSettingsControls() {`,
+		`const escaped = escapeHTML(name);`,
+		`data-apply="${escaped}"`,
+		`data-delete="${escaped}"`,
+		`>Delete</button>`,
+		`renderSettings(data.names || []);`,
+		`renderSettings(result.names);`,
+		`if (name.trim() === "") return;`,
+		`if (action === "apply") {`,
+		`function showApplyDetail(detail) {`,
+		`window.setInterval(() => { refreshLights(true); refreshMic(); refreshSettings(); }, 750);`,
+	} {
+		if !strings.Contains(source, fragment) {
+			t.Fatalf("embedded UI is missing saved-settings fragment %q", fragment)
+		}
+	}
+	for _, fragment := range []string{
+		"enqueueMutation(\"settings:save\", \"/api/settings\", {action: \"save\", name}, false);",
+		"enqueueMutation(`settings:apply:${name}`, \"/api/settings\", {action: \"apply\", name}, false);",
+		"enqueueMutation(`settings:delete:${name}`, \"/api/settings\", {action: \"delete\", name}, false);",
+		"refreshLights(true);\n            showApplyDetail(result.detail);",
+	} {
+		if !strings.Contains(source, fragment) {
+			t.Fatalf("embedded UI is missing saved-settings queue fragment %q", fragment)
+		}
+	}
+	if strings.Contains(source, `fetch("/api/settings", {method: "POST"`) {
+		t.Fatal("settings mutations must go through the mutation queue, never a direct fetch POST")
+	}
+	gangControls := strings.Index(source, `id="all-lights-title"`)
+	settings := strings.Index(source, `id="settings-title"`)
+	individual := strings.Index(source, `Individual controls`)
+	if gangControls < 0 || settings < 0 || individual < 0 || gangControls >= settings || settings >= individual {
+		t.Fatalf("the saved-settings section must sit between the gang controls and the individual controls (offsets %d / %d / %d)", gangControls, settings, individual)
+	}
+}
+
+// TestEmbeddedLightUISettingsSectionBehaviorNodeDOMStub EXECUTES the embedded
+// page script under Node against the shared hand-rolled DOM stub (NOT a
+// browser, no new dependencies) and pins the settings card's runtime
+// behavior: a scripted two-name list renders the daemon's names in order with
+// each name round-tripped verbatim into data-apply/data-delete; each row's
+// Apply/Delete enqueues exactly the right /api/settings payload through the
+// mutation queue and nothing else; and Save with an EMPTY or whitespace-only
+// name never issues a mutation (F8).
+func TestEmbeddedLightUISettingsSectionBehaviorNodeDOMStub(t *testing.T) {
+	runPageScriptWithDOMStub(t, `
+stubFetchScript({
+	"/api/lights": {status: 200, body: {lights: []}},
+	"/api/mic": {status: 200, body: {state: "unmuted"}},
+	"/api/settings": {status: 200, body: {names: ["alpha", "beta"]}},
+	"POST /api/settings": {status: 200, body: {names: ["alpha", "beta"]}},
+});
+intervalCallback();
+await flush();
+const listHTML = document.getElementById("settings-list").innerHTML;
+assert.equal(listHTML.includes('data-apply="alpha"'), true, "the alpha row must render with its name round-tripped into data-apply");
+assert.equal(listHTML.includes('data-apply="beta"'), true, "the beta row must render with its name round-tripped into data-apply");
+assert.equal(listHTML.includes('data-delete="alpha"'), true, "the alpha row must render a Delete button with data-delete");
+assert.equal(listHTML.indexOf("alpha") < listHTML.indexOf("beta"), true, "rows must render in the daemon's name order");
+
+fetchCalls.length = 0;
+settingsApplyAlpha.click();
+settingsDeleteAlpha.click();
+settingsApplyBeta.click();
+settingsDeleteBeta.click();
+await flush();
+let posts = fetchCalls
+	.filter((call) => call.options.method === "POST")
+	.map((call) => ({url: call.url, body: JSON.parse(call.options.body)}));
+assert.deepEqual(posts, [
+	{url: "/api/settings", body: {action: "apply", name: "alpha"}},
+	{url: "/api/settings", body: {action: "delete", name: "alpha"}},
+	{url: "/api/settings", body: {action: "apply", name: "beta"}},
+	{url: "/api/settings", body: {action: "delete", name: "beta"}},
+], "each settings row's Apply/Delete must enqueue exactly one /api/settings payload through the queue, name round-tripped verbatim, and nothing else");
+
+fetchCalls.length = 0;
+const saveInput = document.getElementById("settings-name");
+const saveForm = document.getElementById("settings-form");
+saveInput.value = "";
+saveForm.submit();
+saveInput.value = "   \t ";
+saveForm.submit();
+await flush();
+assert.deepEqual(
+	fetchCalls.filter((call) => call.options.method === "POST"),
+	[],
+	"Save with an empty or whitespace-only name must never issue a mutation",
+);
+
+saveInput.value = "movie mode";
+saveForm.submit();
+await flush();
+assert.deepEqual(
+	fetchCalls.filter((call) => call.options.method === "POST").map((call) => ({url: call.url, body: JSON.parse(call.options.body)})),
+	[{url: "/api/settings", body: {action: "save", name: "movie mode"}}],
+	"Save with a real name must enqueue exactly one save mutation with the name verbatim",
+);
+`)
+}
+
 // TestEmbeddedLightUIMicCardUsesTheMicEndpoints pins the mic card's wiring
 // contract: badge/status-line ids, the three verb buttons, the queued
 // mutation string, the shared 750 ms poll - and the ABSENCE of any direct
@@ -1062,7 +1574,7 @@ func TestEmbeddedLightUIMicCardUsesTheMicEndpoints(t *testing.T) {
 		`function refreshMic()`,
 		`function updateMic(`,
 		`function bindMicControls()`,
-		`window.setInterval(() => { refreshLights(true); refreshMic(); }, 750);`,
+		`window.setInterval(() => { refreshLights(true); refreshMic(); refreshSettings(); }, 750);`,
 	} {
 		if !strings.Contains(source, fragment) {
 			t.Fatalf("embedded UI is missing mic card fragment %q", fragment)
@@ -1217,6 +1729,9 @@ function makeElement(id) {
 		click() {
 			(element.listeners.click || []).forEach((listener) => listener());
 		},
+		submit() {
+			(element.listeners.submit || []).forEach((listener) => listener({preventDefault() {}}));
+		},
 		setAttribute(name, value) {
 			element.attributes[name] = String(value);
 		},
@@ -1290,6 +1805,21 @@ micUnmuteButton.dataset.micAction = "unmute";
 const micToggleButton = makeElement("mic-toggle");
 micToggleButton.dataset.micAction = "toggle";
 stubRegister("[data-mic-action]", [micMuteButton, micUnmuteButton, micToggleButton]);
+
+// Pre-registered saved-settings rows (the stub has no innerHTML parsing; the
+// page binds through document-level querySelectorAll like the mic buttons).
+// Names are set directly on the dataset, exactly as the browser would decode
+// them from the data-apply/data-delete attributes renderSettings writes.
+const settingsApplyAlpha = makeElement("settings-apply-alpha");
+settingsApplyAlpha.dataset.apply = "alpha";
+const settingsApplyBeta = makeElement("settings-apply-beta");
+settingsApplyBeta.dataset.apply = "beta";
+stubRegister("[data-apply]", [settingsApplyAlpha, settingsApplyBeta]);
+const settingsDeleteAlpha = makeElement("settings-delete-alpha");
+settingsDeleteAlpha.dataset.delete = "alpha";
+const settingsDeleteBeta = makeElement("settings-delete-beta");
+settingsDeleteBeta.dataset.delete = "beta";
+stubRegister("[data-delete]", [settingsDeleteAlpha, settingsDeleteBeta]);
 `
 
 // runPageScriptWithDOMStub executes the embedded page's inline script under

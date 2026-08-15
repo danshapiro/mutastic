@@ -95,6 +95,14 @@
     .range-hints { display: flex; justify-content: space-between; color: var(--dim); font-size: .7rem; }
     .trim-row { display: flex; flex-wrap: wrap; gap: 8px; }
     .trim-row button { min-width: 58px; padding-inline: 10px; }
+    .settings-save { display: flex; flex-wrap: wrap; gap: 8px; }
+    .settings-save input { flex: 1 1 200px; min-width: 0; min-height: 44px; border: 1px solid var(--line-strong); border-radius: 10px; padding: 9px 13px; background: var(--panel-2); color: var(--text); }
+    .settings-line, .settings-list, #settings-empty { margin-top: 12px; }
+    .settings-line { margin-bottom: 0; }
+    .settings-list { list-style: none; margin-bottom: 0; padding: 0; display: grid; gap: 8px; }
+    .setting-row { display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 10px; padding: 6px 6px 6px 12px; background: rgba(255,255,255,.015); }
+    .setting-row .setting-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .setting-row button { min-height: 36px; padding: 6px 10px; }
     .semantics { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 18px; color: var(--muted); font-size: .74rem; }
     .semantics span { display: inline-flex; align-items: center; gap: 6px; }
     .semantics .icon { width: .9rem; height: .9rem; color: var(--accent); }
@@ -252,6 +260,25 @@
           <!-- Toggle starts disarmed: the initial state is unknown, and an unknown-state daemon toggle is unpredictable. updateMic owns the disabled flag from the first definitive poll onward. -->
           <button class="button-quiet" type="button" data-mic-action="toggle" disabled>Toggle</button>
         </div>
+      </div>
+    </section>
+
+    <section class="panel" aria-labelledby="settings-title">
+      <div class="panel-inner">
+        <div class="panel-head">
+          <div>
+            <p class="eyebrow">Light looks</p>
+            <h2 id="settings-title">Saved settings</h2>
+            <p class="subtle">Snapshot the current look of every known light under a name, then restore or remove it here or from the tray menu. The daemon owns and persists the store, so this page and the tray always see the same set.</p>
+          </div>
+        </div>
+        <form id="settings-form" class="settings-save">
+          <input id="settings-name" type="text" maxlength="42" autocomplete="off" placeholder="Name this look" aria-label="Name this look">
+          <button class="button-primary" type="submit">Save</button>
+        </form>
+        <p id="settings-line" class="subtle settings-line">Checking for saved settings…</p>
+        <ul id="settings-list" class="settings-list"></ul>
+        <p id="settings-empty" class="empty" hidden>No saved settings yet — dial in a look above, name it, and Save.</p>
       </div>
     </section>
 
@@ -481,7 +508,26 @@
           if (!response.ok) throw new Error(errorMessage(data, response));
           return data;
         },
-        onSuccess: () => clearError(),
+        onSuccess: (result, mutation) => {
+          clearError();
+          if (result && result.names) {
+            // A settings POST reply carries the refreshed list itself - the
+            // page never re-GETs after a POST. (F6: a 200 whose follow-up
+            // refresh failed OMITS names; the card keeps its current list
+            // and the shared 750 ms poll recovers it.)
+            renderSettings(result.names);
+          }
+          const action = mutation && mutation.body ? mutation.body.action : "";
+          if (action === "save") {
+            $("settings-name").value = "";
+          }
+          if (action === "apply") {
+            // An applied look changes light state: refresh the cards. A
+            // partially failed apply's skip lines render into the banner.
+            refreshLights(true);
+            showApplyDetail(result.detail);
+          }
+        },
         onFailure: (error) => {
           setConnection("Daemon issue", "degraded");
           showError(error.message || "Light operation failed");
@@ -542,6 +588,80 @@
         });
       }
 
+      const SETTINGS_LINE_DEFAULT = "Save the current look under a name; apply or delete it here or from the tray.";
+
+      function showApplyDetail(detail) {
+        if (!detail) return;
+        const failed = String(detail).split("\n").some((line) => line.trim().startsWith("error:"));
+        if (!failed) return;
+        // Partial success is NEVER hidden: the full verbatim apply reply
+        // renders into the error banner, skip lines included.
+        showError(String(detail));
+      }
+
+      function renderSettings(names) {
+        $("settings-list").innerHTML = names.map((name) => {
+          const escaped = escapeHTML(name);
+          return `<li class="setting-row"><span class="setting-name">${escaped}</span><button type="button" data-apply="${escaped}">Apply</button><button class="button-quiet" type="button" data-delete="${escaped}">Delete</button></li>`;
+        }).join("");
+        $("settings-empty").hidden = names.length !== 0;
+        bindSettingsControls();
+      }
+
+      async function refreshSettings() {
+        try {
+          const response = await fetch("/api/settings", {cache: "no-store"});
+          const data = await response.json();
+          renderSettings(data.names || []);
+          const error = data && data.error ? String(data.error) : "";
+          // F5: a disabled/corrupt store's refusal string surfaces in the
+          // card itself; the light poll keeps owning the error banner.
+          $("settings-line").textContent = error || SETTINGS_LINE_DEFAULT;
+          if (error) {
+            $("settings-empty").hidden = true;
+          }
+        } catch {
+          $("settings-line").textContent = "Saved settings are unreachable — the daemon is not answering.";
+        }
+      }
+
+      function bindSettingsControls() {
+        const form = $("settings-form");
+        if (!form.dataset.settingsBound) {
+          form.dataset.settingsBound = "true";
+          form.addEventListener("submit", (event) => {
+            event.preventDefault();
+            submitSettingsSave();
+          });
+        }
+        // Rows are re-created by every renderSettings, so each render
+        // re-binds; the settingsBound flag keeps already-bound elements
+        // from accumulating duplicate listeners.
+        document.querySelectorAll("[data-apply]").forEach((button) => {
+          if (button.dataset.settingsBound) return;
+          button.dataset.settingsBound = "true";
+          button.addEventListener("click", () => {
+            const name = button.dataset.apply;
+            enqueueMutation(`settings:apply:${name}`, "/api/settings", {action: "apply", name}, false);
+          });
+        });
+        document.querySelectorAll("[data-delete]").forEach((button) => {
+          if (button.dataset.settingsBound) return;
+          button.dataset.settingsBound = "true";
+          button.addEventListener("click", () => {
+            const name = button.dataset.delete;
+            enqueueMutation(`settings:delete:${name}`, "/api/settings", {action: "delete", name}, false);
+          });
+        });
+      }
+
+      function submitSettingsSave() {
+        const input = $("settings-name");
+        const name = input.value;
+        if (name.trim() === "") return; // an empty/whitespace name never issues a mutation (F8)
+        enqueueMutation("settings:save", "/api/settings", {action: "save", name}, false);
+      }
+
       function bindTopControls() {
         $("refresh").addEventListener("click", () => refreshLights(false));
         $("retry").addEventListener("click", () => refreshLights(false));
@@ -570,9 +690,11 @@
 
       bindTopControls();
       bindMicControls();
+      bindSettingsControls();
       refreshLights(false);
       refreshMic();
-      window.setInterval(() => { refreshLights(true); refreshMic(); }, 750);
+      refreshSettings();
+      window.setInterval(() => { refreshLights(true); refreshMic(); refreshSettings(); }, 750);
     })();
   </script>
 </body>

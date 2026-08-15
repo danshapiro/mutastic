@@ -86,7 +86,21 @@ hardware state. The active paths are loop-free:
   mute item, and the Stream Deck mute key. App-sync therefore relies on
   every sweeping path keeping apps and mic in sync; if they ever desync,
   the recovery is the one the AHK file documents for the CLI/physical
-  paths: toggle the apps once manually, then they stay in sync.
+  paths: toggle the apps once manually, then they stay in sync. The
+  **Saved settings** card lists the daemon's named light snapshots and
+  saves the current look under a chosen name: Save snapshots every
+  known-state light, Apply restores one name, Delete removes it — the same
+  `light settings save|apply|delete <name>` verbs the tray menu uses,
+  backed by `GET`/`POST /api/settings`. The daemon owns and persists the
+  store (`%LOCALAPPDATA%\mutastic\light-settings.json`), so the panel and
+  the tray always see the same set. A partially successful apply replies
+  200 with the full daemon fan-out as `detail`, so per-light skip errors
+  (e.g. one unreachable panel) surface in the page's error banner — never
+  hidden. Two edge behaviors: a disabled or corrupt store's refusal string
+  (e.g. `error: settings persistence disabled`) surfaces in the card via
+  GET's in-band degradation rather than hard-erroring the page, and
+  retrying a Delete whose first attempt timed out post-commit is safe —
+  the retry surfaces the daemon's `error: unknown setting "<name>"`.
 - **`mutastic tray`** — resident Windows notification-area icon, a pure UDP
   client of the daemon (like the deck plugin): it owns no hardware, so
   quitting or crashing never drops the mic. The icon mirrors the true mic
