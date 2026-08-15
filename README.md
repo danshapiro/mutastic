@@ -123,7 +123,12 @@ hardware state. The active paths are loop-free:
   when the mic state is unknown or no longer matches it; both halves are
   attempted on every fired click and any failure is logged),
   **Toggle lights**, **Brightness** (applied in click order),
-  **Light preset**, **Panel…**, and **Quit** — Quit stops everything
+  **Light preset**, **Saved settings** (the daemon's saved named light
+  settings — the same names the web UI saves — polled every 2 s; click a
+  name to apply it; grayed placeholders appear when appropriate:
+  `(no saved settings)` for an empty store, `(settings unavailable)`
+  covering both an unreachable daemon and a broken store), **Panel…**,
+  and **Quit** — Quit stops everything
   mutastic runs in one click: it sends the daemon's `shutdown` command,
   posts the light-panel server's `/api/shutdown`, and exits the tray.
   If a live daemon or panel *refuses* to stop, Quit logs the failure and

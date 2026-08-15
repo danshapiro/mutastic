@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -482,5 +483,86 @@ func TestLogSeverityClassifiesFailures(t *testing.T) {
 	a.onLight("light toggle")
 	if len(levels.levels) != 2 || levels.levels[0] != slog.LevelError || levels.levels[1] != slog.LevelError {
 		t.Fatalf("levels = %v, want [ERROR ERROR] (mute error + per-line fleet error)", levels.levels)
+	}
+}
+
+// TestTraySavedSettingsMenuSpec pins the three rendering regimes of the
+// "Saved settings" submenu: a not-ok poll (transport down OR store broken -
+// one disabled "(settings unavailable)" placeholder covers both honestly),
+// an ok-but-empty store ("(no saved settings)"), and one ENABLED item per
+// saved name in the reply's input order. Both placeholders are tray-side UI
+// text the daemon never sends.
+func TestTraySavedSettingsMenuSpec(t *testing.T) {
+	down := traySavedSettings(nil, false)
+	if want := []trayMenuSpec{{Title: "(settings unavailable)", Enabled: false}}; !reflect.DeepEqual(down, want) {
+		t.Errorf("traySavedSettings(nil, false) = %+v, want %+v", down, want)
+	}
+	for _, names := range [][]string{nil, {}} {
+		want := []trayMenuSpec{{Title: "(no saved settings)", Enabled: false}}
+		if got := traySavedSettings(names, true); !reflect.DeepEqual(got, want) {
+			t.Errorf("traySavedSettings(%v, true) = %+v, want %+v", names, got, want)
+		}
+	}
+	saved := traySavedSettings([]string{"movie mode", "work"}, true)
+	wantSaved := []trayMenuSpec{{Title: "movie mode", Enabled: true}, {Title: "work", Enabled: true}}
+	if !reflect.DeepEqual(saved, wantSaved) {
+		t.Errorf("traySavedSettings([movie mode work], true) = %+v, want %+v (input order, enabled)", saved, wantSaved)
+	}
+}
+
+// TestTrayParseSettingsList pins the "light settings list" wire contract as
+// a parse: "" is the daemon's contract for "none saved" - (no names,
+// daemonOK) - NOT an error and NOT unreachable; newline-joined names split
+// in order; ANY ask error marks the poll not-ok; and an error:-prefixed
+// reply (the disabled/corrupt store's single-line refusal) is treated as
+// NOT-OK so refusal text can never render as an enabled menu item whose
+// click always fails (LB-4).
+func TestTrayParseSettingsList(t *testing.T) {
+	names, ok := trayParseSettingsList("", nil)
+	if !ok || len(names) != 0 {
+		t.Errorf("trayParseSettingsList(empty, nil) = (%v, %v), want (empty, true) - the empty reply is the wire contract for none saved", names, ok)
+	}
+	names, ok = trayParseSettingsList("movie mode\nwork", nil)
+	if !ok || !reflect.DeepEqual(names, []string{"movie mode", "work"}) {
+		t.Errorf("trayParseSettingsList(names, nil) = (%v, %v), want ([movie mode work], true)", names, ok)
+	}
+	names, ok = trayParseSettingsList("", errors.New("no reply"))
+	if ok || names != nil {
+		t.Errorf("trayParseSettingsList(_, err) = (%v, %v), want (nil, false) - any ask error is not-ok", names, ok)
+	}
+	for _, refusal := range []string{"error: settings persistence disabled", "error: settings store corrupt or unreadable: C:\\x"} {
+		names, ok = trayParseSettingsList(refusal, nil)
+		if ok || names != nil {
+			t.Errorf("trayParseSettingsList(%q, nil) = (%v, %v), want (nil, false) - a refusal renders as the unavailable placeholder, never as enabled items", refusal, names, ok)
+		}
+	}
+}
+
+// TestTraySameMenuSpecs pins the change gate on the submenu rebuild:
+// {Title, Enabled} PAIRS are compared element-wise, not titles only - the
+// settings-name grammar permits literal saved names equal to the
+// placeholder strings, so a placeholder<->real-item transition with an
+// IDENTICAL title must still compare different and force the rebuild
+// (otherwise a real setting stays grayed or a placeholder stays clickable).
+func TestTraySameMenuSpecs(t *testing.T) {
+	if !traySameMenuSpecs(nil, nil) {
+		t.Error("two nils must compare equal (the state before the first poll)")
+	}
+	saved := []trayMenuSpec{{Title: "a", Enabled: true}, {Title: "b", Enabled: true}}
+	same := []trayMenuSpec{{Title: "a", Enabled: true}, {Title: "b", Enabled: true}}
+	if !traySameMenuSpecs(saved, same) {
+		t.Error("equal lists must compare equal (no rebuild churn in the steady state)")
+	}
+	if traySameMenuSpecs(saved, saved[:1]) {
+		t.Error("a length change must trigger a rebuild")
+	}
+	titleChange := []trayMenuSpec{{Title: "a", Enabled: true}, {Title: "c", Enabled: true}}
+	if traySameMenuSpecs(saved, titleChange) {
+		t.Error("a title change must trigger a rebuild")
+	}
+	placeholder := []trayMenuSpec{{Title: "(settings unavailable)", Enabled: false}}
+	real := []trayMenuSpec{{Title: "(settings unavailable)", Enabled: true}}
+	if traySameMenuSpecs(placeholder, real) || traySameMenuSpecs(real, placeholder) {
+		t.Error("placeholder<->real with identical titles must compare DIFFERENT via the enabled bit (the pair differs, so the menu rebuilds)")
 	}
 }

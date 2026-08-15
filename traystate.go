@@ -135,6 +135,82 @@ func trayIconFor(s trayState) trayIcon {
 	}
 }
 
+// trayMenuSpec is one "Saved settings" submenu entry as a {title, enabled}
+// PAIR: a real saved name renders enabled (click applies it); the two
+// placeholder rows render disabled. The pair is compared whole by
+// traySameMenuSpecs because the settings-name grammar permits a literal
+// saved name equal to a placeholder string - title-only comparison would
+// leave a real setting grayed (or a placeholder clickable) across a
+// placeholder<->real transition.
+type trayMenuSpec struct {
+	Title   string
+	Enabled bool
+}
+
+// traySavedSettingsListCmd is the daemon verb the tray's refresh loop polls
+// once per tick to keep the "Saved settings" submenu in sync with the
+// store (the daemon's logCommand latch keeps the steady-state poll quiet in
+// daemon.log).
+const traySavedSettingsListCmd = "light settings list"
+
+// traySavedSettings renders one poll result as submenu specs in three
+// regimes: daemon not-ok (transport down OR store broken) -> one DISABLED
+// "(settings unavailable)" placeholder (one wording covers both honestly);
+// ok with no names -> one DISABLED "(no saved settings)" placeholder;
+// otherwise one {name, ENABLED} per name in input order (the daemon emits
+// them sorted). Both placeholder strings are tray-side UI text, NEVER sent
+// by the daemon.
+func traySavedSettings(names []string, daemonOK bool) []trayMenuSpec {
+	if !daemonOK {
+		return []trayMenuSpec{{Title: "(settings unavailable)"}}
+	}
+	if len(names) == 0 {
+		return []trayMenuSpec{{Title: "(no saved settings)"}}
+	}
+	specs := make([]trayMenuSpec, 0, len(names))
+	for _, name := range names {
+		specs = append(specs, trayMenuSpec{Title: name, Enabled: true})
+	}
+	return specs
+}
+
+// trayParseSettingsList parses one "light settings list" round trip. The
+// daemon's wire contract: "" means "none saved" (daemon OK, NOT an error),
+// names are newline-joined in order, and a disabled/corrupt store answers a
+// single-line "error:" refusal. ANY ask error - or an error:-prefixed
+// reply - is NOT-OK: without the reply guard the refusal text would render
+// as an ENABLED menu item whose click always fails.
+func trayParseSettingsList(reply string, err error) (names []string, daemonOK bool) {
+	if err != nil {
+		return nil, false
+	}
+	trimmed := strings.TrimSpace(reply)
+	if strings.HasPrefix(trimmed, "error:") {
+		return nil, false
+	}
+	if trimmed == "" {
+		return nil, true
+	}
+	return strings.Split(trimmed, "\n"), true
+}
+
+// traySameMenuSpecs reports whether two rendered spec lists are identical,
+// comparing {Title, Enabled} pairs element-wise (struct equality on
+// trayMenuSpec is exactly the pair comparison, never titles only). The
+// refresh loop rebuilds the submenu children exactly when this reports
+// false; two nils compare equal (the state before the first poll).
+func traySameMenuSpecs(a, b []trayMenuSpec) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // trayActions holds every side-effecting dependency of the tray's click
 // handlers as an injected function, so the handlers' ordering and failure
 // semantics are unit-testable on Linux. tray_windows.go wires the real

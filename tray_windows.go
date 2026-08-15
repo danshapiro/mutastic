@@ -126,6 +126,15 @@ func trayOnReady(logger *slog.Logger) {
 	brightness := systray.AddMenuItem("Brightness", "set brightness on all lights")
 	preset := systray.AddMenuItem("Light preset", "apply a preset on all lights")
 
+	// "Saved settings" is a live view of the daemon's store, NOT a static
+	// action item: it is deliberately left out of the startup Disable loop
+	// below AND the refresh loop's trayActionsEnabled gating - the parent
+	// stays clickable so its grayed placeholder children remain visible
+	// when the daemon or the store is down; the CHILDREN carry the enabled
+	// state. It starts childless; the refresh loop's first tick reconciles
+	// it to a placeholder.
+	savedSettings := systray.AddMenuItem("Saved settings", "saved named light settings (polled every 2 s); click a name to apply it")
+
 	// Action items start disabled; the refresh loop arms them (the light
 	// actions on the first reachable poll, the mic item on the first
 	// DEFINITIVE mic answer, per trayMuteEnabled) - so no click can fire in
@@ -211,7 +220,7 @@ func trayOnReady(logger *slog.Logger) {
 	panel.Click(func() { go actions.onOpenPanel() })
 	quit.Click(func() { go actions.onQuit() })
 
-	go trayRefreshLoop(logger, refreshCh, header, mic, lights, brightness, preset, &muteSnap)
+	go trayRefreshLoop(logger, refreshCh, header, mic, lights, brightness, preset, savedSettings, &muteSnap, lightCmd)
 	go func() {
 		for range time.Tick(trayPollEvery) {
 			signalRefresh()
@@ -230,10 +239,16 @@ func trayOnReady(logger *slog.Logger) {
 // GDI handle per call; see trayIconReapplyEvery). The icon switches only
 // on definitive answers (trayIconFor): unknown or unreachable keeps the
 // last icon.
-func trayRefreshLoop(logger *slog.Logger, refreshCh <-chan struct{}, header, mic, lights, brightness, preset *systray.MenuItem, muteSnap *atomic.Value) {
+func trayRefreshLoop(logger *slog.Logger, refreshCh <-chan struct{}, header, mic, lights, brightness, preset, savedSettings *systray.MenuItem, muteSnap *atomic.Value, lightCmd func(string) func()) {
 	first := true
 	last := trayStateUnknown
 	tick := 0
+	// The Saved settings submenu's retained children (shown first, in menu
+	// order, then the hidden reuse pool) and the spec list the shown prefix
+	// renders. Empty until the first tick reconciles; two nil specs compare
+	// equal, so only a real poll difference triggers a rebuild.
+	var savedChildren []*systray.MenuItem
+	var savedSpecs []trayMenuSpec
 	// lastShown is the icon currently displayed; it starts as the neutral
 	// unknown asset (also set at ready) and changes only on definitive
 	// answers. Change ticks AND the heartbeat reapply lastShown, so a
@@ -278,7 +293,9 @@ func trayRefreshLoop(logger *slog.Logger, refreshCh <-chan struct{}, header, mic
 		}
 		// Mic vs. lights get different gates: the mic acts only on definitive
 		// answers (see trayMuteEnabled), light actions only need a reachable
-		// daemon (unknown is a mic-state concept).
+		// daemon (unknown is a mic-state concept). The savedSettings submenu
+		// is NOT gated here: the parent stays clickable so grayed
+		// placeholder children stay visible while the daemon is down.
 		for _, it := range []*systray.MenuItem{lights, brightness, preset} {
 			if trayActionsEnabled(state) {
 				it.Enable()
@@ -286,5 +303,58 @@ func trayRefreshLoop(logger *slog.Logger, refreshCh <-chan struct{}, header, mic
 				it.Disable()
 			}
 		}
+		// Poll the settings store once per tick (the daemon's logCommand
+		// latch keeps the steady state quiet in daemon.log) and rebuild the
+		// submenu children exactly when the rendered spec list changes.
+		listReply, listErr := askDaemon(traySavedSettingsListCmd, udpAddr, lightClientTimeout)
+		want := traySavedSettings(trayParseSettingsList(listReply, listErr))
+		if !traySameMenuSpecs(savedSpecs, want) {
+			savedChildren, savedSpecs = syncSavedSettingsMenu(savedSettings, savedChildren, savedSpecs, want, lightCmd)
+		}
 	}
+}
+
+// syncSavedSettingsMenu rebuilds the "Saved settings" submenu's children to
+// render want (called only when traySameMenuSpecs reported a change). The
+// fork has no remove/insert API, so it recycles: every currently-SHOWN
+// child (the children[:len(cached)] prefix; the tail is already hidden) is
+// hidden back into a reuse pool, then each wanted spec reuses a hidden
+// orphan first - retitle, rebind the click to `light settings apply <name>`
+// (or unbind it for a disabled placeholder), re-gate, and Show last so the
+// revealed item presents its final state - and only adds a NEW child when
+// the pool is empty. Unused orphans stay hidden (never displayed) and are
+// returned after the shown prefix for the next reconcile: every reconcile
+// is change-gated and orphans are recycled BEFORE any new item is created,
+// so retained items stay bounded by the menu size plus one change-width
+// even with delete churn. The returned spec copy is the new cached render.
+func syncSavedSettingsMenu(parent *systray.MenuItem, children []*systray.MenuItem, cached, want []trayMenuSpec, lightCmd func(string) func()) ([]*systray.MenuItem, []trayMenuSpec) {
+	for _, child := range children[:len(cached)] {
+		child.Hide()
+	}
+	pool := children
+	reused := min(len(pool), len(want))
+	shown := make([]*systray.MenuItem, 0, len(want))
+	for i, spec := range want {
+		var item *systray.MenuItem
+		if i < reused {
+			item = pool[i]
+		} else {
+			item = parent.AddSubMenuItem(spec.Title, "")
+		}
+		item.SetTitle(spec.Title)
+		if spec.Enabled {
+			item.Click(lightCmd("light settings apply " + spec.Title))
+			item.Enable()
+		} else {
+			item.Click(nil) // unbound: a placeholder never fires
+			item.Disable()
+		}
+		item.Show()
+		shown = append(shown, item)
+	}
+	// Retain the unused pool orphans (hidden) after the shown prefix.
+	retained := append(shown, pool[reused:]...)
+	newCached := make([]trayMenuSpec, len(want))
+	copy(newCached, want)
+	return retained, newCached
 }
