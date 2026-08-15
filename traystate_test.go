@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -178,16 +180,26 @@ func TestTrayQuitStopsEverythingThenQuits(t *testing.T) {
 		t.Fatalf("onQuit side effects = %q, want %q", got, "ask:shutdown,panelstop,quit")
 	}
 
-	unreachableDaemon := &traySpy{askErr: errors.New("daemon dead")}
-	unreachableDaemon.actions().onQuit()
-	if got := unreachableDaemon.order(); got != "ask:shutdown,panelstop,quit" {
-		t.Fatalf("onQuit with an unreachable daemon = %q, want %q (unreachable already IS the stopped goal state)", got, "ask:shutdown,panelstop,quit")
+	// A refused daemon port proves the daemon is gone: goal state.
+	refused := &traySpy{askErr: fmt.Errorf("%w: %w", errNoReply, syscall.ECONNREFUSED)}
+	refused.actions().onQuit()
+	if got := refused.order(); got != "ask:shutdown,panelstop,quit" {
+		t.Fatalf("onQuit with a refused daemon port = %q, want %q", got, "ask:shutdown,panelstop,quit")
 	}
 
+	// A timeout says nothing: the daemon may be live and wedged. The tray
+	// must stay so the user can retry.
+	timedOut := &traySpy{askErr: fmt.Errorf("%w", errNoReply)}
+	timedOut.actions().onQuit()
+	if got := timedOut.order(); got != "ask:shutdown,panelstop,refresh" {
+		t.Fatalf("onQuit with a timed-out daemon = %q, want %q (unconfirmed means keep the tray)", got, "ask:shutdown,panelstop,refresh")
+	}
+
+	// A daemon that REFUSES (live, answers with an error) also keeps the tray.
 	refusingDaemon := &traySpy{askReply: "error: x"}
 	refusingDaemon.actions().onQuit()
 	if got := refusingDaemon.order(); got != "ask:shutdown,panelstop,refresh" {
-		t.Fatalf("onQuit with a refusing daemon = %q, want %q (a live daemon that refused keeps the tray; the retry refreshes the display)", got, "ask:shutdown,panelstop,refresh")
+		t.Fatalf("onQuit with a refusing daemon = %q, want %q", got, "ask:shutdown,panelstop,refresh")
 	}
 
 	refusingPanel := &traySpy{askReply: "shutting down", stopErr: errors.New("panel refused")}

@@ -170,12 +170,18 @@ func (a *trayActions) onQuit() {
 	daemonOK := true
 	reply, err := a.ask("shutdown")
 	switch {
-	case err != nil:
-		// Unreachable daemon (transport failure) = already the goal state.
-		a.logger.Info("quit: daemon unreachable, treated as stopped", "err", errString(err))
-	case reply != "shutting down":
+	case err == nil && reply != "shutting down":
 		daemonOK = false
 		a.logger.Error("quit: daemon refused shutdown", "reply", reply)
+	case err != nil && (errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET)):
+		// Nothing is listening on the daemon's port: already the goal state.
+		a.logger.Info("quit: daemon port refuses connections, treated as stopped", "err", errString(err))
+	case err != nil:
+		// Anything else - above all a timeout (errNoReply), which a live but
+		// wedged or backlogged daemon also produces - is UNCONFIRMED. The
+		// tray stays so Quit can be retried.
+		daemonOK = false
+		a.logger.Error("quit: daemon shutdown unconfirmed", "reply", reply, "err", errString(err))
 	default:
 		a.logger.Info("quit: daemon shutdown", "reply", reply)
 	}

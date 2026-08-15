@@ -50,7 +50,7 @@ func askDaemon(cmd, addr string, timeout time.Duration) (string, error) {
 	buf := make([]byte, 2048) // multi-light list/fan-out replies exceed 256 bytes
 	n, err := conn.Read(buf)
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", errNoReply, err)
+		return "", fmt.Errorf("%w: %w", errNoReply, err)
 	}
 	return strings.TrimSpace(string(buf[:n])), nil
 }
