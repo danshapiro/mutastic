@@ -102,7 +102,7 @@ func clientCommand(args []string) (cmd string, timeout time.Duration, ok bool) {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: mutastic daemon | toggle | mute | unmute | status | shutdown")
-	fmt.Fprintln(os.Stderr, "       mutastic tray  (system tray icon: mic status + quick actions; Quit stops the daemon)")
+	fmt.Fprintln(os.Stderr, "       mutastic tray  (system tray icon: mic status + quick actions; Quit stops everything mutastic runs)")
 	fmt.Fprintln(os.Stderr, "       mutastic deckplugin -port <N> -pluginUUID <uuid> -registerEvent <event> [-info <json>]  (OpenDeck plugin mode)")
 	fmt.Fprintln(os.Stderr, "       mutastic light toggle|on|off|status|list  (bare light commands act on ALL lights)")
 	fmt.Fprintln(os.Stderr, "       mutastic light brightness <0-100> | temp <2900-7000> | preset <cold|sunlight|afternoon|sunset|candle>")
