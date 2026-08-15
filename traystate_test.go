@@ -50,6 +50,17 @@ func TestTrayDisplayDecisions(t *testing.T) {
 	if trayTitle(trayStateDown) != "Mutastic — daemon unreachable" {
 		t.Errorf("down title = %q", trayTitle(trayStateDown))
 	}
+	// Log fields use compact state names, not menu display titles.
+	for s, want := range map[trayState]string{
+		trayStateMuted:   "muted",
+		trayStateUnmuted: "unmuted",
+		trayStateUnknown: "unknown",
+		trayStateDown:    "down",
+	} {
+		if got := trayStateName(s); got != want {
+			t.Errorf("trayStateName(%v) = %q, want %q", s, got, want)
+		}
+	}
 	// The mic action item always displays the OPPOSITE of the last
 	// definitive state - the click performs exactly the displayed action -
 	// and falls back to the neutral "Mute/Unmute" while indefinite (a
@@ -246,21 +257,26 @@ func TestMuteClickRevalidates(t *testing.T) {
 		t.Fatalf("muteClick armed Unmute with a matching probe = %q, want %q", got, "ask:status,ask:unmute,inject,refresh")
 	}
 
-	// Declined clicks: probe + refresh only, plus exactly one WARN.
+	// Declined clicks: probe + refresh only, plus exactly one WARN. The
+	// flipped-premise case is pinned in BOTH flip directions: a click must
+	// never fire its verb when the mic already sits in the label's target
+	// state, whichever direction the label named.
 	declines := []struct {
 		name    string
+		snap    trayMuteSnapshot
 		outcome scriptOutcome
 	}{
-		{"flipped premise (probe opposite of armed)", scriptOutcome{reply: "muted"}}, // armed unmuted, probe says already muted
-		{"unknown probe", scriptOutcome{reply: "unknown"}},
-		{"daemon down", scriptOutcome{err: fmt.Errorf("%w: %w", errNoReply, syscall.ECONNREFUSED)}},
+		{"flipped premise: armed Mute, probe already muted (label's target already true)", armedMute, scriptOutcome{reply: "muted"}},
+		{"flipped premise: armed Unmute, probe already unmuted (label's target already true)", armedUnmute, scriptOutcome{reply: "unmuted"}},
+		{"unknown probe", armedMute, scriptOutcome{reply: "unknown"}},
+		{"daemon down", armedMute, scriptOutcome{err: fmt.Errorf("%w: %w", errNoReply, syscall.ECONNREFUSED)}},
 	}
 	for _, c := range declines {
 		levels := &levelRecorder{}
 		spy := &traySpy{script: map[string]scriptOutcome{"status": c.outcome}}
 		a := spy.actions()
 		a.logger = slog.New(levels)
-		a.muteClick(load(armedMute))
+		a.muteClick(load(c.snap))
 		if got := spy.order(); got != "ask:status,refresh" {
 			t.Fatalf("muteClick with %s = %q, want %q (probe + refresh only: no verb, no sweep)", c.name, got, "ask:status,refresh")
 		}

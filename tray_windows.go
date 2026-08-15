@@ -26,8 +26,9 @@ var trayIconMuted []byte
 var trayIconUnknown []byte
 
 const (
-	// trayPanelURL is the light controller served by `mutastic ui`
-	// (ui.go); left-clicking the tray icon opens it.
+	// trayPanelURL is the mutastic control panel (lights + mic + saved
+	// settings) served by `mutastic ui` (ui.go); left-clicking the tray
+	// icon opens it.
 	trayPanelURL = "http://127.0.0.1:42815/"
 	// trayInstanceAddr is a loopback TCP listen that doubles as the tray's
 	// single-instance lock - the same trick as the daemon's UDP bind.
@@ -134,7 +135,7 @@ func trayOnReady(logger *slog.Logger) {
 	}
 
 	systray.AddSeparator()
-	panel := systray.AddMenuItem("Panel…", "open the full light controller in the browser")
+	panel := systray.AddMenuItem("Panel…", "open the mutastic control panel in the browser")
 	quit := systray.AddMenuItem("Quit", "stop everything mutastic runs (daemon, light panel) and exit")
 
 	// All tray-visible state is refreshed by one goroutine fed by refreshCh:

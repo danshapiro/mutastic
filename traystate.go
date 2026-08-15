@@ -59,6 +59,22 @@ func trayTitle(s trayState) string {
 	}
 }
 
+// trayStateName is the compact state token used in structured log fields:
+// the menu display titles (trayTitle) are for humans, but JSONL queries
+// want stable one-word values (muted/unmuted/unknown/down).
+func trayStateName(s trayState) string {
+	switch s {
+	case trayStateMuted:
+		return "muted"
+	case trayStateUnmuted:
+		return "unmuted"
+	case trayStateUnknown:
+		return "unknown"
+	default:
+		return "down"
+	}
+}
+
 // trayMuteTitle is the mic action item's displayed verb per state - the
 // click performs exactly the displayed action, so the label is always the
 // OPPOSITE of the last definitive mic state. Unknown-or-down reads the
@@ -127,7 +143,7 @@ func trayIconFor(s trayState) trayIcon {
 // thread: the Windows glue calls each one in its own goroutine.
 type trayActions struct {
 	ask           func(command string) (string, error) // one daemon round trip (production budget: lightClientTimeout)
-	openPanel     func() error                         // open/focus the browser light panel
+	openPanel     func() error                         // open/focus the browser control panel (mic + lights + settings)
 	injectSweep   func() error                         // one synthetic F24 (meeting-app sweep)
 	stopPanel     func() error                         // POST the light panel's /api/shutdown (Task 4 endpoint)
 	requestQuit   func()                               // leave the systray message loop
@@ -237,7 +253,7 @@ func (a *trayActions) muteClick(load func() trayMuteSnapshot) {
 	snap := load()
 	probe := trayStateFor(a.ask("status"))
 	if !trayMuteEnabled(probe) || probe != snap.Armed {
-		a.logger.Warn("mute click declined: mic state no longer matches the menu premise", "armed", trayTitle(snap.Armed), "probe", trayTitle(probe))
+		a.logger.Warn("mute click declined: mic state no longer matches the menu premise", "armed", trayStateName(snap.Armed), "probe", trayStateName(probe))
 		a.signalRefresh()
 		return
 	}
@@ -248,11 +264,11 @@ func (a *trayActions) muteClick(load func() trayMuteSnapshot) {
 	a.onMicSet(verb)
 }
 
-// onOpenPanel brings up the light-panel UI (the icon's left-click action);
+// onOpenPanel brings up the control panel (the icon's left-click action);
 // a failed open is logged, not swallowed.
 func (a *trayActions) onOpenPanel() {
 	if err := a.openPanel(); err != nil {
-		a.logger.Error("open light panel failed", "err", errString(err))
+		a.logger.Error("open control panel failed", "err", errString(err))
 	}
 }
 
