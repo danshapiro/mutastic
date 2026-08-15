@@ -25,8 +25,9 @@ SendMode Input
 SetWorkingDir %A_ScriptDir%
 DetectHiddenWindows, Off
 
-Menu, Tray, Icon, %A_ScriptDir%\mic_mute_light.ico
-Menu, Tray, Tip, MuteAllMeetings - F13/F14 disabled - F15 Winpepper - F24 Yeti/Stream Deck meeting sweep
+; No tray icon: mic state and quit live on the Mutastic tray icon now; this
+; script is hotkeys only (F13/F14 no-ops, F15 PTT hold, F24 meeting sweep).
+#NoTrayIcon
 
 ; F13 (left pedal) DISABLED 2026-08-12 by request.
 ; Consume it so it cannot fall through to the foreground application.
