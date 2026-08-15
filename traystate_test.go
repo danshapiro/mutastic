@@ -255,6 +255,9 @@ func TestStopLightPanel(t *testing.T) {
 
 	// Wedged panel: it accepts and hangs past the client timeout, so the
 	// transport error is NOT ECONNREFUSED and must surface as an error.
+	// The same goes for a reset: a live wedged listener can RST an accepted
+	// connection, so a reset/timeout stays an error (only refusal counts
+	// as goal state).
 	wedged := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(5 * time.Second)
 	}))
@@ -265,18 +268,32 @@ func TestStopLightPanel(t *testing.T) {
 	}
 }
 
-// TestDstUnreachableErrnos pins the "nothing is listening" classification:
-// both the unix errno shape and the raw Winsock code Windows surfaces in
-// production must count, while a bare timeout sentinel must not.
-func TestDstUnreachableErrnos(t *testing.T) {
-	if !dstUnreachable(fmt.Errorf("%w: %w", errNoReply, syscall.Errno(10061))) {
-		t.Fatal("Winsock-refused chain not classified as unreachable")
+// TestNoListenerClassificationByTransport pins the per-transport "nothing
+// is listening" classification. For the daemon's UDP port, an unheard
+// datagram earns an ICMP port-unreachable which surfaces as ECONNRESET on
+// Windows and ECONNREFUSED on Linux, so BOTH prove "no listener". For the
+// panel's TCP listener, only a refusal proves the port is closed: a RST
+// can be produced by a LIVE, wedged listener. Both the unix errno shape
+// and the raw Winsock code Windows surfaces in production must count,
+// while a bare timeout sentinel must not.
+func TestNoListenerClassificationByTransport(t *testing.T) {
+	wrap := func(e syscall.Errno) error { return fmt.Errorf("%w: %w", errNoReply, e) }
+	// UDP (daemon): refused OR reset both prove "no listener".
+	if !udpNoListener(wrap(syscall.ECONNREFUSED)) || !udpNoListener(wrap(syscall.ECONNRESET)) ||
+		!udpNoListener(wrap(syscall.Errno(10061))) || !udpNoListener(wrap(syscall.Errno(10054))) {
+		t.Fatal("UDP no-listener must cover refused+reset on both errno shapes")
 	}
-	if !dstUnreachable(fmt.Errorf("%w", syscall.ECONNREFUSED)) {
-		t.Fatal("ECONNREFUSED chain not classified as unreachable")
+	// TCP (panel): only refusal proves "no listener"; a reset can come from
+	// a live wedged listener.
+	if !tcpNoListener(wrap(syscall.ECONNREFUSED)) || !tcpNoListener(wrap(syscall.Errno(10061))) {
+		t.Fatal("TCP no-listener must cover refusals on both errno shapes")
 	}
-	if dstUnreachable(fmt.Errorf("%w", errNoReply)) {
-		t.Fatal("bare errNoReply (timeout class) must NOT be unreachable")
+	if tcpNoListener(wrap(syscall.ECONNRESET)) || tcpNoListener(wrap(syscall.Errno(10054))) {
+		t.Fatal("TCP reset must NOT classify as no-listener (a wedged live panel can RST)")
+	}
+	// The bare timeout sentinel classifies as nothing in both.
+	if udpNoListener(fmt.Errorf("%w", errNoReply)) || tcpNoListener(fmt.Errorf("%w", errNoReply)) {
+		t.Fatal("bare timeouts are unconfirmed, not unreachable")
 	}
 }
 

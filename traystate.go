@@ -118,27 +118,41 @@ func newTrayJSONLogger(w io.Writer) *slog.Logger {
 	return slog.New(slog.NewJSONHandler(w, nil))
 }
 
-// dstUnreachableErrnos classify "nothing is listening" across platforms.
-// Linux/production-other platforms surface ECONNREFUSED/ECONNRESET. Windows
-// surfaces raw Winsock codes as syscall.Errno inside the net.OpError chain:
-// Go's syscall package intentionally defines ECONNREFUSED/ECONNRESET there
-// as invented APPLICATION_ERROR values that never equal the Winsock codes,
-// and it does not define WSAECONNREFUSED at all - so the WSA codes are
-// matched numerically below and must stay in sync with winsock.h
+// udpNoListenerErrnos classify "nothing is listening" for the daemon's UDP
+// port: an unheard datagram earns an ICMP port-unreachable, which Windows
+// surfaces as WSAECONNRESET and Linux as ECONNREFUSED. New Winsock codes
+// are matched numerically because Go's syscall package intentionally
+// defines ECONNREFUSED/ECONNRESET as invented APPLICATION_ERROR values on
+// Windows (never equal to real Winsock codes) and does not define
+// WSAECONNREFUSED at all - keep these in sync with winsock.h
 // (WSAECONNREFUSED=10061, WSAECONNRESET=10054).
-var dstUnreachableErrnos = []syscall.Errno{
+var udpNoListenerErrnos = []syscall.Errno{
 	syscall.ECONNREFUSED, syscall.ECONNRESET,
 	syscall.Errno(10061), syscall.Errno(10054),
 }
 
-func dstUnreachable(err error) bool {
-	for _, errno := range dstUnreachableErrnos {
+// tcpNoListenerErrnos classify "nothing is listening" for the light panel's
+// TCP listener. A RST (ECONNRESET/10054) must NOT be here: on TCP a reset
+// can be produced by a LIVE, wedged listener; only a refusal proves the
+// port is closed.
+var tcpNoListenerErrnos = []syscall.Errno{
+	syscall.ECONNREFUSED, syscall.Errno(10061),
+}
+
+func anyErrno(err error, list []syscall.Errno) bool {
+	for _, errno := range list {
 		if errors.Is(err, errno) {
 			return true
 		}
 	}
 	return false
 }
+
+// udpNoListener reports whether an error proves no daemon is listening.
+func udpNoListener(err error) bool { return anyErrno(err, udpNoListenerErrnos) }
+
+// tcpNoListener reports whether an error proves no light panel is listening.
+func tcpNoListener(err error) bool { return anyErrno(err, tcpNoListenerErrnos) }
 
 // onMicToggle is the tray's mute-everything path, mirroring the Stream Deck
 // mute key (README): a hardware toggle to the daemon AND one F24 meeting-app
@@ -198,8 +212,10 @@ func (a *trayActions) onQuit() {
 	case err == nil && reply != "shutting down":
 		daemonOK = false
 		a.logger.Error("quit: daemon refused shutdown", "reply", reply)
-	case err != nil && dstUnreachable(err):
-		// Nothing is listening on the daemon's port: already the goal state.
+	case err != nil && udpNoListener(err):
+		// The daemon's UDP port answered the shutdown datagram with an ICMP
+		// port-unreachable (or refused/reset outright): nothing is
+		// listening, which is already the goal state.
 		a.logger.Info("quit: daemon port refuses connections, treated as stopped", "err", errString(err))
 	case err != nil:
 		// Anything else - above all a timeout (errNoReply), which a live but
@@ -240,10 +256,9 @@ func stopLightPanel(baseURL string) error {
 		// reset) may be a live but wedged panel - that is a real error, and
 		// onQuit logs it at ERROR. On Windows the refusal instead arrives
 		// as a raw Winsock code in a syscall.Errno inside the net.OpError
-		// chain (WSAECONNREFUSED=10061/WSAECONNRESET=10054, never Go's
-		// invented ECONNREFUSED/ECONNRESET), so dstUnreachable matches
-		// both shapes.
-		if dstUnreachable(err) {
+		// chain (WSAECONNREFUSED=10061, never Go's invented ECONNREFUSED),
+		// so tcpNoListener matches both shapes.
+		if tcpNoListener(err) {
 			return nil
 		}
 		return err
