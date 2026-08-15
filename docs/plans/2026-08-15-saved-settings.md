@@ -32,6 +32,7 @@ Add a "save" feature so the user can save the current light settings under a cho
 - README.md is the only end-user documentation; content-contract tests (ui_test.go, deploy_test.go) are updated in the SAME task as the docs/assets they pin.
 - The wire reply shapes above are contracts; ui and tray code parse exactly those shapes ("(daemon unreachable)"/"(no saved settings)" are UI-side strings, never sent by the daemon).
 - Out of scope (say so in the plan): gain/pattern/volume audio controls (daemon firmware opcodes exist but are not implemented), audio device selection, delete/rename verbs for saved settings (YAGNI).
+- Saved-settings list size is uncapped by design (YAGNI): at the 43-byte name cap at most ~46 newline-joined names fit one 2048-byte `askDaemon` reply buffer (120+ at realistic name lengths), and a settings menu that long is unusable anyway — no `settings list` chunking verb is planned.
 - The daemon replies use exact wire shapes documented in the contract.
 
 ---
@@ -70,9 +71,9 @@ func (s *SettingsStore) Get(name string) (SavedSetting, bool)
 ```
 
 - Produces, the exact wire verbs (contract §3):
-  - `settings save <name>` → snapshot every currently-connected light (source: each light's Manager state: `Status()`/`TargetOn()`), keying by registry name if the light is named else its port path → reply `saved "<name>" (N lights)`; empty/whitespace name or name containing a newline → `error: invalid settings name`; disabled store → `error: settings persistence disabled`.
+  - `settings save <name>` → snapshot every currently-connected light (source: each light's Manager state: `Status()`/`TargetOn()`), keying by registry name if the light is named else its port path → reply `saved "<name>" (N lights)`; empty/whitespace name, name containing a newline, or name whose TRIMMED form (case-insensitively) starts with `error:` → `error: invalid settings name`; name longer than `maxSettingsNameLen` (43 BYTES: the daemon's 64 B UDP receive buffer minus the longest verb prefix `light settings apply ` at 21 B — a longer name would save, then silently truncate on apply) → `error: settings name too long (max 43 bytes)`; disabled store → `error: settings persistence disabled`. `settings apply <name>` validates its name identically.
   - `settings list` → sorted names newline-joined; empty store → EMPTY string reply (`""` is the wire contract for "none").
-  - `settings apply <name>` → unknown name → `error: unknown setting "<name>"`; else for each entry: resolve key via `reg.Resolve(name)` first, then direct port path; apply On, Brightness, TempByte in that order through the existing per-light command path; reply lines mirror the fleet fan-out shape exactly (`COM4 desk: on 47% 2900K`); unreachable/unresolvable keys → `error: light "<key>": unreachable, skipped`; when ZERO lights connected → `error: no lights connected`.
+  - `settings apply <name>` → unknown name → `error: unknown setting "<name>"`; else entries are applied in PARALLEL exactly like the existing `handleAll` fan-out (goroutine per key, `wg.Wait`, each key's whole on→brightness→temp sequence inside ONE `callLight` so a wedged light costs one `CallTimeout` once): for each entry, resolve key via `reg.Resolve(name)` first, then direct port path, and apply On, Brightness, TempByte in that order through the existing per-light command path; reply lines mirror the fleet fan-out shape exactly (`COM4 desk: on 47% 2900K`), written into a preallocated slice indexed by the keys-sorted order so the reply is deterministic regardless of completion order; unreachable/unresolvable keys → `error: light "<key>": unreachable, skipped`; when ZERO lights connected → `error: no lights connected`.
 
 - [ ] **Step 1: Write the failing behavioral test**
 
@@ -86,6 +87,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -227,7 +229,12 @@ func TestSavedSettingsApplyRestoresLiveStateInOrder(t *testing.T) {
 		t.Fatalf("apply reply = %q, want %q", got, want)
 	}
 	// On, Brightness, Temp in order: exactly three COM4 frames ("on" first
-	// restores the disturbed 80%/byte-18 look); one COM7 off frame.
+	// restores the disturbed 80%/byte-18 look); one COM7 off frame. The
+	// apply fans keys out in parallel goroutines (handleAll-style), so only
+	// the PER-LIGHT on→brightness→temp frame ORDER within a key is
+	// assertable here; cross-light frame interleaving is deliberately NOT
+	// asserted. The reply's line order stays deterministic (preallocated
+	// slice indexed by the keys-sorted order).
 	if got := fp4.writeCount() - w4; got != 3 {
 		t.Fatalf("COM4 wrote %d frames, want 3 (on, brightness, temp)", got)
 	}
@@ -308,17 +315,32 @@ func TestSavedSettingsNameValidation(t *testing.T) {
 	mm.rescan(ctx)
 	waitConnected(t, mm, "COM4")
 	for _, cmd := range []string{
-		"settings save",       // empty name
-		"settings save a\nb",  // newline in name
-		"settings apply",      // empty name
-		"settings apply a\nb", // newline in name
+		"settings save",                // empty name
+		"settings save a\nb",           // newline in name
+		"settings save error: outage",  // error:-prefixed names collide with every client's error: reply detection
+		"settings save Error: outage",  // case-insensitive
+		"settings apply",               // empty name
+		"settings apply a\nb",          // newline in name
+		"settings apply error: outage", // apply validates names the same way
 	} {
 		if got := mm.HandleCommand(cmd); got != "error: invalid settings name" {
 			t.Errorf("HandleCommand(%q) = %q, want invalid settings name", cmd, got)
 		}
 	}
-	if got := mm.HandleCommand("settings list"); got != "" {
-		t.Errorf("list after invalid saves = %q, want empty", got)
+	// Byte cap: the daemon's 64 B UDP receive buffer must hold the longest
+	// verb prefix ("light settings apply ", 21 B) plus the name, so 43
+	// bytes is the largest name that survives a full round trip; a 44-byte
+	// name would silently truncate and could never be applied.
+	name44 := strings.Repeat("n", 44)
+	if got := mm.HandleCommand("settings save " + name44); got != "error: settings name too long (max 43 bytes)" {
+		t.Errorf("44-byte save = %q, want too-long error", got)
+	}
+	name43 := strings.Repeat("n", 43)
+	if got := mm.HandleCommand("settings save " + name43); got != `saved "`+name43+`" (1 lights)` {
+		t.Errorf("43-byte save = %q, want accepted (the cap is inclusive)", got)
+	}
+	if got := mm.HandleCommand("settings list"); got != name43 {
+		t.Errorf("list after the rejected saves = %q, want only the accepted 43-byte name", got)
 	}
 }
 
@@ -457,14 +479,29 @@ func (s *SettingsStore) saveLocked() error {
 	return os.WriteFile(s.path, data, 0o644)
 }
 
+// maxSettingsNameLen caps a settings name in BYTES so every settings verb
+// fits the daemon's 64-byte UDP receive buffer (serveUDP,
+// internal/daemon/daemon.go:264): the longest verb prefix is
+// "light settings apply " (21 bytes), and ReadFrom silently truncates an
+// oversized datagram — a longer name would save fine yet truncate on apply,
+// replying "unknown setting" forever.
+const maxSettingsNameLen = 43 // 64 - len("light settings apply ")
+
 // validSettingsName: non-empty, no newlines (list replies are
-// newline-joined; a newline in a name would corrupt the wire shape).
+// newline-joined; a newline in a name would corrupt the wire shape), never
+// starting with "error:" case-insensitively (every client detects daemon
+// failures by that whole-reply prefix, so a colliding name would read as a
+// daemon error in the UI while the tray listed it), and at most
+// maxSettingsNameLen bytes. NewSettingsStore's load filter reuses this, so
+// legacy files self-clean.
 func validSettingsName(name string) bool {
-	return name != "" && !strings.ContainsAny(name, "\r\n")
+	return name != "" && !strings.ContainsAny(name, "\r\n") &&
+		!strings.HasPrefix(strings.ToLower(name), "error:") &&
+		len(name) <= maxSettingsNameLen
 }
 ```
 
-Modify `internal/light/multi.go`, four regions (no new imports: `fmt`, `sort`, `strconv`, `strings`, `path/filepath` are already imported).
+Modify `internal/light/multi.go`, four regions (no new imports: `fmt`, `sort`, `strconv`, `strings`, `sync`, `path/filepath` are already imported).
 
 Region 1 — the `MultiManager` struct (multi.go:62-72) becomes:
 
@@ -540,6 +577,9 @@ func (mm *MultiManager) handleSettingsCommand(cmd string, fields []string) strin
 	case "save", "apply":
 		_, rest, _ := strings.Cut(cmd, fields[1])
 		name := strings.TrimSpace(rest)
+		if name != "" && len(name) > maxSettingsNameLen {
+			return "error: settings name too long (max 43 bytes)"
+		}
 		if !validSettingsName(name) {
 			return "error: invalid settings name"
 		}
@@ -582,8 +622,13 @@ func (mm *MultiManager) settingsSave(name string) string {
 	return fmt.Sprintf("saved %q (%d lights)", name, len(snap.Lights))
 }
 
-// settingsApply restores the snapshot under name onto the live fleet,
-// entries in sorted key order for a stable reply. Lines mirror the fleet
+// settingsApply restores the snapshot under name onto the live fleet. Keys
+// are applied in PARALLEL exactly like the handleAll fan-out (one goroutine
+// per key, wg.Wait): each key's whole on->brightness->temp closure runs
+// inside ONE callLight, so a wedged light costs one 2 s CallTimeout once
+// instead of stacking serially behind the others. Result lines are written
+// into a slice preallocated in keys-sorted order, so the reply is
+// deterministic regardless of completion order. Lines mirror the fleet
 // fan-out shape ("COM4 desk: on 47% 2900K"); keys that resolve nowhere - or
 // to a light with no live session - get "unreachable, skipped" and the
 // rest still apply.
@@ -606,18 +651,23 @@ func (mm *MultiManager) settingsApply(name string) string {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	lines := make([]string, 0, len(keys))
-	for _, key := range keys {
+	lines := make([]string, len(keys)) // indexed by the keys-sorted order: deterministic reply
+	var wg sync.WaitGroup
+	for i, key := range keys {
 		st := snap.Lights[key]
 		port, ok := mm.reg.Resolve(key)
 		m := managers[port] // nil when the key resolved but is not connected
 		if !ok || m == nil {
-			lines = append(lines, fmt.Sprintf("error: light %q: unreachable, skipped", key))
+			lines[i] = fmt.Sprintf("error: light %q: unreachable, skipped", key)
 			continue
 		}
-		reply := mm.callLight(port, func() string { return applySavedState(m, st) })
-		lines = append(lines, mm.label(port)+": "+reply)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			lines[i] = mm.label(port) + ": " + mm.callLight(port, func() string { return applySavedState(m, st) })
+		}()
 	}
+	wg.Wait()
 	return strings.Join(lines, "\n")
 }
 
@@ -645,7 +695,7 @@ Expected: PASS
 
 - [ ] **Step 5: Refactor while green**
 
-No refactor needed: `SettingsStore` deliberately mirrors `Registry`/`State.persistLocked` (one persistence idiom), and `settingsSave`/`settingsApply` reuse the existing `callLight` bound, `label`, and sorted-output conventions instead of a parallel fan-out (a shared helper would serve single-use call sites — YAGNI).
+No refactor needed: `SettingsStore` deliberately mirrors `Registry`/`State.persistLocked` (one persistence idiom), and `settingsSave`/`settingsApply` reuse the existing `callLight` bound, `label`, and `handleAll`'s goroutine-per-key fan-out pattern with the keys-sorted preallocated reply (a shared fan-out helper would serve single-use call sites — YAGNI).
 
 - [ ] **Step 6: Run impacted-test verification**
 
@@ -867,9 +917,13 @@ and append after the notes paragraph's "A light's identity is its COM port ... d
   (plain JSON, overwrite-by-name; missing/corrupt file = none saved).
   `save` snapshots every connected light — on/brightness/temp, keyed by
   registry name when named, else COM port — and replies `saved "<name>" (N
-  lights)` (`error: invalid settings name` for an empty or
-  newline-containing name; `error: settings persistence disabled` with no
-  state directory). `list` replies with the sorted names, one per line;
+  lights)` (`error: invalid settings name` for an empty,
+  newline-containing, or `error:`-prefixed name — case-insensitive;
+  `error: settings name too long (max 43 bytes)` past the byte cap, because
+  a longer name would silently truncate inside the daemon's 64-byte UDP
+  receive buffer and could never be applied; `error: settings persistence
+  disabled` with no state directory). `list` replies with the sorted names,
+  one per line;
   the empty reply is the wire contract for "none saved" (a zero-length UDP
   datagram). `apply` resolves each entry by name first, then COM port,
   writes on → brightness → temp in that order, and replies in the usual
@@ -906,8 +960,8 @@ git add internal/daemon/daemon.go internal/daemon/daemon_test.go README.md && gi
 - Modify: `README.md` (`mutastic ui` bullet ~66-72)
 
 **Interfaces:**
-- Consumes: daemon mic verbs `mute|unmute|toggle` + tri-state `status` (`daemon.go:96-116`); `daemonCall`/`daemonDispatcher.sequence` (`ui.go:86-115`); the `clientCommand` timeout split (main.go:89-99: mic 1 s, light 6 s); index.html's mutation queue + 750 ms cadence; `newTestDaemonDispatcher`/`newUIServer` seams.
-- Produces: GET/POST `/api/mic` with the contract §5 shape `{"state":"muted|unmuted|unknown|unreachable"}`; types `uiMicStatus`, `uiMicRequest`; `uiDaemonTimeout(command string) time.Duration`; index.html `refreshMic()`, `updateMic(state)`, `bindMicControls()`.
+- Consumes: daemon mic verbs `mute|unmute|toggle` + tri-state `status` (`daemon.go:96-116`); `daemonCall`/`daemonDispatcher.sequence` (`ui.go:86-115`); the UI talks to the daemon with the single daemon-call timeout (6 s `lightClientTimeout` class) for mic AND light calls, because `serveUDP` is strictly serial (daemon.go:263-288) and a wedged light call can occupy ~2 s — a 1 s budget would flap the mic card to "unreachable" and could report failure for mutes that actually executed (evidence: `tray_windows.go` already uses 6 s for exactly this reason); index.html's mutation queue + 750 ms cadence; `newTestDaemonDispatcher`/`newUIServer` seams.
+- Produces: GET/POST `/api/mic` with the contract §5 shape `{"state":"muted|unmuted|unknown|unreachable"}`; types `uiMicStatus`, `uiMicRequest`; index.html `refreshMic()`, `updateMic(state)`, `bindMicControls()`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1065,23 +1119,17 @@ type uiMicRequest struct {
 }
 ```
 
-2. Mirror clientCommand's timeout split; newDaemonDispatcher's askDaemon call uses it:
+2. Do NOT introduce a timeout split: keep `newDaemonDispatcher`'s existing `askDaemon(command, udpAddr, lightClientTimeout)` for every call — mic verbs included — adding only this comment above the `roundTrip`:
 
 ```go
-// uiDaemonTimeout mirrors clientCommand's split (main.go): mic verbs 1 s;
-// light and shutdown verbs keep lightClientTimeout.
-func uiDaemonTimeout(command string) time.Duration {
-	switch command {
-	case "status", "mute", "unmute", "toggle":
-		return time.Second
-	}
-	return lightClientTimeout
-}
-```
-
-```go
+// Every UI daemon call uses lightClientTimeout (6 s), mic verbs included:
+// serveUDP is strictly serial (daemon.go:263-288), so a mic datagram can
+// queue behind a wedged light call (~light.CallTimeout) and a 1 s budget
+// would flap the mic card to "unreachable" — or report failure for a mute
+// the daemon still dequeued and executed. tray_windows.go already uses
+// lightClientTimeout for every ask for exactly this reason.
 		roundTrip: func(command string) (string, error) {
-			return askDaemon(command, udpAddr, uiDaemonTimeout(command))
+			return askDaemon(command, udpAddr, lightClientTimeout)
 		},
 ```
 
@@ -1266,8 +1314,12 @@ No structural refactor: handlers reuse the existing guards/dispatcher/JSON helpe
   `muted`, `unknown` after a daemon restart, or a distinct `daemon
   unreachable` state that disables the buttons), and its Mute / Unmute /
   Toggle buttons `POST /api/mic` with the daemon's absolute mic verbs
-  (`mute`, `unmute`, `toggle`; 1 s timeout class like the CLI — light verbs
-  keep 6 s). Panel mutes never fire the F24 meeting-app sweep — exactly
+  (`mute`, `unmute`, `toggle`; every UI daemon call — mic AND light — uses
+  the single 6 s `lightClientTimeout` class: serveUDP is strictly serial
+  and a wedged light call can occupy ~2 s, so a 1 s budget would flap the
+  card to "unreachable" mid light-operation and could report failure for
+  mutes that actually executed — the tray already uses 6 s for exactly this
+  reason). Panel mutes never fire the F24 meeting-app sweep — exactly
   like the CLI — only a physical press of the mic's own button (or the
   tray / Stream Deck mute actions) does.
 ```
@@ -1298,8 +1350,8 @@ git add ui.go internal/lightui/index.html ui_test.go README.md && git commit -m 
 - Modify: `README.md` (`mutastic ui` component bullet)
 
 **Interfaces:**
-- Consumes: Task 1/3's daemon wire verbs `light settings save <name>` (reply `saved "<name>" (N lights)`), `light settings apply <name>` (fleet fan-out lines), `light settings list` (newline-joined names; EMPTY string when the store is empty; `error: settings persistence disabled` possible). Names may contain spaces (`"movie mode"`), never newlines. Reuses `daemonCall` (`ui.go:86`), `newTestDaemonDispatcher` (`ui.go:104`), `daemonDispatcher.sequence` (`ui.go:108`, 6 s `lightClientTimeout` for settings verbs — the light/verb budget, not the 1 s mic budget), `decodeUIJSON`, `writeUIJSON`, `writeUIMethodError` (its `method` arg is just the `Allow` header string, so `"GET, POST"` is valid), `validPostOrigin`, and the `newUIServer(port, dispatcher)` + `httptest` harness pattern (`req.Host = "127.0.0.1:42815"`, `Content-Type: application/json` on POSTs).
-- Produces: `GET /api/settings` → `{"names":[...]}` (HTTP 200 always; daemon transport failure OR `error:` reply degrades in-band to `{"names":[],"error":"unreachable"}` — the light polling loop already carries the big banner, so the settings list never hard-errors the page); `POST /api/settings` `{"action":"save|apply","name":"..."}` → daemon verb then one list refresh, replying HTTP 200 `{"names":[...]}`; missing/whitespace name, newline name, or unknown action → HTTP 400; daemon `error:` reply or transport failure on the verb → HTTP 502 `{"names":[],"error":"<daemon reply verbatim|transport error>"}` (same 502-with-details mapping `mutate` uses). Wording notes: "list refetched on load and after save/apply" is satisfied by the POST reply itself carrying the refreshed names (contract §5) — the page does NOT re-GET after a POST.
+- Consumes: Task 1/3's daemon wire verbs `light settings save <name>` (reply `saved "<name>" (N lights)`), `light settings apply <name>` (fleet fan-out lines), `light settings list` (newline-joined names; EMPTY string when the store is empty; `error: settings persistence disabled` possible). Names may contain spaces (`"movie mode"`), never newlines, never start with `error:` (case-insensitive), and are at most 43 bytes — the last two are daemon-enforced (Task 1). Reuses `daemonCall` (`ui.go:86`), `newTestDaemonDispatcher` (`ui.go:104`), `daemonDispatcher.sequence` (`ui.go:108`, 6 s `lightClientTimeout` for settings verbs — the same single daemon-call timeout the UI uses for mic and light calls alike per Task 3; serveUDP is strictly serial, so there is no 1 s split), `decodeUIJSON`, `writeUIJSON`, `writeUIMethodError` (its `method` arg is just the `Allow` header string, so `"GET, POST"` is valid), `validPostOrigin`, and the `newUIServer(port, dispatcher)` + `httptest` harness pattern (`req.Host = "127.0.0.1:42815"`, `Content-Type: application/json` on POSTs).
+- Produces: `GET /api/settings` → `{"names":[...]}` (HTTP 200 always; daemon transport failure OR `error:` reply degrades in-band to `{"names":[],"error":"unreachable"}` — the light polling loop already carries the big banner, so the settings list never hard-errors the page); `POST /api/settings` `{"action":"save|apply","name":"..."}` → daemon verb then one list refresh, replying HTTP 200 `{"names":[...]}`; missing/whitespace name, newline name, or unknown action → HTTP 400; transport failure on the verb, or a verb reply that is EXACTLY ONE line starting with `error:` (whole-reply errors: unknown setting / invalid name / persistence disabled / too-long name) → HTTP 502 `{"names":[],"error":"<daemon reply verbatim|transport error>"}` (same 502-with-details mapping `mutate` uses); a MULTI-LINE apply reply whose first line is an inline `error: light ...` skip is partial success — the resolvable lights did apply — and returns HTTP 200 with the refreshed names. Wording notes: "list refetched on load and after save/apply" is satisfied by the POST reply itself carrying the refreshed names (contract §5) — the page does NOT re-GET after a POST.
 
 - [ ] **Step 1: Write the failing behavioral tests**
 
@@ -1483,7 +1535,8 @@ func TestUIAPISettingsValidatesAndPassesDaemonErrorsThrough(t *testing.T) {
 		t.Fatalf("POST /api/settings with foreign Origin = %d, want 403", recorder.Code)
 	}
 
-	// A daemon "error:" reply is a bad gateway; the body carries it verbatim.
+	// A WHOLE-reply daemon error (exactly one "error:" line) is a bad
+	// gateway; the body carries it verbatim.
 	errServer := newUIServer(42815, newTestDaemonDispatcher(func(command string) (string, error) {
 		if command == "light settings apply ghost" {
 			return `error: unknown setting "ghost"`, nil
@@ -1506,6 +1559,30 @@ func TestUIAPISettingsValidatesAndPassesDaemonErrorsThrough(t *testing.T) {
 	}
 	if body.Error != `error: unknown setting "ghost"` {
 		t.Fatalf("error body = %q, want the verbatim daemon reply", body.Error)
+	}
+
+	// A MULTI-LINE apply reply whose first line is an inline skip error is
+	// a partial success — the resolvable light DID apply — so the route
+	// answers HTTP 200 with the refreshed names, NOT a 502.
+	partial := newUIServer(42815, newTestDaemonDispatcher(func(command string) (string, error) {
+		switch command {
+		case "light settings apply movie":
+			return "error: light \"COM9\": unreachable, skipped\nCOM7: on 55% 4950K", nil
+		case "light settings list":
+			return "movie", nil
+		}
+		return "", nil
+	}))
+	recorder = httptest.NewRecorder()
+	partialReq := httptest.NewRequest(http.MethodPost, "/api/settings", strings.NewReader(`{"action":"apply","name":"movie"}`))
+	partialReq.Host = "127.0.0.1:42815"
+	partialReq.Header.Set("Content-Type", "application/json")
+	partial.ServeHTTP(recorder, partialReq)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("partial apply status = %d, want 200 (inline skip lines are not whole-reply errors); body %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"names":["movie"]`) {
+		t.Fatalf("partial apply body = %s, want the refreshed names", recorder.Body.String())
 	}
 
 	// A transport failure on the verb maps to 502 too (mutate's mapping).
@@ -1624,7 +1701,12 @@ func (s *uiServer) handleSettingsAction(w http.ResponseWriter, r *http.Request) 
 			return err
 		}
 		reply = strings.TrimSpace(reply)
-		if strings.HasPrefix(reply, "error:") {
+		// 502 is for WHOLE-reply failures only: exactly ONE error: line
+		// (unknown setting, invalid name, persistence disabled, too-long
+		// name). A multi-line apply reply whose first line is an inline
+		// "error: light ..." skip still applied the rest of the fleet —
+		// partial success, so fall through to the names refresh.
+		if strings.HasPrefix(reply, "error:") && !strings.Contains(reply, "\n") {
 			return errors.New(reply) // 502 below carries the daemon reply verbatim
 		}
 		var daemonErr bool
@@ -2188,6 +2270,15 @@ func TestTrayParseSettingsList(t *testing.T) {
 	if ok || names != nil {
 		t.Errorf("trayParseSettingsList with an ask error = (%v, %v), want (nil, false)", names, ok)
 	}
+	// An "error:"-prefixed reply (e.g. persistence disabled — single-line is
+	// the only error shape this verb sends) reads as daemon-down for menu
+	// purposes; without the guard the error text would become an ENABLED
+	// menu item whose click always fails. (nil, false) → traySavedSettings
+	// renders the single disabled "(daemon unreachable)" item.
+	names, ok = trayParseSettingsList("error: settings persistence disabled", nil)
+	if ok || names != nil {
+		t.Errorf("trayParseSettingsList with an error: reply = (%v, %v), want (nil, false)", names, ok)
+	}
 }
 
 // TestTraySameMenuSpecs pins the compare-by-title rule the refresh loop
@@ -2238,14 +2329,21 @@ const traySavedSettingsListCmd = "light settings list"
 // trayParseSettingsList turns one daemon round trip for
 // traySavedSettingsListCmd into (names, daemonOK). The wire contract:
 // an EMPTY reply means "no settings saved" (still daemon-OK), names are
-// newline-joined (the daemon emits them sorted), and ANY ask error means
-// the daemon is unreachable for menu purposes.
+// newline-joined (the daemon emits them sorted), and ANY ask error — or a
+// reply starting with "error:" (e.g. "error: settings persistence
+// disabled"; single-line is the only error shape this verb sends) — means
+// the daemon is unreachable for menu purposes. Without the error: guard
+// the error text would render as an enabled menu item whose click always
+// fails.
 func trayParseSettingsList(reply string, err error) ([]string, bool) {
 	if err != nil {
 		return nil, false
 	}
 	if reply == "" {
 		return nil, true
+	}
+	if strings.HasPrefix(strings.TrimSpace(reply), "error:") {
+		return nil, false
 	}
 	return strings.Split(reply, "\n"), true
 }
@@ -2473,9 +2571,12 @@ Append exactly this block to `docs/plans/2026-08-14-tray-icon.md`, continuing th
 13. **The tray picks the name up:** right-click the tray icon and open **Saved settings** — within ~2 s (the tray polls `light settings list` on its normal tick) the submenu lists **smoke test** as an enabled item.
 14. **Apply from the tray menu:** change the lights (tray **Toggle lights** or another preset), then click **Saved settings → smoke test** — the lights return to the saved look, and `%LOCALAPPDATA%\mutastic\tray.log` gains an INFO line with `"msg":"light command"` and `"cmd":"light settings apply smoke test"`.
 15. **Apply from the web UI:** change the lights again, then click **smoke test** in the panel's **Settings** card — the lights restore and the light cards refresh on the same poll.
-16. **Mic card:** the panel's **Mic** card shows the current muted/unmuted status; **Mute** mutes, **Unmute** unmutes, **Toggle** flips, and the status follows within one poll. These change the mic ONLY — no F24 meeting-app sweep — so with a meeting app open, confirm the apps do NOT change (the tray item and Stream Deck key remain the mute-everything paths).
-17. **Dynamic tray mute item:** with the mic live the tray item reads **Mute** — click it and the mic (plus any open meeting app) mutes; once muted the item reads **Unmute** — click it and the mic (and apps) unmute. The label always names the exact action the click performs.
-18. **Quit cascade:** menu **Quit** — the icon disappears; `C:\Users\dan\code\mutastic-deploy\mutastic.exe status` prints `error: no daemon reachable`; `curl http://127.0.0.1:42815/api/health` is refused (`curl: (7) Failed to connect`); `tasklist /FI "IMAGENAME eq mutastic.exe"` prints `INFO: No tasks are running which match the specified criteria.` (daemon, UI server, and tray all stopped — one click, everything down). Relaunch via the `Mutastic Daemon` startup shortcut and confirm the icon returns.
+16. **Submenu rebuild across name-set changes:** in the panel's **Settings** card save two more names (`smoke b`, then `smoke c`) and overwrite `smoke test` with a fresh **Save** under the same name (there is no delete verb, so the set only grows and overwrites — rename/shrink coverage comes from overwriting and, in step 17, from clearing the file). Open the tray **Saved settings** submenu 5 times spread across these changes: every open renders exactly the current names, in the daemon's sorted order, with no duplicates and no phantom items left from earlier name sets, and clicking any listed name applies it.
+17. **Placeholder regimes:** stop the daemon (step 21's Quit, or taskkill) — on the next 2 s poll the **Saved settings** submenu collapses to a single grayed **(daemon unreachable)** item; relaunch with the store empty (stop the daemon, delete `%LOCALAPPDATA%\mutastic\light-settings.json`, relaunch) and the submenu shows a single grayed **(no saved settings)** item; save a name again and it returns on the next poll.
+18. **Mid-refresh glitch (best-effort):** hold the **Saved settings** submenu open across a poll while a save lands from the web UI, so the 2 s tick rebuilds the menu underneath the open popup (a documented cosmetic window — the fork mutates a displayed TrackPopupMenu from another thread). Whatever transient rendering occurs must self-heal: close and reopen the submenu and it shows exactly the current name list, no stuck duplicates or phantoms, and committed state is never affected.
+19. **Mic card:** the panel's **Mic** card shows the current muted/unmuted status; **Mute** mutes, **Unmute** unmutes, **Toggle** flips, and the status follows within one poll. These change the mic ONLY — no F24 meeting-app sweep — so with a meeting app open, confirm the apps do NOT change (the tray item and Stream Deck key remain the mute-everything paths).
+20. **Dynamic tray mute item:** with the mic live the tray item reads **Mute** — click it and the mic (plus any open meeting app) mutes; once muted the item reads **Unmute** — click it and the mic (and apps) unmute. The label always names the exact action the click performs.
+21. **Quit cascade:** menu **Quit** — the icon disappears; `C:\Users\dan\code\mutastic-deploy\mutastic.exe status` prints `error: no daemon reachable`; `curl http://127.0.0.1:42815/api/health` is refused (`curl: (7) Failed to connect`); `tasklist /FI "IMAGENAME eq mutastic.exe"` prints `INFO: No tasks are running which match the specified criteria.` (daemon, UI server, and tray all stopped — one click, everything down). Relaunch via the `Mutastic Daemon` startup shortcut and confirm the icon returns.
 ```
 
 - [ ] **Step 3: Final gate — build**
