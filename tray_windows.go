@@ -32,6 +32,16 @@ const (
 	// single-instance lock - the same trick as the daemon's UDP bind.
 	trayInstanceAddr = "127.0.0.1:42816"
 	trayPollEvery    = 2 * time.Second
+	// trayIconReapplyEvery bounds icon-handle churn: the fork loads a new
+	// HICON per SetIcon and never destroys the old one, so the icon is
+	// re-applied only on transitions plus this slow heartbeat
+	// (300 ticks * 2 s = 10 min, ~144 HICONs/day against the 10k GDI
+	// limit). Tooltip, header, checkbox, and enabled states carry no
+	// handle cost, so they converge every tick instead - a transient
+	// SetIcon/SetTooltip failure heals at the latest on the next tick or
+	// heartbeat, and a permanent failure leaves the fork's repeated
+	// "systray error:" lines in tray.log (bridged via slog.SetDefault).
+	trayIconReapplyEvery = 300
 )
 
 // runTray puts the mutastic icon in the notification area and blocks in the
@@ -105,6 +115,13 @@ func trayOnReady(logger *slog.Logger) {
 	brightness := systray.AddMenuItem("Brightness", "set brightness on all lights")
 	preset := systray.AddMenuItem("Light preset", "apply a preset on all lights")
 
+	// Action items start disabled; the first reachable poll enables them
+	// (prevents a Muted click in the startup window from injecting the F24
+	// sweep after a failed daemon toggle).
+	for _, it := range []*systray.MenuItem{muted, lights, brightness, preset} {
+		it.Disable()
+	}
+
 	systray.AddSeparator()
 	panel := systray.AddMenuItem("Light panel…", "open the full light controller in the browser")
 	quit := systray.AddMenuItem("Quit", "stop everything mutastic runs (daemon, light panel) and exit")
@@ -162,7 +179,11 @@ func trayOnReady(logger *slog.Logger) {
 	// pump thread, so they spawn goroutines rather than block it (the light
 	// handlers only enqueue, which is non-blocking in practice).
 	systray.SetOnClick(func(systray.IMenu) { go actions.onOpenPanel() })
-	systray.SetOnRClick(func(m systray.IMenu) { _ = m.ShowMenu() })
+	systray.SetOnRClick(func(m systray.IMenu) {
+		if err := m.ShowMenu(); err != nil {
+			logger.Error("show tray menu failed", "err", errString(err))
+		}
+	})
 
 	muted.Click(func() { go actions.onMicToggle() })
 	lightCmd := func(command string) func() {
@@ -190,28 +211,38 @@ func trayOnReady(logger *slog.Logger) {
 
 // trayRefreshLoop owns all tray-visible state. Each signal triggers one
 // daemon status round trip; every display decision comes from the pure
-// traystate.go mapping, and updates are applied only on state transitions,
-// so the native calls (and the log line) happen exactly when the display
-// changes. The icon switches only on definitive answers (trayIconFor):
-// unknown or unreachable keeps the last icon.
+// traystate.go mapping. Convergence is intentional: tooltip, header,
+// checkbox, and enabled states carry no handle cost and are re-asserted on
+// every signal, so a transient failure heals on the next tick - the
+// transition gate only decides logging and icon reapplies (SetIcon leaks a
+// GDI handle per call; see trayIconReapplyEvery). The icon switches only
+// on definitive answers (trayIconFor): unknown or unreachable keeps the
+// last icon.
 func trayRefreshLoop(logger *slog.Logger, refreshCh <-chan struct{}, header, muted, lights, brightness, preset *systray.MenuItem) {
 	first := true
 	last := trayStateUnknown
+	tick := 0
 	for range refreshCh {
+		// Convergence is intentional: the transition gate only decides the
+		// log line and the icon update; all handle-free display state is
+		// re-asserted every iteration.
+		tick++
 		reply, err := askDaemon("status", udpAddr, lightClientTimeout)
 		state := trayStateFor(reply, err)
-		if !first && state == last {
-			continue
+		change := first || state != last
+		if change {
+			first = false
+			last = state
+			logger.Info("status display", "title", trayTitle(state))
 		}
-		first = false
-		last = state
-		logger.Info("status display", "title", trayTitle(state))
-		switch trayIconFor(state) {
-		case trayIconMutedMic:
-			systray.SetIcon(trayIconMuted)
-		case trayIconLiveMic:
-			systray.SetIcon(trayIconLive)
-		} // trayIconKeep: not a definitive answer - leave the current icon
+		if change || tick%trayIconReapplyEvery == 0 {
+			switch trayIconFor(state) {
+			case trayIconMutedMic:
+				systray.SetIcon(trayIconMuted)
+			case trayIconLiveMic:
+				systray.SetIcon(trayIconLive)
+			} // trayIconKeep: not a definitive answer - leave the current icon
+		}
 		systray.SetTooltip(trayTitle(state))
 		header.SetTitle(trayTitle(state))
 		if trayMutedChecked(state) {
