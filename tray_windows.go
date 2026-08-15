@@ -32,15 +32,12 @@ const (
 	// single-instance lock - the same trick as the daemon's UDP bind.
 	trayInstanceAddr = "127.0.0.1:42816"
 	trayPollEvery    = 2 * time.Second
-	// trayIconReapplyEvery bounds icon-handle churn: the fork loads a new
-	// HICON per SetIcon and never destroys the old one, so the icon is
-	// re-applied only on transitions plus this slow heartbeat
-	// (300 ticks * 2 s = 10 min, ~144 HICONs/day against the 10k GDI
-	// limit). Tooltip, header, checkbox, and enabled states carry no
-	// handle cost, so they converge every tick instead - a transient
-	// SetIcon/SetTooltip failure heals at the latest on the next tick or
-	// heartbeat, and a permanent failure leaves the fork's repeated
-	// "systray error:" lines in tray.log (bridged via slog.SetDefault).
+	// trayIconReapplyEvery paces the self-heal heartbeat. The fork caches
+	// loaded HICONs by the icon's content-hash temp path (verified: its
+	// loadIconFrom reuses handles), so reapplying one of our three assets
+	// costs nothing extra - the heartbeat exists purely to re-drive
+	// NIM_MODIFY after a transient failure. Tooltip, header, checkbox, and
+	// enabled states carry no handle cost and converge every tick.
 	trayIconReapplyEvery = 300
 )
 
@@ -222,10 +219,15 @@ func trayRefreshLoop(logger *slog.Logger, refreshCh <-chan struct{}, header, mut
 	first := true
 	last := trayStateUnknown
 	tick := 0
+	// lastShown is the icon currently displayed; it starts as the neutral
+	// unknown asset (also set at ready) and changes only on definitive
+	// answers. Change ticks AND the heartbeat reapply lastShown, so a
+	// transient SetIcon failure - including a failed initial set before the
+	// first definitive answer - self-heals; the early ticks (1-3) cover the
+	// startup window the watchdog can't see (the fork reports readiness
+	// even when the initial SetIcon failed).
+	lastShown := trayIconUnknown
 	for range refreshCh {
-		// Convergence is intentional: the transition gate only decides the
-		// log line and the icon update; all handle-free display state is
-		// re-asserted every iteration.
 		tick++
 		reply, err := askDaemon("status", udpAddr, lightClientTimeout)
 		state := trayStateFor(reply, err)
@@ -235,13 +237,14 @@ func trayRefreshLoop(logger *slog.Logger, refreshCh <-chan struct{}, header, mut
 			last = state
 			logger.Info("status display", "title", trayTitle(state))
 		}
-		if change || tick%trayIconReapplyEvery == 0 {
+		if change || tick <= 3 || tick%trayIconReapplyEvery == 0 {
 			switch trayIconFor(state) {
 			case trayIconMutedMic:
-				systray.SetIcon(trayIconMuted)
+				lastShown = trayIconMuted
 			case trayIconLiveMic:
-				systray.SetIcon(trayIconLive)
-			} // trayIconKeep: not a definitive answer - leave the current icon
+				lastShown = trayIconLive
+			} // trayIconKeep: reassert the currently displayed icon
+			systray.SetIcon(lastShown)
 		}
 		systray.SetTooltip(trayTitle(state))
 		header.SetTitle(trayTitle(state))

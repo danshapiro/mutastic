@@ -157,7 +157,11 @@ func (a *trayActions) onLight(command string) {
 // stop.
 func (a *trayActions) onQuit() {
 	reply, err := a.ask("shutdown")
-	a.logger.Info("quit: daemon shutdown", "reply", reply, "err", errString(err))
+	if err != nil {
+		a.logger.Error("quit: daemon shutdown failed", "reply", reply, "err", errString(err))
+	} else {
+		a.logger.Info("quit: daemon shutdown", "reply", reply)
+	}
 	if err := a.stopPanel(); err != nil {
 		a.logger.Error("quit: light panel shutdown failed", "err", errString(err))
 	}
