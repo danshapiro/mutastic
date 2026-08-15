@@ -97,12 +97,23 @@ type traySpy struct {
 	askErr   error
 	injErr   error
 	stopErr  error
+	// script overrides askReply/askErr per command (handlers that ask more
+	// than one distinct command, like mutedClick's status probe + toggle).
+	script map[string]scriptOutcome
+}
+
+type scriptOutcome struct {
+	reply string
+	err   error
 }
 
 func (s *traySpy) actions() *trayActions {
 	return &trayActions{
 		ask: func(cmd string) (string, error) {
 			s.calls = append(s.calls, "ask:"+cmd)
+			if o, ok := s.script[cmd]; ok {
+				return o.reply, o.err
+			}
 			return s.askReply, s.askErr
 		},
 		openPanel:     func() error { s.calls = append(s.calls, "panel"); return nil },
@@ -176,6 +187,58 @@ func TestTrayMicToggleIsMuteEverything(t *testing.T) {
 	failing.actions().onMicToggle()
 	if got := failing.order(); got != "ask:toggle,inject,refresh" {
 		t.Fatalf("onMicToggle with a dead daemon = %q, want %q (the sweep must still fire)", got, "ask:toggle,inject,refresh")
+	}
+}
+
+// TestMutedClickRevalidates pins the action-time revalidation of the Muted
+// menu click. The menu item's enabled bit is only the last completed poll's
+// snapshot, so a daemon restart (tracker back to unknown) landing between
+// that poll and the user's click would otherwise fire onMicToggle's blind
+// F24 sweep at a daemon whose toggle defaults unknown to set-mute - the
+// mute-everything desync. The click must probe the daemon afresh and fire
+// only on a definitive answer, keeping onMicToggle's ordering contract
+// (toggle, then sweep, then refresh - no extra toggles).
+func TestMutedClickRevalidates(t *testing.T) {
+	// Definitive probe answer: the click fires the full mute-everything
+	// path exactly once.
+	spy := &traySpy{script: map[string]scriptOutcome{
+		"status": {reply: "muted"},
+		"toggle": {reply: "unmuted"},
+	}}
+	spy.actions().mutedClick()
+	if got := spy.order(); got != "ask:status,ask:toggle,inject,refresh" {
+		t.Fatalf("mutedClick with a definitive probe = %q, want %q", got, "ask:status,ask:toggle,inject,refresh")
+	}
+
+	// Unknown probe answer: decline with a WARN, no toggle, no sweep.
+	levels := &levelRecorder{}
+	unknown := &traySpy{script: map[string]scriptOutcome{
+		"status": {reply: "unknown"},
+	}}
+	a := unknown.actions()
+	a.logger = slog.New(levels)
+	a.mutedClick()
+	if got := unknown.order(); got != "ask:status" {
+		t.Fatalf("mutedClick with an unknown probe = %q, want %q (probe only, no toggle/sweep)", got, "ask:status")
+	}
+	if len(levels.levels) != 1 || levels.levels[0] != slog.LevelWarn {
+		t.Fatalf("levels = %v, want [WARN] (a declined definitive-check is not an error)", levels.levels)
+	}
+
+	// Daemon down (its UDP port refused the datagram: nothing is
+	// listening): decline, again without touching the toggle or the sweep.
+	downLevels := &levelRecorder{}
+	down := &traySpy{script: map[string]scriptOutcome{
+		"status": {err: fmt.Errorf("%w: %w", errNoReply, syscall.ECONNREFUSED)},
+	}}
+	a = down.actions()
+	a.logger = slog.New(downLevels)
+	a.mutedClick()
+	if got := down.order(); got != "ask:status" {
+		t.Fatalf("mutedClick with the daemon down = %q, want %q (probe attempt only)", got, "ask:status")
+	}
+	if len(downLevels.levels) != 1 || downLevels.levels[0] != slog.LevelWarn {
+		t.Fatalf("levels = %v, want [WARN]", downLevels.levels)
 	}
 }
 

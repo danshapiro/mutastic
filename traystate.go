@@ -76,6 +76,8 @@ func trayActionsEnabled(s trayState) bool { return s != trayStateDown }
 // blind F24 sweep of the meeting apps - so at unknown state the click can
 // leave the mic muted while un-muting already-muted apps. Only definitive
 // daemon answers arm the mic; unknown and down both gate it out.
+// The click path (mutedClick) re-checks at action time; the menu bit
+// alone is only a freshness-bounded hint.
 func trayMicEnabled(s trayState) bool { return s == trayStateMuted || s == trayStateUnmuted }
 
 // trayIcon is an icon decision for one display state. trayIconKeep leaves
@@ -186,6 +188,21 @@ func (a *trayActions) onMicToggle() {
 	// The daemon applied its state change before replying; on failure the
 	// refresh restores the truthful display within one poll.
 	a.signalRefresh()
+}
+
+// mutedClick is the Muted menu's click entry point. It revalidates the mic
+// state AT ACTION TIME: the menu's enabled bit is only the last completed
+// poll's snapshot, so a daemon restart landing between poll and click would
+// otherwise fire the blind F24 sweep at a daemon whose tracker fell back to
+// unknown (which toggle defaults to set-mute - desyncing the apps if they
+// had been muted with the mic). Only a definitive answer fires the pair.
+func (a *trayActions) mutedClick() {
+	state := trayStateFor(a.ask("status"))
+	if !trayMicEnabled(state) {
+		a.logger.Warn("muted click declined: mic state not definitive", "state", trayTitle(state))
+		return
+	}
+	a.onMicToggle()
 }
 
 // onOpenPanel brings up the light-panel UI (the icon's left-click action);

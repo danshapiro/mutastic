@@ -183,7 +183,7 @@ func trayOnReady(logger *slog.Logger) {
 		}
 	})
 
-	muted.Click(func() { go actions.onMicToggle() })
+	muted.Click(func() { go actions.mutedClick() })
 	lightCmd := func(command string) func() {
 		return func() { lightCmdCh <- command }
 	}
