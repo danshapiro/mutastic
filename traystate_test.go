@@ -50,8 +50,21 @@ func TestTrayDisplayDecisions(t *testing.T) {
 	if trayTitle(trayStateDown) != "Mutastic — daemon unreachable" {
 		t.Errorf("down title = %q", trayTitle(trayStateDown))
 	}
-	if !trayMutedChecked(trayStateMuted) || trayMutedChecked(trayStateUnmuted) {
-		t.Error("Muted checkbox must be checked exactly in the muted state")
+	// The mic action item always displays the OPPOSITE of the last
+	// definitive state - the click performs exactly the displayed action -
+	// and falls back to the neutral "Mute/Unmute" while indefinite (a
+	// disabled item still shows its last-set title; a stale directional
+	// verb must never stay on screen).
+	if got := trayMuteTitle(trayStateUnmuted); got != "Mute" {
+		t.Errorf("mic item title at unmuted = %q, want %q (a click mutes a live mic)", got, "Mute")
+	}
+	if got := trayMuteTitle(trayStateMuted); got != "Unmute" {
+		t.Errorf("mic item title at muted = %q, want %q (a click unmutes a muted mic)", got, "Unmute")
+	}
+	for _, s := range []trayState{trayStateUnknown, trayStateDown} {
+		if got := trayMuteTitle(s); got != "Mute/Unmute" {
+			t.Errorf("mic item title at state %v = %q, want neutral %q", s, got, "Mute/Unmute")
+		}
 	}
 	if trayActionsEnabled(trayStateDown) {
 		t.Error("actions must be disabled while the daemon is unreachable")
@@ -65,10 +78,10 @@ func TestTrayDisplayDecisions(t *testing.T) {
 	}
 	// The mic action arms only on definitive answers; light actions arm on
 	// any daemon answer including unknown.
-	if trayMicEnabled(trayStateUnknown) || trayMicEnabled(trayStateDown) {
-		t.Error("mic action must stay disabled at unknown/down (blind F24 + default-mute can desync)")
+	if trayMuteEnabled(trayStateUnknown) || trayMuteEnabled(trayStateDown) {
+		t.Error("mic action must stay disabled at unknown/down (no premise to re-check, no safe verb to fire)")
 	}
-	if !trayMicEnabled(trayStateMuted) || !trayMicEnabled(trayStateUnmuted) {
+	if !trayMuteEnabled(trayStateMuted) || !trayMuteEnabled(trayStateUnmuted) {
 		t.Error("mic action must be armed at definitive answers")
 	}
 }
@@ -98,7 +111,7 @@ type traySpy struct {
 	injErr   error
 	stopErr  error
 	// script overrides askReply/askErr per command (handlers that ask more
-	// than one distinct command, like mutedClick's status probe + toggle).
+	// than one distinct command, like muteClick's status probe + verb).
 	script map[string]scriptOutcome
 }
 
@@ -172,73 +185,111 @@ func TestStdlibLogBridgesToJSONL(t *testing.T) {
 	}
 }
 
-// TestTrayMicToggleIsMuteEverything mirrors the Stream Deck mute key: a
-// daemon toggle AND the F24 meeting-app sweep, then a refresh - and the
-// sweep must fire even when the daemon round trip fails (a toggle-only
-// path would mute the mic while leaving meeting apps live).
+// TestTrayMicToggleIsMuteEverything mirrors the Stream Deck mute key: the
+// ABSOLUTE daemon verb the label displays AND the F24 meeting-app sweep,
+// then a refresh - and the sweep must fire even when the daemon round trip
+// fails (a verb-only path would move the mic while leaving meeting apps
+// live).
 func TestTrayMicToggleIsMuteEverything(t *testing.T) {
-	spy := &traySpy{}
-	spy.actions().onMicToggle()
-	if got := spy.order(); got != "ask:toggle,inject,refresh" {
-		t.Fatalf("onMicToggle side effects = %q, want %q", got, "ask:toggle,inject,refresh")
-	}
+	for _, verb := range []string{"mute", "unmute"} {
+		want := "ask:" + verb + ",inject,refresh"
 
-	failing := &traySpy{askErr: errors.New("daemon dead")}
-	failing.actions().onMicToggle()
-	if got := failing.order(); got != "ask:toggle,inject,refresh" {
-		t.Fatalf("onMicToggle with a dead daemon = %q, want %q (the sweep must still fire)", got, "ask:toggle,inject,refresh")
+		spy := &traySpy{}
+		spy.actions().onMicSet(verb)
+		if got := spy.order(); got != want {
+			t.Fatalf("onMicSet(%q) side effects = %q, want %q", verb, got, want)
+		}
+
+		failing := &traySpy{askErr: errors.New("daemon dead")}
+		failing.actions().onMicSet(verb)
+		if got := failing.order(); got != want {
+			t.Fatalf("onMicSet(%q) with a dead daemon = %q, want %q (the sweep must still fire)", verb, got, want)
+		}
 	}
 }
 
-// TestMutedClickRevalidates pins the action-time revalidation of the Muted
-// menu click. The menu item's enabled bit is only the last completed poll's
-// snapshot, so a daemon restart (tracker back to unknown) landing between
-// that poll and the user's click would otherwise fire onMicToggle's blind
-// F24 sweep at a daemon whose toggle defaults unknown to set-mute - the
-// mute-everything desync. The click must probe the daemon afresh and fire
-// only on a definitive answer, keeping onMicToggle's ordering contract
-// (toggle, then sweep, then refresh - no extra toggles).
-func TestMutedClickRevalidates(t *testing.T) {
-	// Definitive probe answer: the click fires the full mute-everything
-	// path exactly once.
-	spy := &traySpy{script: map[string]scriptOutcome{
+// TestMuteClickRevalidates pins the action-time premise re-check of the
+// dynamic Mute/Unmute item. The item's title and enabled bit are only the
+// last completed poll's snapshot, and a click fires the ABSOLUTE verb the
+// displayed label names - so before asking for anything, the click re-probes
+// the daemon and fires ONLY when the probe reproduces the snapshot's armed
+// premise (the state the label's verb targets). A definitive-OPPOSITE
+// probe means the label's target is already true (flipped premise), and an
+// unknown or dead-daemon probe means no premise at all: each declines with
+// exactly one WARN, no mic verb, no blind F24 sweep, and an immediate
+// refresh so the redrawn truthful verb does not wait for the next poll.
+func TestMuteClickRevalidates(t *testing.T) {
+	armedMute := trayMuteSnapshot{Title: "Mute", Armed: trayStateUnmuted}
+	armedUnmute := trayMuteSnapshot{Title: "Unmute", Armed: trayStateMuted}
+	load := func(snap trayMuteSnapshot) func() trayMuteSnapshot {
+		return func() trayMuteSnapshot { return snap }
+	}
+
+	// Premise reproduced: the click fires the label's absolute verb, then
+	// the sweep, then the refresh - the full mute-everything pair exactly
+	// once.
+	matchingMute := &traySpy{script: map[string]scriptOutcome{
+		"status": {reply: "unmuted"},
+		"mute":   {reply: "muted"},
+	}}
+	matchingMute.actions().muteClick(load(armedMute))
+	if got := matchingMute.order(); got != "ask:status,ask:mute,inject,refresh" {
+		t.Fatalf("muteClick armed Mute with a matching probe = %q, want %q", got, "ask:status,ask:mute,inject,refresh")
+	}
+
+	matchingUnmute := &traySpy{script: map[string]scriptOutcome{
 		"status": {reply: "muted"},
-		"toggle": {reply: "unmuted"},
+		"unmute": {reply: "unmuted"},
 	}}
-	spy.actions().mutedClick()
-	if got := spy.order(); got != "ask:status,ask:toggle,inject,refresh" {
-		t.Fatalf("mutedClick with a definitive probe = %q, want %q", got, "ask:status,ask:toggle,inject,refresh")
+	matchingUnmute.actions().muteClick(load(armedUnmute))
+	if got := matchingUnmute.order(); got != "ask:status,ask:unmute,inject,refresh" {
+		t.Fatalf("muteClick armed Unmute with a matching probe = %q, want %q", got, "ask:status,ask:unmute,inject,refresh")
 	}
 
-	// Unknown probe answer: decline with a WARN, no toggle, no sweep.
-	levels := &levelRecorder{}
-	unknown := &traySpy{script: map[string]scriptOutcome{
-		"status": {reply: "unknown"},
-	}}
-	a := unknown.actions()
-	a.logger = slog.New(levels)
-	a.mutedClick()
-	if got := unknown.order(); got != "ask:status" {
-		t.Fatalf("mutedClick with an unknown probe = %q, want %q (probe only, no toggle/sweep)", got, "ask:status")
+	// Declined clicks: probe + refresh only, plus exactly one WARN.
+	declines := []struct {
+		name    string
+		outcome scriptOutcome
+	}{
+		{"flipped premise (probe opposite of armed)", scriptOutcome{reply: "muted"}}, // armed unmuted, probe says already muted
+		{"unknown probe", scriptOutcome{reply: "unknown"}},
+		{"daemon down", scriptOutcome{err: fmt.Errorf("%w: %w", errNoReply, syscall.ECONNREFUSED)}},
 	}
-	if len(levels.levels) != 1 || levels.levels[0] != slog.LevelWarn {
-		t.Fatalf("levels = %v, want [WARN] (a declined definitive-check is not an error)", levels.levels)
+	for _, c := range declines {
+		levels := &levelRecorder{}
+		spy := &traySpy{script: map[string]scriptOutcome{"status": c.outcome}}
+		a := spy.actions()
+		a.logger = slog.New(levels)
+		a.muteClick(load(armedMute))
+		if got := spy.order(); got != "ask:status,refresh" {
+			t.Fatalf("muteClick with %s = %q, want %q (probe + refresh only: no verb, no sweep)", c.name, got, "ask:status,refresh")
+		}
+		if len(levels.levels) != 1 || levels.levels[0] != slog.LevelWarn {
+			t.Fatalf("muteClick with %s levels = %v, want [WARN] (a declined premise-check is not an error)", c.name, levels.levels)
+		}
 	}
+}
 
-	// Daemon down (its UDP port refused the datagram: nothing is
-	// listening): decline, again without touching the toggle or the sweep.
-	downLevels := &levelRecorder{}
-	down := &traySpy{script: map[string]scriptOutcome{
-		"status": {err: fmt.Errorf("%w: %w", errNoReply, syscall.ECONNREFUSED)},
-	}}
-	a = down.actions()
-	a.logger = slog.New(downLevels)
-	a.mutedClick()
-	if got := down.order(); got != "ask:status" {
-		t.Fatalf("mutedClick with the daemon down = %q, want %q (probe attempt only)", got, "ask:status")
+// TestMuteClickLoadsSnapshotOnce pins the F7 contract: the click loads the
+// {title, armed} snapshot EXACTLY ONCE - the displayed verb and the premise
+// the click re-checks are a single read, never a mixture of a fresh title
+// with a stale premise.
+func TestMuteClickLoadsSnapshotOnce(t *testing.T) {
+	loads := 0
+	load := func() trayMuteSnapshot {
+		loads++
+		return trayMuteSnapshot{Title: "Mute", Armed: trayStateUnmuted}
 	}
-	if len(downLevels.levels) != 1 || downLevels.levels[0] != slog.LevelWarn {
-		t.Fatalf("levels = %v, want [WARN]", downLevels.levels)
+	spy := &traySpy{script: map[string]scriptOutcome{
+		"status": {reply: "unmuted"},
+		"mute":   {reply: "muted"},
+	}}
+	spy.actions().muteClick(load)
+	if got := spy.order(); got != "ask:status,ask:mute,inject,refresh" {
+		t.Fatalf("muteClick with a matching probe = %q, want %q", got, "ask:status,ask:mute,inject,refresh")
+	}
+	if loads != 1 {
+		t.Fatalf("snapshot loads per click = %d, want exactly 1", loads)
 	}
 }
 
@@ -411,9 +462,9 @@ func TestLogSeverityClassifiesFailures(t *testing.T) {
 		signalRefresh: func() {},
 		logger:        slog.New(levels),
 	}
-	a.onMicToggle()
+	a.onMicSet("mute")
 	a.onLight("light toggle")
 	if len(levels.levels) != 2 || levels.levels[0] != slog.LevelError || levels.levels[1] != slog.LevelError {
-		t.Fatalf("levels = %v, want [ERROR ERROR] (toggle error + per-line fleet error)", levels.levels)
+		t.Fatalf("levels = %v, want [ERROR ERROR] (mute error + per-line fleet error)", levels.levels)
 	}
 }

@@ -22,9 +22,13 @@ action, and `mutastic light ...` commands. The active mute paths remain:
    by sweeping every running meeting app.
 2. **Stream Deck Mutastic Mute key** — the OpenDeck plugin toggles the Yeti X
    through the daemon and injects the same `F24` app sweep.
-3. **Tray icon Muted menu** — the tray's Muted action runs the same
-   mute-everything pair through the daemon, and only after re-checking that
-   the mic state is definitive (it declines rather than guess at `unknown`).
+3. **Tray icon Mute/Unmute menu** — the tray's dynamic mic action always
+   displays the exact verb its click performs (**Mute** while live,
+   **Unmute** while muted), sends that absolute verb through the daemon
+   with the same `F24` meeting-app sweep, and only after re-checking that
+   the premise the label names still holds (it declines — no mic verb, no
+   sweep, immediate redraw — at `unknown` state or when the mic flipped
+   since the last poll).
 
 Pressing the **mute button on the Yeti X itself** keeps the meeting apps
 in sync: the daemon sees the mic's `0x21` DeviceMute event (emitted only for
@@ -81,12 +85,14 @@ hardware state. The active paths are loop-free:
   is strictly serial and a wedged light call occupies ~2 s, so a thinner
   mic-specific budget would flap the card to "unreachable" mid
   light-operation and could misreport mutes the daemon still dequeued and
-  executed. Panel mic actions move the mic ONLY — no F24 meeting-app
-  sweep; the sweeping paths are the physical Yeti X mute button, the tray
-  mute item, and the Stream Deck mute key. App-sync therefore relies on
-  every sweeping path keeping apps and mic in sync; if they ever desync,
-  the recovery is the one the AHK file documents for the CLI/physical
-  paths: toggle the apps once manually, then they stay in sync. The
+  executed. Exactly three mic-moving paths run the `F24` meeting-app
+  sweep — the physical Yeti X mute button, the Stream Deck mute key, and
+  the tray Mute/Unmute item; the CLI verbs (`toggle|mute|unmute`) and
+  this panel's mic card do NOT (they move the mic only). App-sync
+  therefore relies on every sweeping path keeping apps and mic in sync; if
+  they ever desync, the recovery is the one the AHK file documents for the
+  CLI/physical paths: toggle the apps once manually, then they stay in
+  sync. The
   **Saved settings** card lists the daemon's named light snapshots and
   saves the current look under a chosen name: Save snapshots every
   known-state light, Apply restores one name, Delete removes it — the same
@@ -108,12 +114,16 @@ hardware state. The active paths are loop-free:
   neutral gray unknown icon, and an unknown or unreachable daemon keeps the
   last definitive icon — it never repaints a muted mic as live, the same
   keep-last-icon convention as the Stream Deck plugin). Left-click
-  opens/focuses the light panel; right-click shows the menu: a synced
-  **Muted** check item (mute-everything — mic toggle plus the F24
-  meeting-app sweep, the same in-process flow as the Stream Deck mute key;
-  both halves are attempted on every click and any failure is logged),
+  opens/focuses the light panel; right-click shows the menu: a dynamic
+  **Mute**/**Unmute** action item (mute-everything — the absolute verb the
+  label displays plus the F24 meeting-app sweep, the same in-process flow
+  as the Stream Deck mute key; the label always names the exact action a
+  click performs, the click re-checks the premise the label names before
+  firing and declines — one WARN, no verb, no sweep, immediate redraw —
+  when the mic state is unknown or no longer matches it; both halves are
+  attempted on every fired click and any failure is logged),
   **Toggle lights**, **Brightness** (applied in click order),
-  **Light preset**, **Light panel…**, and **Quit** — Quit stops everything
+  **Light preset**, **Panel…**, and **Quit** — Quit stops everything
   mutastic runs in one click: it sends the daemon's `shutdown` command,
   posts the light-panel server's `/api/shutdown`, and exits the tray.
   If a live daemon or panel *refuses* to stop, Quit logs the failure and
@@ -121,8 +131,9 @@ hardware state. The active paths are loop-free:
   refuses connections counts as already stopped; a hang or silence keeps
   the tray up so nothing live gets silently left behind.) With the
   daemon unreachable the action items gray out — and while the mic state
-  is *unknown* the **Muted** item stays gray (the tray never guesses the
-  mic state; establishing it takes one physical press or one CLI command).
+  is *unknown* the mic item reads the neutral **Mute/Unmute** and stays
+  gray (the tray never guesses the mic state; establishing it takes one
+  physical press or one CLI command).
   Only one tray instance runs
   (loopback TCP 42816 is the single-instance lock, the same trick as the
   daemon's UDP bind). The tray logs JSONL with levels to

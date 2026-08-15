@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/energye/systray"
@@ -36,8 +37,8 @@ const (
 	// loaded HICONs by the icon's content-hash temp path (verified: its
 	// loadIconFrom reuses handles), so reapplying one of our three assets
 	// costs nothing extra - the heartbeat exists purely to re-drive
-	// NIM_MODIFY after a transient failure. Tooltip, header, checkbox, and
-	// enabled states carry no handle cost and converge every tick.
+	// NIM_MODIFY after a transient failure. Tooltip, header, menu titles,
+	// and enabled states carry no handle cost and converge every tick.
 	trayIconReapplyEvery = 300
 )
 
@@ -105,7 +106,19 @@ func trayOnReady(logger *slog.Logger) {
 	header.Disable()
 	systray.AddSeparator()
 
-	muted := systray.AddMenuItemCheckbox("Muted", "mute-everything: mic toggle + F24 meeting-app sweep (same flow as the Stream Deck mute key)", false)
+	// The mic item is an ACTION item (never checkable) that always displays
+	// the verb its click performs: "Mute" when live, "Unmute" when muted,
+	// the neutral "Mute/Unmute" while indefinite. Its displayed title and
+	// the click's armed premise are ONE atomic snapshot (F7): the refresh
+	// loop stores the whole pair once per tick and draws the item's title
+	// and enabled bit from the stored value; the click handler loads it
+	// back exactly once. The initial neutral snapshot matches the item's
+	// startup title + disabled state, so a click before the first tick
+	// reads a premise that cannot fire.
+	var muteSnap atomic.Value
+	muteSnap.Store(trayMuteSnapshot{Title: trayMuteTitle(trayStateUnknown), Armed: trayStateUnknown})
+	loadMuteSnap := func() trayMuteSnapshot { return muteSnap.Load().(trayMuteSnapshot) }
+	mic := systray.AddMenuItem(trayMuteTitle(trayStateUnknown), "mute-everything: the displayed mic verb + F24 meeting-app sweep (same flow as the Stream Deck mute key)")
 	systray.AddSeparator()
 
 	lights := systray.AddMenuItem("Toggle lights", "if any light is on, turn all off; otherwise turn all on")
@@ -113,15 +126,15 @@ func trayOnReady(logger *slog.Logger) {
 	preset := systray.AddMenuItem("Light preset", "apply a preset on all lights")
 
 	// Action items start disabled; the refresh loop arms them (the light
-	// actions on the first reachable poll, the Muted item on the first
-	// DEFINITIVE mic answer, per trayMicEnabled) - so no click can fire in
+	// actions on the first reachable poll, the mic item on the first
+	// DEFINITIVE mic answer, per trayMuteEnabled) - so no click can fire in
 	// the startup window.
-	for _, it := range []*systray.MenuItem{muted, lights, brightness, preset} {
+	for _, it := range []*systray.MenuItem{mic, lights, brightness, preset} {
 		it.Disable()
 	}
 
 	systray.AddSeparator()
-	panel := systray.AddMenuItem("Light panel…", "open the full light controller in the browser")
+	panel := systray.AddMenuItem("Panel…", "open the full light controller in the browser")
 	quit := systray.AddMenuItem("Quit", "stop everything mutastic runs (daemon, light panel) and exit")
 
 	// All tray-visible state is refreshed by one goroutine fed by refreshCh:
@@ -183,7 +196,7 @@ func trayOnReady(logger *slog.Logger) {
 		}
 	})
 
-	muted.Click(func() { go actions.mutedClick() })
+	mic.Click(func() { go actions.muteClick(loadMuteSnap) })
 	lightCmd := func(command string) func() {
 		return func() { lightCmdCh <- command }
 	}
@@ -197,7 +210,7 @@ func trayOnReady(logger *slog.Logger) {
 	panel.Click(func() { go actions.onOpenPanel() })
 	quit.Click(func() { go actions.onQuit() })
 
-	go trayRefreshLoop(logger, refreshCh, header, muted, lights, brightness, preset)
+	go trayRefreshLoop(logger, refreshCh, header, mic, lights, brightness, preset, &muteSnap)
 	go func() {
 		for range time.Tick(trayPollEvery) {
 			signalRefresh()
@@ -209,14 +222,14 @@ func trayOnReady(logger *slog.Logger) {
 
 // trayRefreshLoop owns all tray-visible state. Each signal triggers one
 // daemon status round trip; every display decision comes from the pure
-// traystate.go mapping. Convergence is intentional: tooltip, header,
-// checkbox, and enabled states carry no handle cost and are re-asserted on
+// traystate.go mapping. Convergence is intentional: tooltip, header, menu
+// titles, and enabled states carry no handle cost and are re-asserted on
 // every signal, so a transient failure heals on the next tick - the
 // transition gate only decides logging and icon reapplies (SetIcon leaks a
 // GDI handle per call; see trayIconReapplyEvery). The icon switches only
 // on definitive answers (trayIconFor): unknown or unreachable keeps the
 // last icon.
-func trayRefreshLoop(logger *slog.Logger, refreshCh <-chan struct{}, header, muted, lights, brightness, preset *systray.MenuItem) {
+func trayRefreshLoop(logger *slog.Logger, refreshCh <-chan struct{}, header, mic, lights, brightness, preset *systray.MenuItem, muteSnap *atomic.Value) {
 	first := true
 	last := trayStateUnknown
 	tick := 0
@@ -249,13 +262,21 @@ func trayRefreshLoop(logger *slog.Logger, refreshCh <-chan struct{}, header, mut
 		}
 		systray.SetTooltip(trayTitle(state))
 		header.SetTitle(trayTitle(state))
-		if trayMutedChecked(state) {
-			muted.Check()
+		// The mic item's displayed verb and the click's armed premise are
+		// ONE atomic pair: compute the snapshot once per tick, store it
+		// before any visible mutation, and draw BOTH the title and the
+		// enabled bit from the stored value - so what the user reads and
+		// what a click re-checks can never be a mixture of ticks (F7).
+		snap := trayMuteSnapshot{Title: trayMuteTitle(state), Armed: state}
+		muteSnap.Store(snap)
+		mic.SetTitle(snap.Title)
+		if trayMuteEnabled(snap.Armed) {
+			mic.Enable()
 		} else {
-			muted.Uncheck()
+			mic.Disable()
 		}
 		// Mic vs. lights get different gates: the mic acts only on definitive
-		// answers (see trayMicEnabled), light actions only need a reachable
+		// answers (see trayMuteEnabled), light actions only need a reachable
 		// daemon (unknown is a mic-state concept).
 		for _, it := range []*systray.MenuItem{lights, brightness, preset} {
 			if trayActionsEnabled(state) {
@@ -263,11 +284,6 @@ func trayRefreshLoop(logger *slog.Logger, refreshCh <-chan struct{}, header, mut
 			} else {
 				it.Disable()
 			}
-		}
-		if trayMicEnabled(state) {
-			muted.Enable()
-		} else {
-			muted.Disable()
 		}
 	}
 }

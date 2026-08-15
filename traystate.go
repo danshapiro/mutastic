@@ -59,26 +59,38 @@ func trayTitle(s trayState) string {
 	}
 }
 
-// trayMutedChecked reports the Muted menu item's check state.
-func trayMutedChecked(s trayState) bool { return s == trayStateMuted }
+// trayMuteTitle is the mic action item's displayed verb per state - the
+// click performs exactly the displayed action, so the label is always the
+// OPPOSITE of the last definitive mic state. Unknown-or-down reads the
+// neutral "Mute/Unmute": a disabled item still displays its last-set
+// title, and the neutral text keeps a stale directional verb off the
+// screen.
+func trayMuteTitle(s trayState) string {
+	switch s {
+	case trayStateMuted:
+		return "Unmute"
+	case trayStateUnmuted:
+		return "Mute"
+	default:
+		return "Mute/Unmute"
+	}
+}
 
 // trayActionsEnabled reports whether the light menu actions are usable;
 // they are daemon round trips, so a dead daemon disables them (the
 // Light panel and Quit items stay enabled: the panel is served by the
-// separate `mutastic ui` process, and Quit must always work). The Muted
-// action is gated separately by trayMicEnabled: reachability alone does
-// not make a mic click safe.
+// separate `mutastic ui` process, and Quit must always work). The
+// Mute/Unmute action is gated separately by trayMuteEnabled: reachability
+// alone does not make a mic click safe.
 func trayActionsEnabled(s trayState) bool { return s != trayStateDown }
 
-// trayMicEnabled reports whether the Muted action may fire at all. The
-// daemon's toggle defaults an unknown mic state to MUTE (a set, not a
-// hardware toggle), and the tray's mute-everything path pairs it with a
-// blind F24 sweep of the meeting apps - so at unknown state the click can
-// leave the mic muted while un-muting already-muted apps. Only definitive
-// daemon answers arm the mic; unknown and down both gate it out.
-// The click path (mutedClick) re-checks at action time; the menu bit
-// alone is only a freshness-bounded hint.
-func trayMicEnabled(s trayState) bool { return s == trayStateMuted || s == trayStateUnmuted }
+// trayMuteEnabled arms the dynamic Mute/Unmute action item. The click fires
+// the ABSOLUTE verb the label names after re-checking the premise; only
+// definitive daemon answers give it a premise (and a direction), so unknown
+// and down both gate the item out. Light actions stay gated separately by
+// trayActionsEnabled: unknown is a mic-state concept, not a reachability
+// one.
+func trayMuteEnabled(s trayState) bool { return s == trayStateMuted || s == trayStateUnmuted }
 
 // trayIcon is an icon decision for one display state. trayIconKeep leaves
 // the current icon untouched: when the daemon's answer is "unknown" or the
@@ -166,43 +178,74 @@ func udpNoListener(err error) bool { return anyErrno(err, udpNoListenerErrnos) }
 // tcpNoListener reports whether an error proves no light panel is listening.
 func tcpNoListener(err error) bool { return anyErrno(err, tcpNoListenerErrnos) }
 
-// onMicToggle is the tray's mute-everything path, mirroring the Stream Deck
-// mute key (README): a hardware toggle to the daemon AND one F24 meeting-app
-// sweep, both attempted even when the other fails. (The daemon injects F24
-// only for physical button presses, so a toggle-only tray would mute the mic
-// while leaving meeting apps live.) The Windows glue arms this click only at
-// definitive mic states (trayMicEnabled): at an unknown state the daemon's
-// toggle DEFAULTS to mute - a set, not a hardware toggle - while the sweep
-// blindly toggles the apps, so the pair can desync an already-muted setup.
-// Loop-free for the documented reasons: the AHK sweep never calls toggle,
-// and the mic's host-command echo (0x20) is ignored by the daemon's
+// trayMuteSnapshot is the mic item's displayed title and the click's armed
+// premise (the state that title's verb targets) as ONE atomic unit: the
+// refresh loop stores the whole pair once per tick and the click handler
+// loads it back exactly once, so the two can never diverge (separate
+// writes would allow a fresh title to meet a stale premise).
+type trayMuteSnapshot struct {
+	Title string
+	Armed trayState
+}
+
+// onMicSet is the tray's mute-everything path for one ABSOLUTE direction,
+// mirroring the Stream Deck mute key (README): the daemon verb AND one F24
+// meeting-app sweep, both attempted even when the other fails, then a
+// refresh. (The daemon injects F24 only for physical button presses, so a
+// verb-only tray item would move the mic while leaving meeting apps live.)
+// Loop-free for the documented reasons: the AHK sweep never calls a mic
+// verb, and the mic's host-command echo (0x20) is ignored by the daemon's
 // injector gate.
-func (a *trayActions) onMicToggle() {
-	reply, askErr := a.ask("toggle")
+func (a *trayActions) onMicSet(verb string) {
+	reply, askErr := a.ask(verb)
 	sweepErr := a.injectSweep()
 	if askErr != nil || sweepErr != nil || strings.HasPrefix(reply, "error:") {
-		a.logger.Error("mic toggle failed", "daemon_reply", reply, "ask_err", errString(askErr), "sweep_err", errString(sweepErr))
+		a.logger.Error("mic set failed", "verb", verb, "daemon_reply", reply, "ask_err", errString(askErr), "sweep_err", errString(sweepErr))
 	} else {
-		a.logger.Info("mic toggle", "daemon_reply", reply)
+		a.logger.Info("mic set", "verb", verb, "daemon_reply", reply)
 	}
 	// The daemon applied its state change before replying; on failure the
 	// refresh restores the truthful display within one poll.
 	a.signalRefresh()
 }
 
-// mutedClick is the Muted menu's click entry point. It revalidates the mic
-// state AT ACTION TIME: the menu's enabled bit is only the last completed
-// poll's snapshot, so a daemon restart landing between poll and click would
-// otherwise fire the blind F24 sweep at a daemon whose tracker fell back to
-// unknown (which toggle defaults to set-mute - desyncing the apps if they
-// had been muted with the mic). Only a definitive answer fires the pair.
-func (a *trayActions) mutedClick() {
-	state := trayStateFor(a.ask("status"))
-	if !trayMicEnabled(state) {
-		a.logger.Warn("muted click declined: mic state not definitive", "state", trayTitle(state))
+// muteClick is the dynamic Mute/Unmute item's click entry point: the click
+// performs exactly the action the displayed label names. It loads the
+// {title, armed} snapshot EXACTLY ONCE (one read of what the user saw: the
+// menu's title and enabled bit are only the last completed poll's
+// rendering), then revalidates the premise AT ACTION TIME with a fresh
+// status probe. Only when the probe reproduces the snapshot's armed state
+// (and that state is definitive) does the click fire the label's absolute
+// verb - armed unmuted ("Mute") fires "mute", armed muted ("Unmute") fires
+// "unmute" - followed by the sweep and a refresh.
+//
+// Everything else DECLINES: a definitive-but-opposite probe (the mic
+// flipped between the last poll and the click), an unknown probe, and a
+// dead daemon all produce one WARN, NO mic verb, NO sweep, and a refresh so
+// the redrawn truthful verb does not wait for the next 2 s poll. Declining
+// is the correct convergence, not a breach of "click performs the displayed
+// action": when the premise has flipped, the label's TARGET state is
+// already true (a "Mute" label targets muted; a muted probe means the
+// click's job is done), and the F24 sweep is a blind per-app toggle that
+// must never fire without the matching mic move. The native menu title can
+// go cosmetically stale between polls, but that staleness can never cause
+// a wrong action BECAUSE this probe gates every firing - this is a
+// documented rendering limitation, not a behavioral residual. Desync
+// recovery for the apps stays the documented manual procedure (toggle them
+// once by hand, then every sweeping path keeps them in sync).
+func (a *trayActions) muteClick(load func() trayMuteSnapshot) {
+	snap := load()
+	probe := trayStateFor(a.ask("status"))
+	if !trayMuteEnabled(probe) || probe != snap.Armed {
+		a.logger.Warn("mute click declined: mic state no longer matches the menu premise", "armed", trayTitle(snap.Armed), "probe", trayTitle(probe))
+		a.signalRefresh()
 		return
 	}
-	a.onMicToggle()
+	verb := "mute"
+	if snap.Armed == trayStateMuted {
+		verb = "unmute"
+	}
+	a.onMicSet(verb)
 }
 
 // onOpenPanel brings up the light-panel UI (the icon's left-click action);
