@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -264,5 +265,43 @@ func TestTrayOpenPanelBringsUpUI(t *testing.T) {
 	spy.actions().onOpenPanel()
 	if got := spy.order(); got != "panel" {
 		t.Fatalf("onOpenPanel side effects = %q, want %q", got, "panel")
+	}
+}
+
+// levelRecorder captures slog levels for handler tests.
+type levelRecorder struct {
+	levels []slog.Level
+}
+
+func (r *levelRecorder) Enabled(context.Context, slog.Level) bool { return true }
+func (r *levelRecorder) Handle(_ context.Context, rec slog.Record) error {
+	r.levels = append(r.levels, rec.Level)
+	return nil
+}
+func (r *levelRecorder) WithAttrs([]slog.Attr) slog.Handler { return r }
+func (r *levelRecorder) WithGroup(string) slog.Handler      { return r }
+
+// TestLogSeverityClassifiesFailures pins ERROR for failed daemon actions —
+// including the per-line fleet shape the old prefix check missed.
+func TestLogSeverityClassifiesFailures(t *testing.T) {
+	levels := &levelRecorder{}
+	a := &trayActions{
+		ask: func(cmd string) (string, error) {
+			if cmd == "light toggle" {
+				return "COM4 desk: on 30% 2900K\nCOM7: error: timeout", nil
+			}
+			return "", errors.New("x")
+		},
+		openPanel:     func() error { return nil },
+		injectSweep:   func() error { return nil },
+		stopPanel:     func() error { return nil },
+		requestQuit:   func() {},
+		signalRefresh: func() {},
+		logger:        slog.New(levels),
+	}
+	a.onMicToggle()
+	a.onLight("light toggle")
+	if len(levels.levels) != 2 || levels.levels[0] != slog.LevelError || levels.levels[1] != slog.LevelError {
+		t.Fatalf("levels = %v, want [ERROR ERROR] (toggle error + per-line fleet error)", levels.levels)
 	}
 }

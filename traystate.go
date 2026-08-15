@@ -150,10 +150,13 @@ func (a *trayActions) onOpenPanel() {
 // so a wedged or unreachable light is visible in tray.log instead of
 // failing silently. Ordering across rapid menu clicks is the caller's
 // concern (the Windows glue serializes these through one channel whose
-// sends happen on the click handlers' thread).
+// sends happen on the click handlers' thread). Multi-light fleet replies
+// are per-line ("COM4: on 30% 2900K\nCOM7: error: timeout"), so a
+// per-line "error:" ANYWHERE in the reply - not just at the start - is a
+// failure worth an ERROR line.
 func (a *trayActions) onLight(command string) {
 	reply, err := a.ask(command)
-	if err != nil || strings.HasPrefix(reply, "error:") {
+	if err != nil || strings.Contains(reply, "error:") {
 		a.logger.Error("light command failed", "cmd", command, "reply", reply, "err", errString(err))
 	} else {
 		a.logger.Info("light command", "cmd", command, "reply", reply)
