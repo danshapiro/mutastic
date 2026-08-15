@@ -120,6 +120,8 @@ type uiServer struct {
 	// shutdown gracefully stops the owning http.Server after the reply
 	// flushes; runUI wires it. Nil: /api/shutdown answers 503.
 	shutdown func()
+	// shutdownOnce makes repeated /api/shutdown requests safe: only the first spawns the drain goroutine (closing drainDone twice would panic).
+	shutdownOnce sync.Once
 }
 
 func newUIServer(port int, dispatcher *daemonDispatcher) *uiServer {
@@ -207,7 +209,7 @@ func (s *uiServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeUIJSON(w, http.StatusOK, struct {
 			OK bool `json:"ok"`
 		}{OK: true})
-		s.shutdown()
+		s.shutdownOnce.Do(s.shutdown)
 	default:
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			writeUIJSON(w, http.StatusNotFound, uiResponse{Error: "not found"})

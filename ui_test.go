@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -750,6 +751,27 @@ func TestUIShutdownEndpointGuards(t *testing.T) {
 	unwired.ServeHTTP(rec, unwiredReq)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("POST /api/shutdown unwired = %d, want 503", rec.Code)
+	}
+}
+
+// TestUIShutdownEndpointIsIdempotent: overlapping shutdown requests are all
+// answered, but the drain goroutine spawns exactly once (a second close of
+// the shared drain channel would panic).
+func TestUIShutdownEndpointIsIdempotent(t *testing.T) {
+	server := newUIServer(42815, nil)
+	var calls atomic.Int32
+	server.shutdown = func() { calls.Add(1) }
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/shutdown", nil)
+		req.Host = "127.0.0.1:42815"
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("request %d status = %d, want 200", i+1, rec.Code)
+		}
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("shutdown hook fired %d times, want exactly 1", got)
 	}
 }
 
