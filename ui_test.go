@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -1475,8 +1476,8 @@ func TestEmbeddedLightUIHasSavedSettingsSection(t *testing.T) {
 			t.Fatalf("embedded UI is missing saved-settings queue fragment %q", fragment)
 		}
 	}
-	if strings.Contains(source, `fetch("/api/settings", {method: "POST"`) {
-		t.Fatal("settings mutations must go through the mutation queue, never a direct fetch POST")
+	if directPost := regexp.MustCompile(`fetch\(\s*"/api/settings"\s*,\s*\{\s*method:\s*"POST"`).FindStringSubmatch(source); directPost != nil {
+		t.Fatalf("settings mutations must go through the mutation queue, never a direct fetch POST (matched %q)", directPost[0])
 	}
 	gangControls := strings.Index(source, `id="all-lights-title"`)
 	settings := strings.Index(source, `id="settings-title"`)
@@ -1509,6 +1510,30 @@ assert.equal(listHTML.includes('data-apply="alpha"'), true, "the alpha row must 
 assert.equal(listHTML.includes('data-apply="beta"'), true, "the beta row must render with its name round-tripped into data-apply");
 assert.equal(listHTML.includes('data-delete="alpha"'), true, "the alpha row must render a Delete button with data-delete");
 assert.equal(listHTML.indexOf("alpha") < listHTML.indexOf("beta"), true, "rows must render in the daemon's name order");
+
+// An unchanged names array must NOT rewrite the list's innerHTML (each
+// rewrite detaches the row buttons and any focus inside the card).
+const settingsList = document.getElementById("settings-list");
+let innerHTMLWrites = 0;
+let innerHTMLBacking = settingsList.innerHTML;
+Object.defineProperty(settingsList, "innerHTML", {
+	get() { return innerHTMLBacking; },
+	set(value) { innerHTMLWrites += 1; innerHTMLBacking = String(value); },
+});
+intervalCallback();
+await flush();
+assert.equal(innerHTMLWrites, 0, "a second refresh with identical names must not touch the list's innerHTML a second time");
+
+stubFetchScript({
+	"/api/lights": {status: 200, body: {lights: []}},
+	"/api/mic": {status: 200, body: {state: "unmuted"}},
+	"/api/settings": {status: 200, body: {names: ["alpha", "beta", "gamma"]}},
+	"POST /api/settings": {status: 200, body: {names: ["alpha", "beta"]}},
+});
+intervalCallback();
+await flush();
+assert.equal(innerHTMLWrites, 1, "a changed names array must rewrite the list's innerHTML exactly once");
+assert.equal(settingsList.innerHTML.includes('data-apply="gamma"'), true, "the new row must render after a names change");
 
 fetchCalls.length = 0;
 settingsApplyAlpha.click();
@@ -1548,6 +1573,82 @@ assert.deepEqual(
 	[{url: "/api/settings", body: {action: "save", name: "movie mode"}}],
 	"Save with a real name must enqueue exactly one save mutation with the name verbatim",
 );
+`)
+}
+
+// TestEmbeddedLightUISettingsSpecialNameRoundTripNodeDOMStub EXECUTES the
+// embedded page script under Node against the shared hand-rolled DOM stub and
+// pins the special-character name round trip: a name containing quotes,
+// spaces, ampersand and angle brackets (all legal per the daemon's name
+// rules) renders entity-escaped in the row label AND in both data-*
+// payloads; the browser's attribute->dataset entity decode (simulated
+// stub-side) returns the payload to the verbatim name; and a click on the
+// row's Apply/Delete enqueues that verbatim name. It also pins the empty
+// state's transitions across an in-band daemon error while the names array
+// itself is unchanged.
+func TestEmbeddedLightUISettingsSpecialNameRoundTripNodeDOMStub(t *testing.T) {
+	runPageScriptWithDOMStub(t, `
+const specialName = 'a "b" & <c> \'d\'';
+stubFetchScript({
+	"/api/lights": {status: 200, body: {lights: []}},
+	"/api/mic": {status: 200, body: {state: "unmuted"}},
+	"/api/settings": {status: 200, body: {names: [specialName]}},
+	"POST /api/settings": {status: 200, body: {names: [specialName]}},
+});
+const specialApply = makeElement("settings-apply-special");
+const specialDelete = makeElement("settings-delete-special");
+stubRegister("[data-apply]", [specialApply]);
+stubRegister("[data-delete]", [specialDelete]);
+intervalCallback();
+await flush();
+
+const markup = document.getElementById("settings-list").innerHTML;
+const escaped = "a &quot;b&quot; &amp; &lt;c&gt; &#39;d&#39;";
+assert.equal(markup.includes('<span class="setting-name">' + escaped + "</span>"), true, "the row label must render the entity-escaped name");
+assert.equal(markup.includes('data-apply="' + escaped + '"'), true, "the Apply button's data-apply must carry the entity-escaped name");
+assert.equal(markup.includes('data-delete="' + escaped + '"'), true, "the Delete button's data-delete must carry the entity-escaped name");
+assert.equal(markup.includes(specialName), false, "raw markup must never contain the unescaped name");
+
+// The browser entity-DECODES data-* attribute values into dataset; run that
+// decode stub-side and require the payload to round-trip to the verbatim name.
+const attribute = markup.match(/data-apply="([^"]*)"/);
+assert.ok(attribute, "the rendered row must contain a data-apply attribute");
+const decoded = attribute[1].replace(/&(quot|amp|lt|gt|#39);/g, (entity, code) => ({quot: '"', amp: "&", lt: "<", gt: ">", "#39": "'"}[code]));
+assert.equal(decoded, specialName, "the attribute decode must round-trip the payload back to the verbatim saved name");
+
+fetchCalls.length = 0;
+specialApply.dataset.apply = decoded;
+specialDelete.dataset.delete = decoded;
+specialApply.click();
+specialDelete.click();
+await flush();
+assert.deepEqual(
+	fetchCalls.filter((call) => call.options.method === "POST").map((call) => ({url: call.url, body: JSON.parse(call.options.body)})),
+	[
+		{url: "/api/settings", body: {action: "apply", name: specialName}},
+		{url: "/api/settings", body: {action: "delete", name: specialName}},
+	],
+	"Apply/Delete on a special-character row must enqueue the verbatim entity-decoded name through the queue, and nothing else",
+);
+
+// Empty-state transitions with an UNCHANGED names array: the empty element
+// must still track the in-band daemon error line (store-disabled regime).
+stubFetchScript({
+	"/api/lights": {status: 200, body: {lights: []}},
+	"/api/mic": {status: 200, body: {state: "unmuted"}},
+	"/api/settings": {status: 200, body: {names: [], error: "error: saved settings are disabled"}},
+});
+intervalCallback();
+await flush();
+assert.equal(document.getElementById("settings-empty").hidden, true, "an in-band daemon error must keep the empty state hidden");
+stubFetchScript({
+	"/api/lights": {status: 200, body: {lights: []}},
+	"/api/mic": {status: 200, body: {state: "unmuted"}},
+	"/api/settings": {status: 200, body: {names: []}},
+});
+intervalCallback();
+await flush();
+assert.equal(document.getElementById("settings-empty").hidden, false, "the empty state must reappear when the error clears even though the names array did not change");
 `)
 }
 

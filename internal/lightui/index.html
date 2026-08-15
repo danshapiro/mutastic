@@ -301,6 +301,7 @@
       const state = {
         lights: [],
         cardSignature: null,
+        settingsSignature: null,
         active: new Set(),
         timers: new Map(),
         polling: false
@@ -517,6 +518,9 @@
             // and the shared 750 ms poll recovers it.)
             renderSettings(result.names);
           }
+          // F6 (200 with a failed follow-up refresh): surface the cause in
+          // the card's status line so the POST itself is not silent.
+          if (result && result.error) $("settings-line").textContent = String(result.error);
           const action = mutation && mutation.body ? mutation.body.action : "";
           if (action === "save") {
             $("settings-name").value = "";
@@ -600,12 +604,20 @@
       }
 
       function renderSettings(names) {
-        $("settings-list").innerHTML = names.map((name) => {
-          const escaped = escapeHTML(name);
-          return `<li class="setting-row"><span class="setting-name">${escaped}</span><button type="button" data-apply="${escaped}">Apply</button><button class="button-quiet" type="button" data-delete="${escaped}">Delete</button></li>`;
-        }).join("");
+        const signature = names.join("\n");
+        if (signature !== state.settingsSignature) {
+          // Rebuilding the rows detaches their buttons and any focus inside
+          // the card, so skip the rewrite when the list has not changed.
+          $("settings-list").innerHTML = names.map((name) => {
+            const escaped = escapeHTML(name);
+            return `<li class="setting-row"><span class="setting-name">${escaped}</span><button type="button" data-apply="${escaped}">Apply</button><button class="button-quiet" type="button" data-delete="${escaped}">Delete</button></li>`;
+          }).join("");
+          state.settingsSignature = signature;
+          bindSettingsControls();
+        }
+        // The empty state also answers to refreshSettings' in-band error
+        // line, so it toggles on EVERY render, not only on a names change.
         $("settings-empty").hidden = names.length !== 0;
-        bindSettingsControls();
       }
 
       async function refreshSettings() {
@@ -634,9 +646,10 @@
             submitSettingsSave();
           });
         }
-        // Rows are re-created by every renderSettings, so each render
-        // re-binds; the settingsBound flag keeps already-bound elements
-        // from accumulating duplicate listeners.
+        // Rows persist between renders (renderSettings rewrites them only on
+        // a names change), so binding happens once per element; the
+        // settingsBound flag keeps already-bound elements from accumulating
+        // duplicate listeners across re-renders.
         document.querySelectorAll("[data-apply]").forEach((button) => {
           if (button.dataset.settingsBound) return;
           button.dataset.settingsBound = "true";
