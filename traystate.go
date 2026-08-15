@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -127,7 +128,11 @@ func newTrayJSONLogger(w io.Writer) *slog.Logger {
 func (a *trayActions) onMicToggle() {
 	reply, askErr := a.ask("toggle")
 	sweepErr := a.injectSweep()
-	a.logger.Info("mic toggle", "daemon_reply", reply, "ask_err", errString(askErr), "sweep_err", errString(sweepErr))
+	if askErr != nil || sweepErr != nil || strings.HasPrefix(reply, "error:") {
+		a.logger.Error("mic toggle failed", "daemon_reply", reply, "ask_err", errString(askErr), "sweep_err", errString(sweepErr))
+	} else {
+		a.logger.Info("mic toggle", "daemon_reply", reply)
+	}
 	// The daemon applied its state change before replying; on failure the
 	// refresh restores the truthful display within one poll.
 	a.signalRefresh()
@@ -148,24 +153,42 @@ func (a *trayActions) onOpenPanel() {
 // sends happen on the click handlers' thread).
 func (a *trayActions) onLight(command string) {
 	reply, err := a.ask(command)
-	a.logger.Info("light command", "cmd", command, "reply", reply, "err", errString(err))
+	if err != nil || strings.HasPrefix(reply, "error:") {
+		a.logger.Error("light command failed", "cmd", command, "reply", reply, "err", errString(err))
+	} else {
+		a.logger.Info("light command", "cmd", command, "reply", reply)
+	}
 }
 
-// onQuit stops everything mutastic runs - the daemon, the light-panel
-// server, and finally the tray itself. Every stop is best-effort: a dead
-// daemon or missing panel must never strand the tray or skip the other
-// stop.
+// onQuit stops everything mutastic runs and exits the tray ONLY when each
+// stop is confirmed or already absent (a daemon or panel that cannot be
+// reached at all already satisfies the goal state; a live one that REFUSES
+// is a failure). On failure the tray stays: the display refreshes and the
+// next Quit retries. Quietly exiting while leaving live mutastic processes
+// behind would break the one-click-stops-everything contract.
 func (a *trayActions) onQuit() {
+	daemonOK := true
 	reply, err := a.ask("shutdown")
-	if err != nil {
-		a.logger.Error("quit: daemon shutdown failed", "reply", reply, "err", errString(err))
-	} else {
+	switch {
+	case err != nil:
+		// Unreachable daemon (transport failure) = already the goal state.
+		a.logger.Info("quit: daemon unreachable, treated as stopped", "err", errString(err))
+	case reply != "shutting down":
+		daemonOK = false
+		a.logger.Error("quit: daemon refused shutdown", "reply", reply)
+	default:
 		a.logger.Info("quit: daemon shutdown", "reply", reply)
 	}
+	panelOK := true
 	if err := a.stopPanel(); err != nil {
+		panelOK = false
 		a.logger.Error("quit: light panel shutdown failed", "err", errString(err))
 	}
-	a.requestQuit()
+	if daemonOK && panelOK {
+		a.requestQuit()
+		return
+	}
+	a.signalRefresh()
 }
 
 // stopLightPanel asks a running `mutastic ui` server to stop (Task 4's

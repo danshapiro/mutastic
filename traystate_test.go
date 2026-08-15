@@ -79,15 +79,19 @@ func TestTrayIconOnlyChangesOnDefinitiveAnswers(t *testing.T) {
 
 // traySpy records a handler's side-effect ORDER.
 type traySpy struct {
-	calls   []string
-	askErr  error
-	injErr  error
-	stopErr error
+	calls    []string
+	askReply string
+	askErr   error
+	injErr   error
+	stopErr  error
 }
 
 func (s *traySpy) actions() *trayActions {
 	return &trayActions{
-		ask:           func(cmd string) (string, error) { s.calls = append(s.calls, "ask:"+cmd); return "", s.askErr },
+		ask: func(cmd string) (string, error) {
+			s.calls = append(s.calls, "ask:"+cmd)
+			return s.askReply, s.askErr
+		},
 		openPanel:     func() error { s.calls = append(s.calls, "panel"); return nil },
 		injectSweep:   func() error { s.calls = append(s.calls, "inject"); return s.injErr },
 		stopPanel:     func() error { s.calls = append(s.calls, "panelstop"); return s.stopErr },
@@ -163,25 +167,33 @@ func TestTrayMicToggleIsMuteEverything(t *testing.T) {
 }
 
 // TestTrayQuitStopsEverythingThenQuits pins the Quit cascade: daemon
-// shutdown AND light-panel shutdown, then the tray exits — and each stop
-// failing must never strand the tray or skip the other stop.
+// shutdown AND light-panel shutdown, then the tray exits - but ONLY when
+// each stop is confirmed or already the goal state. An unreachable daemon
+// already satisfies "stopped"; a live daemon or panel that REFUSES to stop
+// keeps the tray alive (the display refreshes, the next Quit retries).
 func TestTrayQuitStopsEverythingThenQuits(t *testing.T) {
-	spy := &traySpy{}
+	spy := &traySpy{askReply: "shutting down"}
 	spy.actions().onQuit()
 	if got := spy.order(); got != "ask:shutdown,panelstop,quit" {
 		t.Fatalf("onQuit side effects = %q, want %q", got, "ask:shutdown,panelstop,quit")
 	}
 
-	deadDaemon := &traySpy{askErr: errors.New("daemon dead")}
-	deadDaemon.actions().onQuit()
-	if got := deadDaemon.order(); got != "ask:shutdown,panelstop,quit" {
-		t.Fatalf("onQuit with a dead daemon = %q, want %q (panel stop and tray quit must still run)", got, "ask:shutdown,panelstop,quit")
+	unreachableDaemon := &traySpy{askErr: errors.New("daemon dead")}
+	unreachableDaemon.actions().onQuit()
+	if got := unreachableDaemon.order(); got != "ask:shutdown,panelstop,quit" {
+		t.Fatalf("onQuit with an unreachable daemon = %q, want %q (unreachable already IS the stopped goal state)", got, "ask:shutdown,panelstop,quit")
 	}
 
-	deadPanel := &traySpy{stopErr: errors.New("panel refused")}
-	deadPanel.actions().onQuit()
-	if got := deadPanel.order(); got != "ask:shutdown,panelstop,quit" {
-		t.Fatalf("onQuit with a failing panel stop = %q, want %q (the tray must still quit)", got, "ask:shutdown,panelstop,quit")
+	refusingDaemon := &traySpy{askReply: "error: x"}
+	refusingDaemon.actions().onQuit()
+	if got := refusingDaemon.order(); got != "ask:shutdown,panelstop,refresh" {
+		t.Fatalf("onQuit with a refusing daemon = %q, want %q (a live daemon that refused keeps the tray; the retry refreshes the display)", got, "ask:shutdown,panelstop,refresh")
+	}
+
+	refusingPanel := &traySpy{askReply: "shutting down", stopErr: errors.New("panel refused")}
+	refusingPanel.actions().onQuit()
+	if got := refusingPanel.order(); got != "ask:shutdown,panelstop,refresh" {
+		t.Fatalf("onQuit with a refusing panel = %q, want %q (a live panel that refused keeps the tray; the retry refreshes the display)", got, "ask:shutdown,panelstop,refresh")
 	}
 }
 
