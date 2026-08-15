@@ -22,6 +22,9 @@ action, and `mutastic light ...` commands. The active mute paths remain:
    by sweeping every running meeting app.
 2. **Stream Deck Mutastic Mute key** — the OpenDeck plugin toggles the Yeti X
    through the daemon and injects the same `F24` app sweep.
+3. **Tray icon Muted menu** — the tray's Muted action runs the same
+   mute-everything pair through the daemon, and only after re-checking that
+   the mic state is definitive (it declines rather than guess at `unknown`).
 
 Pressing the **mute button on the Yeti X itself** keeps the meeting apps
 in sync: the daemon sees the mic's `0x21` DeviceMute event (emitted only for
