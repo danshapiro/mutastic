@@ -65,8 +65,22 @@ func runTray() int {
 		return 1
 	}
 	defer lock.Close()
+	ready := make(chan struct{})
+	// Watchdog: if Windows refuses the icon, the fork logs the failure,
+	// never calls onReady, and still enters its blocking message loop -
+	// leaving an invisible process holding the single-instance lock. Exit
+	// instead: process death releases the lock, so the documented recovery
+	// (rerun the startup shortcut) actually works.
+	go func() {
+		select {
+		case <-ready:
+		case <-time.After(15 * time.Second):
+			logger.Error("tray icon was never installed within the startup window; exiting so a rerun can reclaim the instance lock")
+			os.Exit(1)
+		}
+	}()
 	systray.Run(
-		func() { trayOnReady(logger) },
+		func() { trayOnReady(logger); close(ready) },
 		func() { logger.Info("mutastic tray exiting") },
 	)
 	logger.Info("mutastic tray stopped")
