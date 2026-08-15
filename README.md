@@ -127,7 +127,9 @@ hardware state. The active paths are loop-free:
   settings — the same names the web UI saves — polled every 2 s; click a
   name to apply it; grayed placeholders appear when appropriate:
   `(no saved settings)` for an empty store, `(settings unavailable)`
-  covering both an unreachable daemon and a broken store), **Panel…**,
+  covering both an unreachable daemon and a broken store; a `&` in a name
+  shows with Windows' mnemonic-underline mangling in the tray — a
+  display-only quirk, the click always applies the raw name), **Panel…**,
   and **Quit** — Quit stops everything
   mutastic runs in one click: it sends the daemon's `shutdown` command,
   posts the light-panel server's `/api/shutdown`, and exits the tray.

@@ -503,10 +503,10 @@ func TestTraySavedSettingsMenuSpec(t *testing.T) {
 			t.Errorf("traySavedSettings(%v, true) = %+v, want %+v", names, got, want)
 		}
 	}
-	saved := traySavedSettings([]string{"movie mode", "work"}, true)
-	wantSaved := []trayMenuSpec{{Title: "movie mode", Enabled: true}, {Title: "work", Enabled: true}}
+	saved := traySavedSettings([]string{"work", "movie mode"}, true)
+	wantSaved := []trayMenuSpec{{Title: "work", Enabled: true}, {Title: "movie mode", Enabled: true}}
 	if !reflect.DeepEqual(saved, wantSaved) {
-		t.Errorf("traySavedSettings([movie mode work], true) = %+v, want %+v (input order, enabled)", saved, wantSaved)
+		t.Errorf("traySavedSettings([work movie mode], true) = %+v, want %+v (input order PRESERVED - the pair is deliberately non-sorted so a sorting mutation fails this)", saved, wantSaved)
 	}
 }
 

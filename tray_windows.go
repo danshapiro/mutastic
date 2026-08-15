@@ -319,10 +319,19 @@ func trayRefreshLoop(logger *slog.Logger, refreshCh <-chan struct{}, header, mic
 // fork has no remove/insert API, so it recycles: every currently-SHOWN
 // child (the children[:len(cached)] prefix; the tail is already hidden) is
 // hidden back into a reuse pool, then each wanted spec reuses a hidden
-// orphan first - retitle, rebind the click to `light settings apply <name>`
-// (or unbind it for a disabled placeholder), re-gate, and Show last so the
-// revealed item presents its final state - and only adds a NEW child when
-// the pool is empty. Unused orphans stay hidden (never displayed) and are
+// orphan first and only adds a NEW child when the pool is empty. A reused
+// orphan is acted on in the fixed order rebind Click -> SetTitle ->
+// Enable/Disable -> Show LAST, because in this fork EVERY update()-backed
+// call (SetTitle, Enable, Disable, and Show itself all route through
+// addOrUpdateMenuItem, which inserts any item missing from the visible
+// list) reveals a hidden item on the spot, while Click alone is reveal-free
+// (a plain Go field assignment the native side never sees). The rebind
+// therefore lands while the orphan is still hidden, so no stale click
+// binding is ever rendered, and the first revealing update (SetTitle)
+// already carries the final title AND final binding; the enabled bit
+// follows one in-place native update later, and the trailing Show is an
+// in-place no-op on the by-then-visible item, kept last as the nominal
+// reveal step. Unused orphans stay hidden (never displayed) and are
 // returned after the shown prefix for the next reconcile: every reconcile
 // is change-gated and orphans are recycled BEFORE any new item is created,
 // so retained items stay bounded by the menu size plus one change-width
@@ -341,12 +350,19 @@ func syncSavedSettingsMenu(parent *systray.MenuItem, children []*systray.MenuIte
 		} else {
 			item = parent.AddSubMenuItem(spec.Title, "")
 		}
-		item.SetTitle(spec.Title)
+		// Rebind the click FIRST: Click is the only mutation that cannot
+		// reveal a hidden orphan (a plain field assignment, no native
+		// update - see the function comment), so the binding is final
+		// before anything can render the item.
 		if spec.Enabled {
 			item.Click(lightCmd("light settings apply " + spec.Title))
-			item.Enable()
 		} else {
 			item.Click(nil) // unbound: a placeholder never fires
+		}
+		item.SetTitle(spec.Title)
+		if spec.Enabled {
+			item.Enable()
+		} else {
 			item.Disable()
 		}
 		item.Show()
