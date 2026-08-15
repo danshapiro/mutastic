@@ -985,8 +985,9 @@ func TestUIMicPostMapsDaemonFailuresTo502(t *testing.T) {
 
 // TestUIMicPostValidatesActionHonorsGuardsAndMethods pins the route's guard
 // posture: bad or missing actions answer 400 and NEVER reach the daemon, a
-// foreign Origin answers 403, and wrong methods answer 405 with
-// Allow: GET, POST.
+// foreign Origin answers 403, the origin check fires BEFORE action
+// validation (a bad action with a foreign Origin still answers 403), and
+// wrong methods answer 405 with Allow: GET, POST.
 func TestUIMicPostValidatesActionHonorsGuardsAndMethods(t *testing.T) {
 	var calls int
 	server := newUIServer(42815, newTestDaemonDispatcher(func(string) (string, error) {
@@ -1018,6 +1019,12 @@ func TestUIMicPostValidatesActionHonorsGuardsAndMethods(t *testing.T) {
 	if calls != 0 {
 		t.Fatalf("a foreign-Origin POST reached the daemon; want zero calls")
 	}
+	if got := post(`{"action":"explode"}`, "http://evil.example").Code; got != http.StatusForbidden {
+		t.Fatalf("bad action with a foreign Origin status = %d, want 403 - the origin check must fire before action validation", got)
+	}
+	if calls != 0 {
+		t.Fatalf("a foreign-Origin bad-action POST reached the daemon; want zero calls")
+	}
 	for _, method := range []string{http.MethodPut, http.MethodDelete} {
 		req := httptest.NewRequest(method, "/api/mic", nil)
 		req.Host = "127.0.0.1:42815"
@@ -1035,7 +1042,12 @@ func TestUIMicPostValidatesActionHonorsGuardsAndMethods(t *testing.T) {
 // TestEmbeddedLightUIMicCardUsesTheMicEndpoints pins the mic card's wiring
 // contract: badge/status-line ids, the three verb buttons, the queued
 // mutation string, the shared 750 ms poll - and the ABSENCE of any direct
-// fetch POST (mic mutations must go through the mutation queue).
+// fetch POST (mic mutations must go through the mutation queue). The Toggle
+// button must also start DISABLED in the static markup: the badge renders
+// unknown until the first definitive poll, and updateMic owns the flag from
+// that first reply onward (Mute/Unmute are absolute verbs, so they stay
+// armed). The DOM stub pre-registers its buttons and cannot observe initial
+// markup, so this fragment is the pin for the initially-disabled Toggle.
 func TestEmbeddedLightUIMicCardUsesTheMicEndpoints(t *testing.T) {
 	source := string(lightUIHTML)
 	for _, fragment := range []string{
@@ -1044,6 +1056,7 @@ func TestEmbeddedLightUIMicCardUsesTheMicEndpoints(t *testing.T) {
 		`data-mic-action="mute"`,
 		`data-mic-action="unmute"`,
 		`data-mic-action="toggle"`,
+		`<button class="button-quiet" type="button" data-mic-action="toggle" disabled>Toggle</button>`,
 		`.status-badge[data-state="unreachable"]`,
 		"enqueueMutation(`mic:${action}`, \"/api/mic\", {action}, false)",
 		`function refreshMic()`,
@@ -1053,6 +1066,11 @@ func TestEmbeddedLightUIMicCardUsesTheMicEndpoints(t *testing.T) {
 	} {
 		if !strings.Contains(source, fragment) {
 			t.Fatalf("embedded UI is missing mic card fragment %q", fragment)
+		}
+	}
+	for _, armed := range []string{`data-mic-action="mute" disabled`, `data-mic-action="unmute" disabled`} {
+		if strings.Contains(source, armed) {
+			t.Fatalf("Mute/Unmute are absolute verbs and must start armed: found %q in the markup", armed)
 		}
 	}
 	if strings.Contains(source, `fetch("/api/mic", {method: "POST"`) {

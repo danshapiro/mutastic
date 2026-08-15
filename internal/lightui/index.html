@@ -249,7 +249,8 @@
         <div class="power-row" role="group" aria-label="Microphone mute">
           <button class="button-primary" type="button" data-mic-action="mute">Mute</button>
           <button type="button" data-mic-action="unmute">Unmute</button>
-          <button class="button-quiet" type="button" data-mic-action="toggle">Toggle</button>
+          <!-- Toggle starts disarmed: the initial state is unknown, and an unknown-state daemon toggle is unpredictable. updateMic owns the disabled flag from the first definitive poll onward. -->
+          <button class="button-quiet" type="button" data-mic-action="toggle" disabled>Toggle</button>
         </div>
       </div>
     </section>
@@ -527,7 +528,7 @@
           const response = await fetch("/api/mic", {cache: "no-store"});
           const data = await response.json();
           updateMic(data && data.state ? data.state : "unreachable");
-        } catch (error) {
+        } catch {
           updateMic("unreachable");
         }
       }
