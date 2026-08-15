@@ -161,12 +161,12 @@ hardware state. The active paths are loop-free:
   | `mutastic light temp-step-delta <-3..3>` | adjust every connected, known, on light by relative hardware temperature steps atomically |
   | `mutastic light preset <cold\|sunlight\|afternoon\|sunset\|candle>` | apply a preset, all lights |
   | `mutastic light list` | every known light: port, name (`-` if none), connected/disconnected, state |
-  | `mutastic light name <COMx> <name>` | give a light a persistent name (case-insensitive; reassigning moves it) |
-  | `mutastic light unname <name\|COMx>` | clear a name |
   | `mutastic light settings save <name>` | snapshot every connected light with known state under `<name>` (overwrites by exact name); replies `saved "<name>" (N lights)` |
   | `mutastic light settings list` | the sorted saved names, one per line; an empty reply means none saved |
   | `mutastic light settings apply <name>` | restore a saved snapshot across its lights; one reply line per light |
   | `mutastic light settings delete <name>` | remove a saved name; replies `deleted "<name>"` |
+  | `mutastic light name <COMx> <name>` | give a light a persistent name (case-insensitive; reassigning moves it) |
+  | `mutastic light unname <name\|COMx>` | clear a name |
   | `mutastic light@desk toggle` | any per-light command above (the `settings` verbs are fleet-level), one light (by name or COM port) |
 
   Per-light replies: `on 64% 4950K`, `off`, `unknown`, or `error: <reason>`
