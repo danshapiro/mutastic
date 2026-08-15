@@ -79,8 +79,9 @@ hardware state. The active paths are loop-free:
   (`{"state":"muted|unmuted|unknown|unreachable"}`) on the shared 750 ms
   tick and sends its Mute, Unmute, and Toggle buttons to `POST /api/mic`
   (`{"action":"mute|unmute|toggle"}`; Mute/Unmute are absolute verbs and
-  stay armed while the state is `unknown`, while Toggle waits for a
-  definitive state). Every panel→daemon call, mic and light alike, uses
+  stay armed while the state is `unknown`, while Toggle is disabled at
+  `unknown` because the daemon's toggle there resolves to an absolute
+  mute). Every panel→daemon call, mic and light alike, uses
   the single 6 s `lightClientTimeout` budget: the daemon's `serveUDP` loop
   is strictly serial and a wedged light call occupies ~2 s, so a thinner
   mic-specific budget would flap the card to "unreachable" mid
@@ -187,7 +188,8 @@ hardware state. The active paths are loop-free:
   ambiguous and defaults apply.
 
   The `settings` verbs manage named snapshots of the whole fleet, persisted
-  in `%LOCALAPPDATA%\mutastic\light-settings.json` with entries keyed by
+  in `%LOCALAPPDATA%\mutastic\light-settings.json` (beside
+  `light-names.json`) with entries keyed by
   COM port path only — a light's (mutable) registry name never decides
   which hardware an entry restores, so a light moved to another USB jack
   yields a different COM port and its old entries answer
@@ -215,13 +217,23 @@ hardware state. The active paths are loop-free:
   fan-out shape (`COM4 desk: on 47% 2900K`); an unknown name answers
   `error: unknown setting "<name>"`, as does delete; apply with no lights
   connected answers `error: no lights connected`; delete answers
-  `deleted "<name>"`. If settings persistence is disabled (no state
-  directory) every settings verb answers `error: settings persistence
-  disabled`; if the file is corrupt or unreadable every verb — including
-  `list`, never an empty success — answers `error: settings store corrupt
-  or unreadable: <path>` and no save ever replaces the broken file
-  (recovery: stop the daemon, rename or delete the file, start the
-  daemon).
+  `deleted "<name>"`. An entry saved as OFF applies its saved
+  brightness/temp first and sends the off frame LAST, so the saved look
+  lands in the light's restore targets before the light parks off — and
+  brightness/temp writes briefly energize an off light (firmware behavior,
+  no silent alternative exists), so applying an off entry FLASHES the
+  light momentarily before the off frame lands. If settings persistence is
+  disabled (no state directory) every settings verb answers
+  `error: settings persistence disabled`; if the file is corrupt or
+  unreadable every verb — including `list`, never an empty success —
+  answers `error: settings store corrupt or unreadable: <path>` and no
+  save ever replaces the broken file, so a corrupt store refuses all
+  mutations until the file-level recovery below. To clear saved settings,
+  PREFER `settings delete` per name; to remove or reset the whole file —
+  including that corrupt-file recovery — stop the daemon FIRST, then
+  rename or delete the file, then start the daemon: the daemon holds the
+  store in memory, so touching the file while it runs has no effect and
+  any save would rewrite it.
 - **`ahk/MuteAllMeetings.ahk`** — actively consumes F13 and F14 with wildcard
   no-op handlers, disabled on 2026-08-12 and 2026-08-09 respectively, so
   neither pedal key falls through to the foreground application. F15 is not
