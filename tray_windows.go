@@ -112,9 +112,10 @@ func trayOnReady(logger *slog.Logger) {
 	brightness := systray.AddMenuItem("Brightness", "set brightness on all lights")
 	preset := systray.AddMenuItem("Light preset", "apply a preset on all lights")
 
-	// Action items start disabled; the first reachable poll enables them
-	// (prevents a Muted click in the startup window from injecting the F24
-	// sweep after a failed daemon toggle).
+	// Action items start disabled; the refresh loop arms them (the light
+	// actions on the first reachable poll, the Muted item on the first
+	// DEFINITIVE mic answer, per trayMicEnabled) - so no click can fire in
+	// the startup window.
 	for _, it := range []*systray.MenuItem{muted, lights, brightness, preset} {
 		it.Disable()
 	}
@@ -253,13 +254,20 @@ func trayRefreshLoop(logger *slog.Logger, refreshCh <-chan struct{}, header, mut
 		} else {
 			muted.Uncheck()
 		}
-		enabled := trayActionsEnabled(state)
-		for _, it := range []*systray.MenuItem{muted, lights, brightness, preset} {
-			if enabled {
+		// Mic vs. lights get different gates: the mic acts only on definitive
+		// answers (see trayMicEnabled), light actions only need a reachable
+		// daemon (unknown is a mic-state concept).
+		for _, it := range []*systray.MenuItem{lights, brightness, preset} {
+			if trayActionsEnabled(state) {
 				it.Enable()
 			} else {
 				it.Disable()
 			}
+		}
+		if trayMicEnabled(state) {
+			muted.Enable()
+		} else {
+			muted.Disable()
 		}
 	}
 }

@@ -56,10 +56,20 @@ func TestTrayDisplayDecisions(t *testing.T) {
 	if trayActionsEnabled(trayStateDown) {
 		t.Error("actions must be disabled while the daemon is unreachable")
 	}
+	// Light actions arm on any daemon answer, including unknown (unknown is
+	// a mic-state concept, not a reachability one).
 	for _, s := range []trayState{trayStateMuted, trayStateUnmuted, trayStateUnknown} {
 		if !trayActionsEnabled(s) {
 			t.Errorf("actions must be enabled in state %v", s)
 		}
+	}
+	// The mic action arms only on definitive answers; light actions arm on
+	// any daemon answer including unknown.
+	if trayMicEnabled(trayStateUnknown) || trayMicEnabled(trayStateDown) {
+		t.Error("mic action must stay disabled at unknown/down (blind F24 + default-mute can desync)")
+	}
+	if !trayMicEnabled(trayStateMuted) || !trayMicEnabled(trayStateUnmuted) {
+		t.Error("mic action must be armed at definitive answers")
 	}
 }
 

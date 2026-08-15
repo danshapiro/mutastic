@@ -62,11 +62,21 @@ func trayTitle(s trayState) string {
 // trayMutedChecked reports the Muted menu item's check state.
 func trayMutedChecked(s trayState) bool { return s == trayStateMuted }
 
-// trayActionsEnabled reports whether mic/light menu actions are usable;
-// they are all daemon round trips, so a dead daemon disables them (the
+// trayActionsEnabled reports whether the light menu actions are usable;
+// they are daemon round trips, so a dead daemon disables them (the
 // Light panel and Quit items stay enabled: the panel is served by the
-// separate `mutastic ui` process, and Quit must always work).
+// separate `mutastic ui` process, and Quit must always work). The Muted
+// action is gated separately by trayMicEnabled: reachability alone does
+// not make a mic click safe.
 func trayActionsEnabled(s trayState) bool { return s != trayStateDown }
+
+// trayMicEnabled reports whether the Muted action may fire at all. The
+// daemon's toggle defaults an unknown mic state to MUTE (a set, not a
+// hardware toggle), and the tray's mute-everything path pairs it with a
+// blind F24 sweep of the meeting apps - so at unknown state the click can
+// leave the mic muted while un-muting already-muted apps. Only definitive
+// daemon answers arm the mic; unknown and down both gate it out.
+func trayMicEnabled(s trayState) bool { return s == trayStateMuted || s == trayStateUnmuted }
 
 // trayIcon is an icon decision for one display state. trayIconKeep leaves
 // the current icon untouched: when the daemon's answer is "unknown" or the
@@ -158,9 +168,13 @@ func tcpNoListener(err error) bool { return anyErrno(err, tcpNoListenerErrnos) }
 // mute key (README): a hardware toggle to the daemon AND one F24 meeting-app
 // sweep, both attempted even when the other fails. (The daemon injects F24
 // only for physical button presses, so a toggle-only tray would mute the mic
-// while leaving meeting apps live.) Loop-free for the documented reasons:
-// the AHK sweep never calls toggle, and the mic's host-command echo (0x20)
-// is ignored by the daemon's injector gate.
+// while leaving meeting apps live.) The Windows glue arms this click only at
+// definitive mic states (trayMicEnabled): at an unknown state the daemon's
+// toggle DEFAULTS to mute - a set, not a hardware toggle - while the sweep
+// blindly toggles the apps, so the pair can desync an already-muted setup.
+// Loop-free for the documented reasons: the AHK sweep never calls toggle,
+// and the mic's host-command echo (0x20) is ignored by the daemon's
+// injector gate.
 func (a *trayActions) onMicToggle() {
 	reply, askErr := a.ask("toggle")
 	sweepErr := a.injectSweep()
