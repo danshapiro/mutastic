@@ -71,25 +71,35 @@ func MutedFromValue(v byte) (muted bool, ok bool) {
 // per call site.
 
 // ConditionalMuteVerbPrefixMute / -Unmute are the command heads of the
-// atomic conditional mic verbs "mute-if <expected>" /
-// "unmute-if <expected>" with expected ∈ {muted, unmuted}. Each asks the
+// atomic conditional mic verbs. Only the TWO SAFE opposite-state forms
+// exist (R11-F4): "mute-if unmuted" and "unmute-if muted". Each asks the
 // daemon to perform its absolute verb (plus the F24 meeting-app sweep)
-// ONLY when its tracked state still equals <expected> - premise check
-// and action in ONE serveUDP step (R6-F2). Replies: "ok" (premise
-// matched: verb written + sweep injected), "flipped muted|unmuted" or
-// "flipped unknown" (premise failed: NO verb, NO inject), or
-// "error: <reason>" (the absolute verb's write or the injection failed).
+// ONLY when its tracked state still equals the OPPOSITE premise -
+// premise check and action in ONE serveUDP step (R6-F2). The two
+// same-state combinations ("mute-if muted", "unmute-if unmuted") are NOT
+// grammar: they pass their premise whenever it holds, write an
+// already-satisfied absolute state, and would still inject the blind F24
+// sweep - desynchronizing the meeting apps from an UNCHANGED mic. They
+// are rejected at parse (ok=false) and fall to the generic
+// "error: unknown command". Replies: "ok" (premise matched: verb written
+// + sweep injected), "flipped muted|unmuted" or "flipped unknown"
+// (premise failed: NO verb, NO inject), or "error: <reason>" (the
+// absolute verb's write or the injection failed).
 const (
 	ConditionalMuteVerbPrefixMute   = "mute-if"
 	ConditionalMuteVerbPrefixUnmute = "unmute-if"
 )
 
 // ParseConditionalMute decodes one atomic conditional mic verb command.
-// ok=true only for the exact grammar "<verb> <expected>" with verb ∈
-// {mute-if, unmute-if} and expected ∈ {muted, unmuted} - everything else
-// (a valid prefix with an invalid expectation, a missing argument, extra
-// tokens, case drift) yields ok=false so the daemon replies its generic
-// "error: unknown command" and buggy clients fail loudly.
+// ok=true only for the exact grammar "<verb> <opposite-premise>" -
+// "mute-if unmuted" or "unmute-if muted" (R11-F4: the premise must be
+// the state the verb acts FROM; the same-state combinations "mute-if
+// muted" / "unmute-if unmuted" never act meaningfully and are rejected
+// wholesale). Everything else (a valid prefix with an invalid or
+// same-state expectation, a missing argument, extra tokens, case drift)
+// yields ok=false so the daemon replies its generic "error: unknown
+// command" and buggy clients fail loudly instead of injecting a sweep
+// against an unchanged mic.
 func ParseConditionalMute(cmd string) (targetMuted, expectMuted, ok bool) {
 	verb, arg, found := strings.Cut(cmd, " ")
 	if !found {
@@ -104,11 +114,20 @@ func ParseConditionalMute(cmd string) (targetMuted, expectMuted, ok bool) {
 	default:
 		return false, false, false
 	}
+	var expect bool
 	switch arg {
 	case "muted":
-		return target, true, true
+		expect = true
 	case "unmuted":
-		return target, false, true
+		expect = false
+	default:
+		return false, false, false
 	}
-	return false, false, false
+	if target == expect {
+		// The two unsafe same-state forms: "mute-if muted" /
+		// "unmute-if unmuted" - rejected at parse so they can never
+		// reach the sweep (R11-F4).
+		return false, false, false
+	}
+	return target, expect, true
 }

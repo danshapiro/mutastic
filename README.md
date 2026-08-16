@@ -66,15 +66,20 @@ hardware state. The active paths are loop-free:
   state from the mic's events, and serves plain-text commands on UDP
   `127.0.0.1:42814`. The mic verb wire surface: `status` →
   `muted`/`unmuted`/`unknown`; `mute`/`unmute`/`toggle` → the new state;
-  `mute-if <expected>` and `unmute-if <expected>` (expected ∈
-  `muted`/`unmuted`) are the ATOMIC conditional verbs — in ONE step the
-  daemon compares its tracked state to `<expected>` and either runs the
-  absolute verb plus one `F24` meeting-app sweep (reply `ok`) or runs
-  nothing at all (reply `flipped muted`/`flipped unmuted`/`flipped
-  unknown`); a write or injection failure replies `error: <reason>` as
-  usual (a failed mic write runs NO sweep, so the apps never desync from
-  an unmoved mic). The tray's mute item is their only client; grammar is
-  pinned in `internal/proto`. The tracked mute state stays
+  `mute-if unmuted` and `unmute-if muted` — exactly these TWO
+  opposite-state forms — are the ATOMIC conditional verbs: in ONE step
+  the daemon compares its tracked state to the premise the verb acts
+  FROM and either runs the absolute verb plus one `F24` meeting-app
+  sweep (reply `ok`) or runs nothing at all (reply `flipped
+  muted`/`flipped unmuted`/`flipped unknown`); a write or injection
+  failure replies `error: <reason>` as usual (a failed mic write runs NO
+  sweep, so the apps never desync from an unmoved mic). The two
+  same-state combinations (`mute-if muted`, `unmute-if unmuted`) are NOT
+  grammar — they would pass their own premise and still inject the blind
+  sweep against an UNCHANGED mic — so they fall to the generic `error:
+  unknown command` alongside every other malformed shape. The tray's
+  mute item is their only client; grammar is pinned in
+  `internal/proto`. The tracked mute state stays
   premise-worthy or `unknown`, never silently stale: a fresh device
   session (every reconnect; there is no readable state query, so the new
   session cannot inherit the old one's belief) resets tracking to
@@ -145,7 +150,12 @@ hardware state. The active paths are loop-free:
   names fit fewer) — remains only a UX hint; the panel API enforces the
   same 42-byte cap server-side too (any `/api/settings` POST with an
   over-long name, any action, is refused HTTP 400 before any daemon call,
-  closing the direct-caller path), and the daemon still validates
+  closing the direct-caller path), and every `/api/settings` POST body is
+  also validated as well-formed UTF-8 on the RAW bytes BEFORE JSON decoding
+  (a JSON decoder silently rewrites invalid bytes to the U+FFFD replacement
+  character, which would smuggle a different name past the daemon's own
+  UTF-8 name check as a distinct setting — a raw invalid body is refused
+  HTTP 400 `invalid request encoding` with zero daemon calls), and the daemon still validates
   authoritatively for every other client. The
   daemon owns and persists the
   store (`%LOCALAPPDATA%\mutastic\light-settings.json`), so the panel and
@@ -169,8 +179,9 @@ hardware state. The active paths are loop-free:
   label displays plus the F24 meeting-app sweep; the label always names
   the exact action a click performs while the displayed state still
   matches the hardware truth at click time — committed by ONE atomic
-  conditional daemon verb (`mute-if`/`unmute-if <expected>`) whose premise
-  check and action are a single daemon step fully serialized against the
+  conditional daemon verb (`mute-if unmuted`/`unmute-if muted` — the only
+  two forms that exist) whose premise check and action are a single
+  daemon step fully serialized against the
   physical-button event path, so no hardware event can slip in between:
   if the mic already flipped to the
   label's target since the last poll (state stale inside the poll window),
@@ -184,7 +195,11 @@ hardware state. The active paths are loop-free:
   state is unknown or the daemon is down it likewise runs nothing at all —
   one WARN, no verb, no sweep, immediate redraw; the item's title/enabled
   paint is also read back from the native menu before the click premise
-  arms, and the click re-verifies the live row against its premise before
+  arms, the click's premise is captured atomically at click time (never
+  re-read partway through the click's own async work, so a label refresh
+  that lands mid-click can never substitute the new verb for the click
+  the user made), and the click re-verifies the live row against that
+  captured premise before
   calling the daemon, so a native paint failure or a mid-paint click can
   never perform the opposite of the displayed label),
   **Toggle lights**, **Brightness** (applied in click order),
@@ -194,13 +209,28 @@ hardware state. The active paths are loop-free:
   `(no saved settings)` for an empty store, `(settings unavailable)`
   covering both an unreachable daemon and a broken store; a `&` in a name
   renders correctly in the tray (menu titles escape `&` as `&&` for
-  display) and the click applies the verbatim name; any change to the
-  saved set rebuilds the submenu from scratch — every old row is retired
-  (hidden, disabled, unbound, so a click dispatched from a stale row
-  no-ops) and fresh rows are created in the daemon's sorted order (the
-  menu library displays rows in creation order, so the menu always shows
-  exactly the daemon's current set, in order, with no duplicates and no
-  phantom rows left from earlier name sets), **Panel…**,
+  display) and the click applies the verbatim name; the submenu is a
+  BOUNDED pool of native rows kept for the process's lifetime — on any
+  change to the saved set, every row's click binding is FIRST cleared
+  (so a click dispatched from a stale row no-ops), then the current
+  names are re-bound onto the pool's lowest-ID rows in order (the menu
+  library displays rows sorted by their immutable menu IDs, so
+  lowest-ID-first binding shows exactly the daemon's sorted list);
+  surplus rows past the list length are retired (hidden, disabled,
+  unbound — ready for reuse when the list grows again), and NEW rows
+  are created only when the list exceeds the pool's largest-ever size.
+  Windows hands a menu row's identifier only in the low 16 bits of the
+  click message, so this bounded pool is load-bearing: the library's
+  global menu
+  ID counter advances only when the pool actually grows, maxing at the
+  static menu items plus the largest list ever displayed (≤ 100 names)
+  — about 120 IDs in the worst case, over 500× below
+  the 65536 boundary at which IDs would start aliasing and clicks could
+  hit wrong rows — with no duplicates and no phantom rows left from
+  earlier name sets, and a click that raced a rebuild found an already
+  cleared binding (no-op; the row also re-verifies what the menu
+  natively displays for it before applying), never a wrong apply),
+  **Panel…**,
   and **Quit** — Quit stops everything
   mutastic runs in one click: it sends the daemon's `shutdown` command,
   posts the light-panel server's `/api/shutdown`, and exits the tray.

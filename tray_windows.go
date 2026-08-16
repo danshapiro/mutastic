@@ -46,24 +46,25 @@ const (
 	trayIconReapplyEvery = 300
 )
 
-// --- click-time/paint-time native verification (ROUND-6/ROUND-7) ---
+// --- click-time/paint-time native verification (ROUND-6/ROUND-7/ROUND-12) ---
 //
 // The fork dispatches a menu click by command ID ALONE (WM_COMMAND's
 // wParam -> menuItems[id].click): the native row's title text is
-// display-only metadata. ROUND-7 eliminated the R4-F2/R5-F2/R6-F1
-// residual structurally, and ROUND-8 (R7-F2) keeps that shape under the
-// full-rebuild ordering discipline: a "Saved settings" row is NEVER
-// re-bound to a DIFFERENT name (syncSavedSettingsMenu retires every old
-// row on any name-set change and renders fresh rows in daemon order), so
-// a WM_COMMAND queued from a stale native row - one the user read as the
-// OLD name - hits a cleared slot and no-ops. The read-back below remains
-// as the belt to retirement's suspenders (R6-F1's "keep the existing
-// native title verification"), and additionally covers the mic item
-// (R6-F3): it reads the row's LIVE native title AND disabled bit back
-// from Windows, so the refresh loop stores the mic armed premise only
-// when the paint actually landed and a click executes only when the row
-// it fired on still shows exactly the loaded snapshot. Refusal degrades
-// to a no-op with one WARN.
+// display-only metadata. ROUND-12 (R11-F2) governs the shape: a "Saved
+// settings" row's NAME binding is re-bound IN PLACE by every name-set
+// change (bounded ID-positional pool - the row's immutable command ID
+// stays put so the global ID counter never approaches WM_COMMAND's 16-bit
+// truncation point), but syncSavedSettingsMenu clears EVERY row's atomic
+// command slot FIRST, so a WM_COMMAND queued from a stale native row -
+// one the user read as the OLD name - that dispatches anywhere inside the
+// rebind window hits a cleared slot and no-ops. The read-back below
+// remains as the belt to that slot discipline's suspenders (R6-F1's
+// "keep the existing native title verification"), and additionally
+// covers the mic item (R6-F3): it reads the row's LIVE native title AND
+// disabled bit back from Windows, so the refresh loop stores the mic
+// armed premise only when the paint actually landed and a click executes
+// only when the row it fired on still shows exactly the loaded snapshot.
+// Refusal degrades to a no-op with one WARN.
 //
 // The fork exports neither the item's command ID nor its containing
 // HMENU, so both are read from the fork's own bookkeeping via go:linkname:
@@ -376,8 +377,26 @@ func trayOnReady(logger *slog.Logger) {
 	// The mic click verifies the LIVE native row against the loaded
 	// snapshot (R6-F3) before its one conditional-verb daemon call; the
 	// verify function closes over the mic item.
+	//
+	// R11-F1: the armed snapshot is captured SYNCHRONOUSLY inside the
+	// native click callback (the fork's pump thread, at dispatch time) and
+	// passed BY VALUE into the async work - the callback shape is exactly
+	// func(){ s := load(); go act(s) }. Spawning the goroutine FIRST and
+	// loading inside it (the pre-round-11 glue) raced the refresh loop: a
+	// repaint that landed between the click and the goroutine's load would
+	// store the OPPOSITE pair, and the late load would serve the NEW
+	// premise to the OLD click - the native verify would then validate the
+	// NEW paint and the daemon could execute the new conditional verb for
+	// a click the user made against the old label. With the capture at
+	// dispatch time, any mid-flight divergence (a repaint after the click,
+	// a daemon flip) is caught by the click's own live-row verify or the
+	// daemon's conditional premise and degrades to a refusal - never to
+	// the opposite action. Tests pin the refusal semantics through this
+	// capture boundary by injecting a stale snapshot directly (traystate
+	// tests).
 	mic.Click(func() {
-		go actions.muteClick(loadMuteSnap, func(snap trayMuteSnapshot) bool { return trayVerifyArmed(mic, snap) })
+		snap := loadMuteSnap()
+		go actions.muteClick(snap, func(s trayMuteSnapshot) bool { return trayVerifyArmed(mic, s) })
 	})
 	lightCmd := func(command string) func() {
 		return func() { lightCmdCh <- command }
@@ -415,14 +434,23 @@ func trayRefreshLoop(logger *slog.Logger, refreshCh <-chan struct{}, header, mic
 	first := true
 	last := trayStateUnknown
 	tick := 0
-	// The Saved settings submenu's SHOWN rows (rendering savedSpecs), the
-	// RETIRED pool (R6-F1/R7-F2: hidden, disabled, unbound rows stamped
-	// with their retirement time - tracked for click-safety bookkeeping
-	// only, NEVER re-bound under the full-rebuild ordering discipline),
-	// and the spec list the shown rows render. Empty until the first
-	// tick reconciles; two nil specs compare equal, so only a real poll
-	// difference triggers a rebuild.
-	var savedShown, savedRetired []*savedMenuChild
+	// The Saved settings submenu's bounded ID-positional POOL (R11-F2;
+	// the pure discipline lives in traystate.go's trayPlanSettingsPool
+	// header): every settings row ever created, in creation order (which
+	// IS ascending immutable-ID order - IDs are monotonic in creation and
+	// fresh rows are only ever appended). The first len(savedSpecs) pool
+	// rows are the SHOWN ones, rendering savedSpecs verbatim; the rest
+	// are retired (hidden, disabled, unbound) awaiting reuse on growth.
+	// Both are empty until the first tick reconciles; two nil specs
+	// compare equal, so only a real poll difference triggers a rebuild -
+	// and a rebuild re-binds pooled rows in place, creating fresh native
+	// rows ONLY when the wanted list exceeds the pool's historical
+	// maximum size. The fork dispatches WM_COMMAND on the low 16 bits of
+	// wParam, so this bound is load-bearing: the global ID counter must
+	// never cross 65536, and pool-capped growth (21 static items + the
+	// historical max list length, <= 101 rows) sits three orders of
+	// magnitude below it.
+	var savedPool []*savedMenuChild
 	var savedSpecs []trayMenuSpec
 	// lastShown is the icon currently displayed; it starts as the neutral
 	// unknown asset (also set at ready) and changes only on definitive
@@ -518,7 +546,7 @@ func trayRefreshLoop(logger *slog.Logger, refreshCh <-chan struct{}, header, mic
 		listReply, listErr := askDaemon(traySavedSettingsListCmd, udpAddr, lightClientTimeout)
 		want := traySavedSettings(trayParseSettingsList(listReply, listErr))
 		if !traySameMenuSpecs(savedSpecs, want) {
-			savedShown, savedRetired, savedSpecs = syncSavedSettingsMenu(savedSettings, savedShown, savedRetired, savedSpecs, want, lightCmd, logger)
+			savedPool, savedSpecs = syncSavedSettingsMenu(savedSettings, savedPool, savedSpecs, want, lightCmd, logger)
 		}
 	}
 }
@@ -529,16 +557,16 @@ func trayRefreshLoop(logger *slog.Logger, refreshCh <-chan struct{}, header, mic
 // NEVER rebound (R2-F3): writing the fork's click field while the native
 // message pump can invoke it is a data race (the pump may run the OLD
 // binding while Go assigns the NEW one), so rebuilds never touch the
-// binding - and under R7-F2's full-rebuild discipline the slot is stored
-// exactly once at creation too: a row's identity never changes. The slot
-// holds the current "light settings apply <name>" command; "" means
-// unbound (a placeholder or a RETIRED row - a click is then a no-op,
-// doubly safe because such rows are also disabled/hidden). retiredAt is
-// the retirement timestamp (zero while shown): R6-F1's retirement
-// discipline NEVER re-binds a live pooled row to a DIFFERENT name, and
-// R7-F2 drops the re-bind path entirely - a row whose name leaves the
-// rendered list is retired with the full hygiene and stays hidden
-// forever, kept in the tracked pool only for capped bookkeeping.
+// binding - under R11-F2's bounded ID-positional pool they touch ONLY the
+// slot. The slot holds the current "light settings apply <name>" command;
+// "" means unbound (a placeholder, a RETIRED row, or a row mid-rebind -
+// every rebuild's first step clears EVERY pool slot, so a racing click
+// anywhere in the rebuild window no-ops; the re-bound row's new command
+// lands only after its new title painted). retiredAt is the retirement
+// timestamp (zero while shown): under the pool discipline a retired row
+// (cleared slot, placeholder title, disabled, hidden) AWAITING REUSE on
+// growth re-enters the menu by rebind, so its identity - and immutable
+// command ID - stays put across regimes.
 type savedMenuChild struct {
 	item      *systray.MenuItem
 	slot      atomic.Value // string: current apply command; "" = unbound
@@ -563,30 +591,24 @@ type savedMenuChild struct {
 // the statement IMMEDIATELY following the create call. A click dispatched
 // in that one-statement window finds click == nil and no-ops (the fork's
 // dispatcher skips a nil binding) - never a wrong apply. From then on the
-// closure is NEVER rebound: under R7-F2's full-rebuild discipline rebuilds
-// retire rows and create FRESH ones, so a row's slot is stored exactly once
-// (here) and only ever CLEARED later (retirement, see
-// syncSavedSettingsMenu).
+// closure is NEVER rebound: under R11-F2's bounded ID-positional pool the
+// slot alone carries the rebinds (cleared-first, stored-last per rebuild;
+// see syncSavedSettingsMenu).
 //
-// ROUND-7 (R6-F1) eliminated the recorded R3-F4/R4-F2/R5-F2 residual ("a
-// click queued in the same Win32 message turn as a name-set rebuild applies
-// the slot's new name") structurally, and ROUND-8 (R7-F2) keeps the
-// elimination under the simpler full-rebuild discipline: a live pooled row
-// is NEVER re-bound to a different name; on any name-set change it is
-// RETIRED (slot cleared, placeholder title, disabled, hidden, timestamped)
-// and the new set renders on FRESH rows. No quarantine delay is needed for
-// safety anymore - retirement was always sufficient; the ROUND-7 quarantine
-// existed only for the reuse path, which R7-F2 removes because a reused
-// row's immutable command ID cannot sort into the new daemon order. The
-// stable closure's native-title verification
-// (trayVerifySettingsItemTitle) remains as the belt to retirement's
-// suspenders: even a hypothetical stale dispatch against an old row can
-// now only REFUSE or no-op (one WARN, traySetSettingsClick) - never
-// execute. What remains is at most a refused click in the sub-poll window
-// (inert, never wrong). No automated test can observe any of this on
-// Linux (no native menu, no message turn), so the ordering and the native
-// read-back are review-verified; the pure planner and comparators are
-// unit-tested in traystate_test.go.
+// The recorded standing residual (R3-F4/R4-F2/R5-F2, ruled non-blocking)
+// is back to its minimal shape under the pool: a click queued in the same
+// Win32 message turn as a rebuild's rebind applies the row's NEW name.
+// (ROUND-7/ROUND-8 eliminated that window structurally by retiring rows
+// and rendering fresh per change; R11-F2 removes THAT scheme because its
+// per-change fresh IDs march the fork's global counter past WM_COMMAND's
+// 16-bit truncation point and permanently break dispatch.) The slot
+// discipline plus the stable closure's native-title verification
+// (trayVerifySettingsItemTitle) keep every OTHER shape inert: a click in
+// the cleared window no-ops on "", a click against a divergent native
+// title REFUSES with one WARN (traySetSettingsClick). No automated test
+// can observe any of this on Linux (no native menu, no message turn), so
+// the ordering and the native read-back are review-verified; the pure
+// planner and comparators are unit-tested in traystate_test.go.
 func newSavedMenuChild(parent *systray.MenuItem, title, command string, lightCmd func(string) func(), logger *slog.Logger) *savedMenuChild {
 	child := &savedMenuChild{}
 	child.slot.Store(command) // bound BEFORE the create call: never an uninitialized slot behind a revealed item
@@ -595,99 +617,104 @@ func newSavedMenuChild(parent *systray.MenuItem, title, command string, lightCmd
 	return child
 }
 
-// syncSavedSettingsMenu rebuilds the "Saved settings" submenu's rows to
-// render want (called only when traySameMenuSpecs reported a change),
-// under R7-F2's FULL-REBUILD discipline: on ANY name-set change it
-// retires EVERY current row and creates FRESH native rows in daemon
-// order. The pure identical/changed decision lives in trayPlanSettingsSync
-// (traystate.go); this function is the mechanical executor over two
-// phases, on the refresh loop's goroutine:
+// syncSavedSettingsMenu reconciles the "Saved settings" submenu to want
+// (called only when traySameMenuSpecs reported a change) under R11-F2's
+// BOUNDED ID-POSITIONAL POOL discipline: pooled rows keep their identity
+// (and immutable command IDs) forever; the wanted names are bound to pool
+// rows in ASCENDING ROW ID order, so the fork's own ID-sorted visible
+// list displays exactly the daemon order. The pure decision lives in
+// trayPlanSettingsPool (traystate.go); this function is the mechanical
+// executor over four phases, on the refresh loop's goroutine.
 //
-// Phase A - RETIRE ALL: every currently-shown row is retired: its command
-// slot is cleared FIRST (a racing click then no-ops on ""), its native
-// title is repainted to the "(no saved settings)" placeholder (a click
-// still holding the pre-retire slot then ALSO fails the native-title
-// check), it is disabled, hidden (systray.Hide, which removes the row
-// from the parent's visible list entirely), stamped with the retirement
-// time, and appended to the tracked retired pool - or, with the pool full
-// (trayRetiredCap), simply left permanently hidden, disabled and unbound
-// (a leaked native row; name-set churn is gated by traySameMenuSpecs to
-// genuine changes and the 100-name store cap bounds each rebuild, so the
-// tracked pool stays bounded while leaked orphans track real rename churn
-// over the process's lifetime).
+// ROUND-8's full-rebuild discipline (retire every row, render fresh rows
+// per change) is REMOVED root-and-branch: its fresh IDs grew the fork's
+// GLOBAL counter on every change, retired rows stay in the fork's map
+// forever (no remove API), and Windows WM_COMMAND supplies a menu item's
+// identifier ONLY in the low 16 bits of wParam - cumulative IDs past
+// 65536 would alias CURRENT rows onto EARLIER map entries (inert retired
+// rows at best, unrelated actions like mic mute or light toggle at
+// worst), permanently breaking the tray until restart (R11-F2). Under
+// the pool, global ID usage MAXES at the static items plus the pool's
+// historical maximum length (<= 100 names via the store cap, or the one
+// reused placeholder row) - far below 65536 - and churn (renames,
+// reorders, deletes, placeholder flips) creates NOTHING.
 //
-// Phase B - RENDER FRESH IN DAEMON ORDER: one newSavedMenuChild per
-// wanted spec, created in fresh-list order, with no reuse path at all:
-// the fork sorts each parent's visible rows by the row's IMMUTABLE
-// command ID (verified fork behavior: addToVisibleItems sorts ascending;
-// Show re-inserts at the ID-sorted position, never the end) and IDs are
-// monotonic in creation order, so creation order IS display order - only
-// fresh rows, created in daemon order, can display in daemon order. A
-// reused row's old ID would sort back into its stale position, which is
-// why the ROUND-7 quarantine/reuse path is removed (retirement remains,
-// purely as click-safety: a reused row was never needed for safety).
-// Each fresh child arrives with its slot AND its stable closure already
-// assigned (see newSavedMenuChild; R3-F4 ordering, no yield between),
-// then SetTitle (redundant re-assert), Enable/Disable per the spec, and
-// Show (a native SetMenuItemInfo no-op for an already-visible row, kept
-// for sequence parity). The display/command split is raw-vs-Title:
-// spec.Title is the menu-ESCAPED display string ("&" -> "&&"), spec.raw
-// the VERBATIM saved name - the command must use raw, because the
-// daemon's store keys names raw and an escaped title would apply nothing.
-// The returned spec copy is the new cached render.
+// Phase A - CLEAR ALL SLOTS FIRST (the stale-click defense): every pool
+// row's command slot is cleared before ANY native mutation, so from this
+// instant a racing click against ANY settings row - shown or retired -
+// loads "" and no-ops. The re-bound commands land only in phase B, per
+// row AFTER its new title painted, so the cleared window is the only
+// slot/title divergence a click can ever observe.
 //
-// Native-row growth bound: one fresh native row per wanted row per
-// USER-TRIGGERED name-set change (<= 100 per rebuild via the store cap;
-// identical poll ticks skip entirely; renames are rare manual delete+save
-// events). The retired old rows simultaneously hidden+disabled+unbound
-// are the deliberate cost of exact daemon-order display.
+// Phase B - BIND POSITIONALLY: for each planned assignment (want[k] on
+// the k-th ascending-ID row) the row is retitled to the escaped display
+// spec, enabled/disabled, SHOWN (a previously-retired row re-appears at
+// its ID-sorted position among the shown rows - the k-th - per verified
+// fork behavior: Show re-inserts at the ID-sorted position, never the
+// end), and its new command slot is stored LAST. The display/command
+// split is raw-vs-Title: spec.Title is the menu-ESCAPED display string
+// ("&" -> "&&"), spec.raw the VERBATIM saved name - the command must use
+// raw, because the daemon's store keys names raw and an escaped title
+// would apply nothing.
 //
-// Why retirement (still) eliminates the R4-F2/R5-F2/R6-F1 race rather
-// than shrinking it: the fork dispatches clicks by command ID alone; with
-// in-place rebinding, a WM_COMMAND queued while the row displayed name A
-// could dispatch AFTER the rebuild re-bound the row to name B - slot and
-// native title BOTH already B, so even the ROUND-6 title verification
-// passed and B was applied though the user clicked A. Under retirement,
-// the row the user saw keeps its identity forever: after the rebuild its
-// slot is "" and its title is the placeholder, so the stale dispatch
-// no-ops or refuses. No automated test can observe the native ordering on
-// Linux (no native menu, no message turn), so this discipline is
-// review-verified; the pure planner (trayPlanSettingsSync) is unit-tested
-// in traystate_test.go: identical ticks no-op, any change retires every
-// old row, and the render list is the daemon's order verbatim.
-func syncSavedSettingsMenu(parent *systray.MenuItem, shown, retired []*savedMenuChild, cached, want []trayMenuSpec, lightCmd func(string) func(), logger *slog.Logger) (newShown, newRetired []*savedMenuChild, newCached []trayMenuSpec) {
-	plan := trayPlanSettingsSync(cached, want)
-	if !plan.changed {
+// Phase C - RETIRE THE SURPLUS: rows beyond len(want) keep their cleared
+// slot, are repainted to the "(no saved settings)" placeholder (a click
+// still holding a pre-clear slot then ALSO fails the native-title
+// check), disabled, hidden, and stamped with the retirement time. They
+// stay IN the pool - phase D of a later GROWTH rebuild reuses them; they
+// are never leaked and never re-sorted.
+//
+// Phase D - GROW: exactly plan.fresh rows are created for the positions
+// beyond the pool's size, bound to want[len(pool)..] in order, and
+// appended - append-only creation keeps pool order identical to
+// ascending immutable-ID order. Each fresh child arrives with its slot
+// AND its stable closure already assigned (see newSavedMenuChild; R3-F4
+// ordering, no yield between), then the same title/enable/Show sequence
+// as a re-bind (a fresh row is already native-visible; Show is a
+// SetMenuItemInfo no-op kept for sequence parity).
+//
+// A stalled plan (len(want) beyond traySettingsRowsHardBound - way past
+// the store's 100-name cap, so only a bogus caller) logs one WARN and
+// touches NOTHING: the previous render stays exactly as it was. No
+// automated test can observe the native ordering on Linux (no native
+// menu, no message turn), so this executor is review-verified; the pure
+// planner (trayPlanSettingsPool) is unit-tested in traystate_test.go:
+// identical ticks no-op, assignments land on ascending IDs positionally,
+// growth only beyond the pool, shrink retires the shown surplus, churn
+// creates nothing, and the hard bound stalls.
+func syncSavedSettingsMenu(parent *systray.MenuItem, pool []*savedMenuChild, cached, want []trayMenuSpec, lightCmd func(string) func(), logger *slog.Logger) (newPool []*savedMenuChild, newCached []trayMenuSpec) {
+	// The pool discipline maintains BY CONSTRUCTION: the first
+	// len(cached) pool rows (in pool order, which is ascending-ID order -
+	// creation is append-only) are the shown ones, rendering cached
+	// verbatim; the rest are retired. IDs stay honest positionally (the
+	// planner also sorts by them - cheap insurance, and what the
+	// permutation table tests pin from deliberately un-ordered inputs).
+	model := make([]traySettingsPoolRow, len(pool))
+	for i := range pool {
+		model[i] = traySettingsPoolRow{ID: uint32(i)}
+		if i < len(cached) {
+			model[i].spec = cached[i]
+			model[i].Shown = true
+		}
+	}
+	plan := trayPlanSettingsPool(model, want)
+	if !plan.changed || plan.stall {
+		if plan.stall {
+			logger.Warn("settings submenu rebuild declined: the wanted list exceeds the bounded pool cap; leaving the previous render untouched (the fork's global menu IDs must never approach WM_COMMAND's 16-bit truncation)", "want", len(want), "bound", traySettingsRowsHardBound)
+		}
 		// Identical tick (the refresh loop gates on traySameMenuSpecs, so
 		// this fires only from a defensive direct call): touch NOTHING -
 		// no retires, no churn, no ordering frobs.
-		return shown, retired, cached
+		return pool, cached
 	}
 
-	// Phase A - RETIRE ALL currently-shown rows (slot cleared FIRST).
-	now := time.Now()
-	newRetired = make([]*savedMenuChild, 0, trayRetiredCap)
-	newRetired = append(newRetired, retired...)
-	for _, i := range plan.retires {
-		child := shown[i]
-		child.slot.Store("") // a retired row is unbound: no stale command can fire from it
-		child.item.SetTitle(trayNoSavedSettingsTitle)
-		child.item.Disable()
-		child.item.Hide()
-		child.retiredAt = now
-		if len(newRetired) < trayRetiredCap {
-			newRetired = append(newRetired, child)
-		} else {
-			// Pool full: the row stays permanently hidden/disabled/unbound
-			// (a leaked native row; see the header comment).
-			logger.Warn("settings row retired but the tracked retired pool is full; dropping it from tracking (permanently hidden, disabled, unbound)", "cap", trayRetiredCap)
-		}
+	// Phase A - clear EVERY pool slot FIRST: a racing click unbinds to ""
+	// and no-ops, no matter which row it fired against.
+	for _, child := range pool {
+		child.slot.Store("")
 	}
 
-	// Phase B - render FRESH rows in daemon order: immutable command IDs
-	// ascend with creation, and the fork displays ascending IDs.
-	newShown = make([]*savedMenuChild, 0, len(plan.fresh))
-	for _, spec := range plan.fresh {
+	bind := func(child *savedMenuChild, spec trayMenuSpec) {
 		// command is the row's slot content: an ENABLED real entry's apply
 		// verb on the VERBATIM raw name; "" for placeholders (an unbound,
 		// disabled row can never fire).
@@ -695,7 +722,6 @@ func syncSavedSettingsMenu(parent *systray.MenuItem, shown, retired []*savedMenu
 		if spec.Enabled {
 			command = traySettingsApplyPrefix + spec.raw
 		}
-		child := newSavedMenuChild(parent, spec.Title, command, lightCmd, logger)
 		child.item.SetTitle(spec.Title)
 		if spec.Enabled {
 			child.item.Enable()
@@ -703,10 +729,34 @@ func syncSavedSettingsMenu(parent *systray.MenuItem, shown, retired []*savedMenu
 			child.item.Disable()
 		}
 		child.item.Show()
-		newShown = append(newShown, child)
+		child.slot.Store(command) // LAST: after the paint, never before it
+	}
+
+	// Phase B - bind the wanted positions onto ascending-ID rows.
+	for _, assign := range plan.assigns {
+		bind(pool[assign.row], assign.spec)
+	}
+
+	// Phase C - retire the shown surplus (slots already cleared in
+	// phase A).
+	now := time.Now()
+	for _, i := range plan.retires {
+		child := pool[i]
+		child.item.SetTitle(trayNoSavedSettingsTitle)
+		child.item.Disable()
+		child.item.Hide()
+		child.retiredAt = now
+	}
+
+	// Phase D - grow: fresh rows for the positions beyond the pool, bound
+	// in order and appended (pool order stays ascending-ID).
+	for _, spec := range want[len(pool):] {
+		child := newSavedMenuChild(parent, spec.Title, "", lightCmd, logger)
+		bind(child, spec)
+		pool = append(pool, child)
 	}
 
 	newCached = make([]trayMenuSpec, len(want))
 	copy(newCached, want)
-	return newShown, newRetired, newCached
+	return pool, newCached
 }

@@ -44,12 +44,16 @@ var errNoReply = errors.New("no reply from daemon")
 //   - "mute" | "unmute"           -> the new state ("muted"/"unmuted")
 //   - "toggle"                    -> the new state (unknown resolves to mute)
 //   - "shutdown"                  -> "shutting down" (the daemon then exits)
-//   - "mute-if <expected>" / "unmute-if <expected>"  (expected ∈
-//     muted|unmuted; R6-F2 atomic conditional verbs, used by the tray) ->
-//     "ok" (premise matched: the absolute verb AND one F24 meeting-app
-//     sweep ran in the same serveUDP step), "flipped muted|unmuted" or
-//     "flipped unknown" (premise failed: NO verb, NO inject), or
-//     "error: <reason>"
+//   - "mute-if unmuted" / "unmute-if muted"  (ONLY these two
+//     opposite-state forms - the premise the verb acts FROM; R6-F2 atomic
+//     conditional verbs, used by the tray. R11-F4: the same-state
+//     combinations "mute-if muted" / "unmute-if unmuted" are rejected at
+//     parse like any other malformed shape -> "error: unknown command",
+//     because they would still inject the blind F24 sweep against an
+//     UNCHANGED mic) -> "ok" (premise matched: the absolute verb AND one
+//     F24 meeting-app sweep ran in the same serveUDP step), "flipped
+//     muted|unmuted" or "flipped unknown" (premise failed: NO verb, NO
+//     inject), or "error: <reason>"
 //
 // plus the "light ..." pass-through family documented in README. Anything
 // unrecognized replies "error: unknown command".

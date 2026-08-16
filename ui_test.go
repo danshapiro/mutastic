@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 const testLightStatus = "COM12 desk-center: on 55% 3583K\n" +
@@ -1414,6 +1415,79 @@ func TestUIAPISettingsNameByteCap(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestUIAPISettingsRawUTF8Gate pins R11-F3: POST /api/settings validates
+// the RAW bounded body with utf8.Valid BEFORE the JSON decoder - for EVERY
+// action - because encoding/json silently coerces invalid UTF-8 inside JSON
+// strings to U+FFFD, and the daemon-side utf8.ValidString name check would
+// then only ever see replacement characters (a direct POST saving,
+// applying, or deleting a raw "a\x80b" would otherwise act on the DISTINCT
+// existing name "a�b"). A raw invalid body answers HTTP 400 "invalid
+// request encoding" with ZERO daemon calls; a legal multi-byte UTF-8 name
+// passes through to the daemon byte-for-byte unchanged.
+func TestUIAPISettingsRawUTF8Gate(t *testing.T) {
+	post := func(server *uiServer, body []byte) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/settings", bytes.NewReader(body))
+		req.Host = "127.0.0.1:42815"
+		req.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		server.ServeHTTP(recorder, req)
+		return recorder
+	}
+	for _, action := range []string{"save", "apply", "delete"} {
+		t.Run(action+" with raw invalid UTF-8 in the body is 400 before any daemon call", func(t *testing.T) {
+			// A lone 0x80 continuation byte inside the JSON name string:
+			// valid JSON framing, invalid UTF-8 - the decoder would
+			// coerce it to U+FFFD and smuggle a distinct name through.
+			// (Double-quoted literal: the \x80 escape must be REAL bytes.)
+			body := []byte("{\"action\":\"" + action + "\",\"name\":\"a\x80b\"}")
+			if utf8.Valid(body) {
+				t.Fatal("pin sanity: the crafted body must be INVALID UTF-8")
+			}
+			calls := 0
+			server := newUIServer(42815, newTestDaemonDispatcher(func(string) (string, error) {
+				calls++
+				return "", nil
+			}))
+			recorder := post(server, body)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, body %s; want 400", recorder.Code, recorder.Body.String())
+			}
+			if !strings.Contains(recorder.Body.String(), "invalid request encoding") {
+				t.Fatalf("body %s, want the raw-encoding refusal", recorder.Body.String())
+			}
+			if calls != 0 {
+				t.Fatalf("an invalid-encoding %s reached the daemon %d times; want zero calls", action, calls)
+			}
+		})
+		t.Run(action+" with a legal multi-byte name passes through unchanged", func(t *testing.T) {
+			name := "café 中 🚀"
+			body := []byte(`{"action":"` + action + `","name":"` + name + `"}`)
+			if !utf8.Valid(body) {
+				t.Fatal("pin sanity: the multi-byte body must be VALID UTF-8")
+			}
+			var commands []string
+			server := newUIServer(42815, newTestDaemonDispatcher(func(command string) (string, error) {
+				commands = append(commands, command)
+				if strings.HasPrefix(command, "light settings apply ") {
+					return "COM4: on 47% 2900K", nil
+				}
+				if command == "light settings list" {
+					return name, nil
+				}
+				return `saved "x" (1 lights)`, nil
+			}))
+			recorder := post(server, body)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, body %s; a legal multi-byte name must pass the encoding gate", recorder.Code, recorder.Body.String())
+			}
+			wantCommands := []string{"light settings " + action + " " + name, "light settings list"}
+			if !reflect.DeepEqual(commands, wantCommands) {
+				t.Fatalf("daemon commands = %v, want %v (the name forwarded BYTE-EXACT)", commands, wantCommands)
+			}
+		})
 	}
 }
 

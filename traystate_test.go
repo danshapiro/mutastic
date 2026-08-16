@@ -125,6 +125,11 @@ type traySpy struct {
 	stopErr  error
 	// script overrides askReply/askErr per command (handlers whose verb
 	// depends on the armed premise, like muteClick's conditional verb).
+	// R11-F1: muteClick no longer takes a loader - the snapshot is captured
+	// synchronously in the native click callback and passed BY VALUE, so
+	// these tests inject each click's snapshot (including deliberately
+	// STALE ones) DIRECTLY at the same boundary the native callback hands
+	// it over.
 	script map[string]scriptOutcome
 }
 
@@ -233,9 +238,6 @@ func TestTrayMuteConditionalVerb(t *testing.T) {
 func TestMuteClickRevalidates(t *testing.T) {
 	armedMute := trayMuteSnapshot{Title: "Mute", Armed: trayStateUnmuted}
 	armedUnmute := trayMuteSnapshot{Title: "Unmute", Armed: trayStateMuted}
-	load := func(snap trayMuteSnapshot) func() trayMuteSnapshot {
-		return func() trayMuteSnapshot { return snap }
-	}
 	verifyOK := func(trayMuteSnapshot) bool { return true }
 
 	// ok: the premise matched, the daemon ran the absolute verb AND the
@@ -246,7 +248,7 @@ func TestMuteClickRevalidates(t *testing.T) {
 	levelsMute := &levelRecorder{}
 	aMute := matchingMute.actions()
 	aMute.logger = slog.New(levelsMute)
-	aMute.muteClick(load(armedMute), verifyOK)
+	aMute.muteClick(armedMute, verifyOK)
 	if got := matchingMute.order(); got != "ask:mute-if unmuted,refresh" {
 		t.Fatalf("muteClick armed Mute with a matching premise = %q, want %q", got, "ask:mute-if unmuted,refresh")
 	}
@@ -257,7 +259,7 @@ func TestMuteClickRevalidates(t *testing.T) {
 	matchingUnmute := &traySpy{script: map[string]scriptOutcome{
 		"unmute-if muted": {reply: "ok"},
 	}}
-	matchingUnmute.actions().muteClick(load(armedUnmute), verifyOK)
+	matchingUnmute.actions().muteClick(armedUnmute, verifyOK)
 	if got := matchingUnmute.order(); got != "ask:unmute-if muted,refresh" {
 		t.Fatalf("muteClick armed Unmute with a matching premise = %q, want %q", got, "ask:unmute-if muted,refresh")
 	}
@@ -282,7 +284,7 @@ func TestMuteClickRevalidates(t *testing.T) {
 		spy := &traySpy{script: map[string]scriptOutcome{c.cmd: c.outcome}}
 		a := spy.actions()
 		a.logger = slog.New(levels)
-		a.muteClick(load(c.snap), verifyOK)
+		a.muteClick(c.snap, verifyOK)
 		if got := spy.order(); got != "ask:"+c.cmd+",refresh" {
 			t.Fatalf("muteClick with %s = %q, want %q (one conditional ask, then refresh; nothing else ran)", c.name, got, "ask:"+c.cmd+",refresh")
 		}
@@ -306,7 +308,7 @@ func TestMuteClickRevalidates(t *testing.T) {
 		spy := &traySpy{script: map[string]scriptOutcome{"mute-if unmuted": c.outcome}}
 		a := spy.actions()
 		a.logger = slog.New(levels)
-		a.muteClick(load(armedMute), verifyOK)
+		a.muteClick(armedMute, verifyOK)
 		if got := spy.order(); got != "ask:mute-if unmuted,refresh" {
 			t.Fatalf("muteClick with %s = %q, want %q (one conditional ask, then refresh)", c.name, got, "ask:mute-if unmuted,refresh")
 		}
@@ -324,7 +326,7 @@ func TestMuteClickRevalidates(t *testing.T) {
 	spy := &traySpy{}
 	a := spy.actions()
 	a.logger = slog.New(levels)
-	a.muteClick(load(trayMuteSnapshot{Title: "Mute/Unmute", Armed: trayStateUnknown}), verifyOK)
+	a.muteClick(trayMuteSnapshot{Title: "Mute/Unmute", Armed: trayStateUnknown}, verifyOK)
 	if got := spy.order(); got != "refresh" {
 		t.Fatalf("muteClick with an unarmed premise = %q, want %q (no daemon call at all)", got, "refresh")
 	}
@@ -336,7 +338,7 @@ func TestMuteClickRevalidates(t *testing.T) {
 	spy = &traySpy{}
 	a = spy.actions()
 	a.logger = slog.New(levels)
-	a.muteClick(load(armedMute), func(trayMuteSnapshot) bool { return false })
+	a.muteClick(armedMute, func(trayMuteSnapshot) bool { return false })
 	if got := spy.order(); got != "refresh" {
 		t.Fatalf("muteClick with a failed armed-verify = %q, want %q (no daemon call at all - the display and the premise disagreed)", got, "refresh")
 	}
@@ -353,7 +355,6 @@ func TestMuteClickRevalidates(t *testing.T) {
 // again.
 func TestMuteClickSingleFlight(t *testing.T) {
 	armedMute := trayMuteSnapshot{Title: "Mute", Armed: trayStateUnmuted}
-	load := func() trayMuteSnapshot { return armedMute }
 	verifyOK := func(trayMuteSnapshot) bool { return true }
 	spy := &traySpy{script: map[string]scriptOutcome{
 		"mute-if unmuted": {reply: "ok"},
@@ -377,10 +378,10 @@ func TestMuteClickSingleFlight(t *testing.T) {
 	}
 
 	first := make(chan struct{})
-	go func() { a.muteClick(load, verifyOK); close(first) }()
+	go func() { a.muteClick(armedMute, verifyOK); close(first) }()
 	<-entered // the first click now holds the flight guard inside its ask
 	second := make(chan struct{})
-	go func() { a.muteClick(load, verifyOK); close(second) }()
+	go func() { a.muteClick(armedMute, verifyOK); close(second) }()
 	<-second // dropped with one WARN; it must never reach the spy
 	if got := spy.order(); got != "" {
 		t.Fatalf("while the first click is in flight the spy = %q, want no recorded calls yet", got)
@@ -399,31 +400,75 @@ func TestMuteClickSingleFlight(t *testing.T) {
 	}
 
 	// The guard releases: a later click runs the full sequence again.
-	a.muteClick(load, verifyOK)
+	a.muteClick(armedMute, verifyOK)
 	if got := spy.order(); got != want+","+want {
 		t.Fatalf("after the in-flight click released, a later click = %q, want the full sequence twice", got)
 	}
 }
 
-// TestMuteClickLoadsSnapshotOnce pins the F7 contract: the click loads the
-// {title, armed} snapshot EXACTLY ONCE - the displayed verb and the premise
-// the click's conditional verb is premised on are a single read, never a
-// mixture of a fresh title with a stale premise.
-func TestMuteClickLoadsSnapshotOnce(t *testing.T) {
-	loads := 0
-	load := func() trayMuteSnapshot {
-		loads++
-		return trayMuteSnapshot{Title: "Mute", Armed: trayStateUnmuted}
-	}
+// TestMuteClickActsOnlyOnTheCapturedSnapshot pins the R11-F1 capture
+// boundary: the {title, armed} pair the click acts on is EXACTLY the
+// snapshot the native callback captured synchronously at dispatch time
+// (muteClick takes it BY VALUE and has no re-load path - the pre-round-11
+// goroutine-then-load glue is gone, so a mid-flight refresh store can
+// never swap the premise under an in-flight click). Stale snapshots are
+// injected DIRECTLY at this boundary below, and every divergence from the
+// captured premise - the native row's, or the daemon's - is a refusal,
+// never the opposite action.
+func TestMuteClickActsOnlyOnTheCapturedSnapshot(t *testing.T) {
+	verifyOK := func(trayMuteSnapshot) bool { return true }
+	// The verify runs on the passed snapshot BIT-FOR-BIT: the title the
+	// native row is re-checked against IS the captured title (a refresh
+	// that repainted after the capture then fails the gate; the old
+	// goroutine-load glue would have verified the NEW paint against the
+	// NEW premise and gone on to fire).
+	captured := trayMuteSnapshot{Title: "Mute", Armed: trayStateUnmuted}
+	var gotSnaps []trayMuteSnapshot
 	spy := &traySpy{script: map[string]scriptOutcome{
 		"mute-if unmuted": {reply: "ok"},
 	}}
-	spy.actions().muteClick(load, func(trayMuteSnapshot) bool { return true })
+	spy.actions().muteClick(captured, func(s trayMuteSnapshot) bool { gotSnaps = append(gotSnaps, s); return true })
 	if got := spy.order(); got != "ask:mute-if unmuted,refresh" {
 		t.Fatalf("muteClick with a matching premise = %q, want %q", got, "ask:mute-if unmuted,refresh")
 	}
-	if loads != 1 {
-		t.Fatalf("snapshot loads per click = %d, want exactly 1", loads)
+	if len(gotSnaps) != 1 || gotSnaps[0] != captured {
+		t.Fatalf("verify observed %v, want exactly [%+v] (the captured snapshot by value, unstaleable)", gotSnaps, captured)
+	}
+
+	// Stale capture vs a daemon-state flip (the R11-F1 hazard's terminal
+	// layer): the click was captured when the label read Mute (premise
+	// unmuted), the mic has since flipped to muted, and the native row
+	// still verifies (title/enablement not yet repainted in this
+	// window). The daemon's atomically-checked premise refuses -
+	// "flipped muted" - and NOTHING runs: no verb, no sweep, one WARN +
+	// refresh.
+	levels := &levelRecorder{}
+	stale := &traySpy{script: map[string]scriptOutcome{
+		"mute-if unmuted": {reply: "flipped muted"},
+	}}
+	a := stale.actions()
+	a.logger = slog.New(levels)
+	a.muteClick(captured, verifyOK)
+	if got := stale.order(); got != "ask:mute-if unmuted,refresh" {
+		t.Fatalf("stale-captured click against a flipped daemon = %q, want %q (one conditional ask, refusal, refresh - nothing else ran)", got, "ask:mute-if unmuted,refresh")
+	}
+	if len(levels.levels) != 1 || levels.levels[0] != slog.LevelWarn {
+		t.Fatalf("stale-captured click levels = %v, want [WARN] (a refusal, not an error)", levels.levels)
+	}
+
+	// Stale capture vs a refresh repaint (the hazard's first layer): the
+	// native row no longer shows the captured title/enablement - the
+	// verify declines and the click never reaches the daemon at all.
+	levels = &levelRecorder{}
+	repainted := &traySpy{}
+	a = repainted.actions()
+	a.logger = slog.New(levels)
+	a.muteClick(captured, func(s trayMuteSnapshot) bool { return false })
+	if got := repainted.order(); got != "refresh" {
+		t.Fatalf("stale-captured click against a repainted row = %q, want %q (no daemon call at all)", got, "refresh")
+	}
+	if len(levels.levels) != 1 || levels.levels[0] != slog.LevelWarn {
+		t.Fatalf("repaint-declined click levels = %v, want [WARN]", levels.levels)
 	}
 }
 
@@ -596,8 +641,7 @@ func TestLogSeverityClassifiesFailures(t *testing.T) {
 		signalRefresh: func() {},
 		logger:        slog.New(levels),
 	}
-	load := func() trayMuteSnapshot { return trayMuteSnapshot{Title: "Mute", Armed: trayStateUnmuted} }
-	a.muteClick(load, func(trayMuteSnapshot) bool { return true })
+	a.muteClick(trayMuteSnapshot{Title: "Mute", Armed: trayStateUnmuted}, func(trayMuteSnapshot) bool { return true })
 	a.onLight("light toggle")
 	if len(levels.levels) != 2 || levels.levels[0] != slog.LevelError || levels.levels[1] != slog.LevelError {
 		t.Fatalf("levels = %v, want [ERROR ERROR] (mute-click error + per-line fleet error)", levels.levels)
@@ -762,23 +806,25 @@ func TestTraySetSettingsClick(t *testing.T) {
 	if len(fired) != 1 || fired[0] != "light settings apply focus" {
 		t.Fatalf("bound slot dispatched %v, want exactly [light settings apply focus]", fired)
 	}
-	// Stale-click pin (R7-F2): on any name-set change EVERY old row is
-	// retired - slot cleared, disabled, hidden - so a click dispatched
-	// from the pre-rebuild display (the fork dispatches by immutable
-	// command ID) loads the cleared "" slot and no-ops: the stale row can
-	// never apply anything.
-	slot.Store("") // the retirement hygiene's first step
+	// Stale-click pin (R11-F2): every rebuild clears EVERY settings row's
+	// slot FIRST - so a click dispatched mid-rebind (the fork dispatches by
+	// immutable command ID, and the user read the row's pre-rebuild name)
+	// loads the cleared "" slot and no-ops: no settings row can apply
+	// anything during the rebind window. Retired rows keep that cleared
+	// slot forever (until growth re-binds them with a fresh title).
+	slot.Store("") // the executor's phase-A cleared window / a retired row
 	click()
 	if len(fired) != 1 {
-		t.Fatalf("stale click on a retired (cleared-slot) row dispatched %v, want no new dispatch", fired)
+		t.Fatalf("stale click during a rebind (or on a retired row) dispatched %v, want no new dispatch", fired)
 	}
-	// The closure still reads the slot at click time (R2-F3): a slot
-	// stored at CREATION (R7-F2 rows are never re-bound after creation -
-	// a changed set renders fresh rows) dispatches exactly that command.
+	// The closure still reads the slot at click time (R2-F3): after the
+	// rebuild's cleared window, the executor re-binds the row IN PLACE
+	// (title painted first, command stored last), and the bound slot
+	// dispatches exactly that command.
 	slot.Store("light settings apply party")
 	click()
 	if len(fired) != 2 || fired[1] != "light settings apply party" {
-		t.Fatalf("creation-stored slot dispatched %v, want the stored command last", fired)
+		t.Fatalf("re-bound slot dispatched %v, want the stored command last", fired)
 	}
 }
 
@@ -815,15 +861,20 @@ func TestTrayArmedMatchesNative(t *testing.T) {
 	}
 }
 
-// TestTrayPlanSettingsSync pins the pure full-rebuild reconcile (R7-F2):
-// an identical set is a NO-OP (identical ticks skip - no churn, no
-// retires); ANY difference retires EVERY cached row and renders the
-// wanted list FRESH in exact daemon order. There is deliberately no
-// retired-pool input: retired rows are never reused, because the fork
-// displays rows sorted by their IMMUTABLE command ID and a reused row's
-// old ID could never sort into the new daemon order - only fresh rows
-// created in daemon order display in daemon order.
-func TestTrayPlanSettingsSync(t *testing.T) {
+// TestTrayPlanSettingsPool pins the pure bounded ID-positional pool
+// reconcile (R11-F2). The visual-order invariant: the fork displays
+// visible rows sorted by their IMMUTABLE command ID, so want[k] must land
+// on the pool's k-th ASCENDING-ID row - from ANY input order the
+// assignments pin exactly that, making display order == daemon order.
+// Beyond ordering: identical ticks no-op (no churn of a single native
+// row); growth creates fresh rows ONLY for positions beyond the pool;
+// shrink retires exactly the SHOWN surplus (already-retired rows are not
+// listed again); and - the bound the whole discipline exists for - churn
+// (renames, reorders, deletes) creates NOTHING, so the fork's global ID
+// counter maxes at the static items plus the pool's historical maximum
+// length, three orders of magnitude below WM_COMMAND's 16-bit truncation
+// point.
+func TestTrayPlanSettingsPool(t *testing.T) {
 	spec := func(title, raw string, enabled bool) trayMenuSpec {
 		return trayMenuSpec{Title: title, raw: raw, Enabled: enabled}
 	}
@@ -832,74 +883,193 @@ func TestTrayPlanSettingsSync(t *testing.T) {
 	realC := spec("c", "c", true)
 	realX := spec("x", "x", true)
 	placeholder := spec(trayNoSavedSettingsTitle, "", false)
+	// shown builds an ascending-ID pool whose first len(specs) rows
+	// render specs and the rest are retired (extras), exactly the
+	// executor's by-construction model.
+	shown := func(specs []trayMenuSpec, extras int) []traySettingsPoolRow {
+		pool := make([]traySettingsPoolRow, 0, len(specs)+extras)
+		for _, s := range specs {
+			pool = append(pool, traySettingsPoolRow{ID: uint32(len(pool) * 7), spec: s, Shown: true})
+		}
+		for range extras {
+			pool = append(pool, traySettingsPoolRow{ID: uint32(len(pool) * 7), spec: realA, Shown: false})
+		}
+		return pool
+	}
+	// applyPlan mirrors the executor: binds assign the positions,
+	// retires un-show, fresh rows append (ascending new IDs).
+	applyPlan := func(pool []traySettingsPoolRow, plan traySettingsPoolPlan, want []trayMenuSpec) []traySettingsPoolRow {
+		for _, assign := range plan.assigns {
+			pool[assign.row].spec = assign.spec
+			pool[assign.row].Shown = true
+		}
+		for _, i := range plan.retires {
+			pool[i].Shown = false
+		}
+		for _, s := range want[len(want)-plan.fresh:] {
+			pool = append(pool, traySettingsPoolRow{ID: uint32(len(pool) * 7), spec: s, Shown: true})
+		}
+		return pool
+	}
 
-	t.Run("steady state is a no-op: identical ticks skip everything", func(t *testing.T) {
-		for _, same := range [][2][]trayMenuSpec{
-			{nil, nil}, // before the first poll difference
-			{{realA, realB}, {realA, realB}},
-		} {
-			plan := trayPlanSettingsSync(same[0], same[1])
-			if plan.changed {
-				t.Errorf("changed = true, want false (identical ticks no-op - the steady-state poll must never churn native rows)")
+	t.Run("visual-order invariant holds from any input permutation", func(t *testing.T) {
+		// Same three rows, deliberately UNORDERED inputs: the k-th
+		// wanted spec must land on the row whose ID is k-th ASCENDING,
+		// regardless of where that row sits in the input slice.
+		permutations := [][]traySettingsPoolRow{
+			{{ID: 42, spec: realA, Shown: true}, {ID: 7, spec: realB, Shown: true}, {ID: 30, spec: realC, Shown: true}},
+			{{ID: 7, spec: realA, Shown: true}, {ID: 30, spec: realB, Shown: true}, {ID: 42, spec: realC, Shown: true}},
+			{{ID: 30, spec: realA, Shown: true}, {ID: 42, spec: realB, Shown: true}, {ID: 7, spec: realC, Shown: true}},
+		}
+		want := []trayMenuSpec{realX, realA, spec("zzz", "zzz", true)}
+		wantIDs := []uint32{7, 30, 42} // x on the lowest ID, then a, then zzz
+		for pi, pool := range permutations {
+			plan := trayPlanSettingsPool(pool, want)
+			if !plan.changed || plan.stall || plan.fresh != 0 || len(plan.retires) != 0 {
+				t.Fatalf("permutation %d: changed/stall/fresh/retires = %v/%v/%d/%v, want true/false/0/[]", pi, plan.changed, plan.stall, plan.fresh, plan.retires)
 			}
-			if len(plan.retires) != 0 || len(plan.fresh) != 0 {
-				t.Errorf("retires/fresh = %v/%v, want both empty (nothing leaves, nothing is created)", plan.retires, plan.fresh)
+			if len(plan.assigns) != len(want) {
+				t.Fatalf("permutation %d: assigns = %v, want one per wanted spec", pi, plan.assigns)
+			}
+			for k, assign := range plan.assigns {
+				if assign.spec != want[k] {
+					t.Fatalf("permutation %d: assigns[%d].spec = %+v, want %+v (assignments are in WANTED order)", pi, k, assign.spec, want[k])
+				}
+				if got := pool[assign.row].ID; got != wantIDs[k] {
+					t.Fatalf("permutation %d: want[%d] landed on row ID %d, want %d (ascending-ID positional binding = daemon-order display)", pi, k, got, wantIDs[k])
+				}
 			}
 		}
 	})
 
-	// Every change class behaves identically: retire ALL, render FRESH.
-	// Order-sensitivity is pinned by "pure reorder" and "insert kept names"
-	// (the ROUND-7 keep-the-identical-rows scheme could not reorder; the
-	// full rebuild can, because fresh IDs track the new list position).
-	for _, c := range []struct {
-		name         string
-		cached, want []trayMenuSpec
-	}{
-		{"rename at the same position", []trayMenuSpec{realA}, []trayMenuSpec{realB}},
-		{"removal beyond the new length retires the whole old set too", []trayMenuSpec{realA, realB, realC}, []trayMenuSpec{realA}},
-		{"insert mid-list: kept names retire with the rest", []trayMenuSpec{realA, realB, realC}, []trayMenuSpec{realA, realX, realC}},
-		{"pure reorder of an identical name set", []trayMenuSpec{realA, realB}, []trayMenuSpec{realB, realA}},
-		{"placeholder-to-real with an identical title", []trayMenuSpec{placeholder}, []trayMenuSpec{spec(trayNoSavedSettingsTitle, trayNoSavedSettingsTitle, true)}},
-		{"real-to-placeholder with an identical title", []trayMenuSpec{spec(trayNoSavedSettingsTitle, trayNoSavedSettingsTitle, true)}, []trayMenuSpec{placeholder}},
-		{"everything vanishes (store corrupted mid-poll)", []trayMenuSpec{realA, realB}, []trayMenuSpec{spec(traySettingsUnavailableTitle, "", false)}},
-		{"first render from empty", nil, []trayMenuSpec{realA}},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			plan := trayPlanSettingsSync(c.cached, c.want)
-			if !plan.changed {
-				t.Fatal("changed = false, want true (any whole-spec difference forces the full rebuild)")
+	t.Run("steady state is a no-op: identical ticks skip everything", func(t *testing.T) {
+		for _, c := range []struct {
+			name string
+			pool []traySettingsPoolRow
+			want []trayMenuSpec
+		}{
+			{"empty pool, nothing wanted (before the first poll)", nil, nil},
+			{"steady two-name render", shown([]trayMenuSpec{realA, realB}, 0), []trayMenuSpec{realA, realB}},
+			{"steady placeholder render with retired surplus", shown([]trayMenuSpec{placeholder}, 2), []trayMenuSpec{placeholder}},
+		} {
+			plan := trayPlanSettingsPool(c.pool, c.want)
+			if plan.changed || len(plan.assigns) != 0 || len(plan.retires) != 0 || plan.fresh != 0 {
+				t.Errorf("%s: plan = %+v, want the empty no-op (identical ticks never churn a native row)", c.name, plan)
 			}
-			wantRetires := make([]int, len(c.cached))
-			for i := range c.cached {
-				wantRetires[i] = i
-			}
-			if !reflect.DeepEqual(plan.retires, wantRetires) {
-				t.Errorf("retires = %v, want %v (EVERY current row retires - the executor then does the click-safety hygiene on each: slot cleared, placeholder retitle, disabled, hidden)", plan.retires, wantRetires)
-			}
-			if !reflect.DeepEqual(plan.fresh, c.want) {
-				t.Errorf("fresh = %+v, want the wanted list VERBATIM in daemon order %+v (the executor creates fresh rows in exactly this order)", plan.fresh, c.want)
-			}
-			// The fresh list must be executable in order and produce that
-			// order on screen: fresh immutable IDs ascend with creation.
-			for i := 1; i < len(plan.fresh); i++ {
-				if plan.fresh[i] == plan.fresh[i-1] && plan.fresh[i] != c.want[i] {
-					t.Fatalf("fresh drifted from want at %d (the whole point is exact daemon order)", i)
-				}
-			}
-		})
-	}
-
-	t.Run("removal to empty retire to the placeholder render", func(t *testing.T) {
-		plan := trayPlanSettingsSync([]trayMenuSpec{realA, realB}, []trayMenuSpec{placeholder})
-		if !plan.changed || !reflect.DeepEqual(plan.retires, []int{0, 1}) {
-			t.Fatalf("changed/retires = %v/%v, want true/[0 1] (both names deleted: the one placeholder row renders fresh)", plan.changed, plan.retires)
 		}
-		// A CHANGE to an empty want list (impossible from traySavedSettings,
-		// which always renders at least a placeholder) still plans cleanly.
-		plan = trayPlanSettingsSync([]trayMenuSpec{realA}, nil)
-		if !plan.changed || !reflect.DeepEqual(plan.retires, []int{0}) || len(plan.fresh) != 0 {
-			t.Fatalf("changed/retires/fresh = %v/%v/%v, want true/[0]/empty", plan.changed, plan.retires, plan.fresh)
+	})
+
+	t.Run("growth creates fresh rows only for positions beyond the pool", func(t *testing.T) {
+		plan := trayPlanSettingsPool(shown([]trayMenuSpec{realA, realB, realC}, 0), []trayMenuSpec{realA, realB})
+		if plan.fresh != 0 {
+			t.Fatalf("shrink fresh = %d, want 0", plan.fresh)
+		}
+		plan = trayPlanSettingsPool(shown([]trayMenuSpec{realA, realB, realC}, 0), []trayMenuSpec{realA, realB, realC, realX})
+		if plan.fresh != 1 {
+			t.Fatalf("grow-by-one fresh = %d, want exactly 1 (only the position beyond the 3-row pool)", plan.fresh)
+		}
+		if len(plan.assigns) != 3 {
+			t.Fatalf("grow-by-one assigns = %v, want the 3 pooled positions bound", plan.assigns)
+		}
+		// Growth from the reused PLACEHOLDER row (one row, disabled, no
+		// name) to a three-name list: the placeholder row takes position
+		// 0, exactly two fresh rows cover the rest.
+		plan = trayPlanSettingsPool(shown([]trayMenuSpec{placeholder}, 0), []trayMenuSpec{realA, realB, realC})
+		if plan.fresh != 2 || len(plan.assigns) != 1 || plan.assigns[0].spec != realA {
+			t.Fatalf("placeholder growth assigns/fresh = %v/%d, want the placeholder row bound to position 0 plus 2 fresh", plan.assigns, plan.fresh)
+		}
+		// Growth with a retired surplus: the retired rows take the new
+		// positions BEFORE any fresh row is needed.
+		plan = trayPlanSettingsPool(shown([]trayMenuSpec{realA}, 2), []trayMenuSpec{realA, realB, realC})
+		if plan.fresh != 0 || len(plan.assigns) != 3 || len(plan.retires) != 0 {
+			t.Fatalf("growth into the retired surplus assigns/retires/fresh = %v/%v/%d, want 3 assigns (two of them re-showing retired rows), 0 retires, 0 fresh", plan.assigns, plan.retires, plan.fresh)
+		}
+	})
+
+	t.Run("shrink retires exactly the shown surplus", func(t *testing.T) {
+		pool := shown([]trayMenuSpec{realA, realB, realC}, 2) // rows 3,4 already retired
+		plan := trayPlanSettingsPool(pool, []trayMenuSpec{realA})
+		if !plan.changed || plan.fresh != 0 {
+			t.Fatalf("shrink changed/fresh = %v/%d, want true/0", plan.changed, plan.fresh)
+		}
+		if len(plan.assigns) != 1 || plan.assigns[0].row != 0 || plan.assigns[0].spec != realA {
+			t.Fatalf("shrink assigns = %+v, want row 0 re-bound to realA", plan.assigns)
+		}
+		if !reflect.DeepEqual(plan.retires, []int{1, 2}) {
+			t.Fatalf("shrink retires = %v, want [1 2] - exactly the SHOWN surplus (already-retired rows 3,4 are not listed again)", plan.retires)
+		}
+		// Full shrink to nothing wanted (impossible from traySavedSettings,
+		// which always renders at least a placeholder) retires everything.
+		plan = trayPlanSettingsPool(shown([]trayMenuSpec{realA, realB}, 0), nil)
+		if !plan.changed || len(plan.assigns) != 0 || !reflect.DeepEqual(plan.retires, []int{0, 1}) || plan.fresh != 0 {
+			t.Fatalf("shrink-to-nothing plan = %+v, want changed, no assigns, both rows retired, no fresh", plan)
+		}
+	})
+
+	t.Run("every change class re-binds positionally (rename, reorder, insert, placeholder flips)", func(t *testing.T) {
+		for _, c := range []struct {
+			name string
+			pool []traySettingsPoolRow
+			want []trayMenuSpec
+		}{
+			{"rename at the same position", shown([]trayMenuSpec{realA}, 0), []trayMenuSpec{realB}},
+			{"pure reorder of an identical name set", shown([]trayMenuSpec{realA, realB}, 0), []trayMenuSpec{realB, realA}},
+			{"insert mid-list keeps the pool, shifts positions", shown([]trayMenuSpec{realA, realB, realC}, 0), []trayMenuSpec{realA, realX, realB, realC}},
+			{"placeholder-to-real with an identical title", shown([]trayMenuSpec{placeholder}, 0), []trayMenuSpec{spec(trayNoSavedSettingsTitle, trayNoSavedSettingsTitle, true)}},
+			{"real-to-placeholder with an identical title", shown([]trayMenuSpec{spec(trayNoSavedSettingsTitle, trayNoSavedSettingsTitle, true)}, 0), []trayMenuSpec{placeholder}},
+			{"everything vanishes (store corrupted mid-poll)", shown([]trayMenuSpec{realA, realB}, 0), []trayMenuSpec{spec(traySettingsUnavailableTitle, "", false)}},
+			{"first render from empty", nil, []trayMenuSpec{realA}},
+		} {
+			t.Run(c.name, func(t *testing.T) {
+				plan := trayPlanSettingsPool(c.pool, c.want)
+				if !plan.changed || plan.stall {
+					t.Fatal("changed/stall = false/true, want true/false (any whole-spec difference forces the rebuild)")
+				}
+				got := applyPlan(append([]traySettingsPoolRow(nil), c.pool...), plan, c.want)
+				if len(got) != max(len(c.pool), len(c.want)) {
+					t.Fatalf("pool length after apply = %d, want max(pool, want) = %d", len(got), max(len(c.pool), len(c.want)))
+				}
+				// The applied model must be a positional no-op against want
+				// (shown prefix renders want, surplus retired): plan again.
+				if again := trayPlanSettingsPool(got, c.want); again.changed {
+					t.Fatalf("a second plan over the applied model = %+v, want the positional no-op (the applied render IS want)", again)
+				}
+			})
+		}
+	})
+
+	t.Run("churn creates nothing: rename 20x at size 3 allocates zero fresh rows", func(t *testing.T) {
+		want := []trayMenuSpec{realA, realB, realC}
+		pool := applyPlan(nil, trayPlanSettingsPool(nil, want), want)
+		if len(pool) != 3 {
+			t.Fatalf("pool after the first render = %d rows, want 3", len(pool))
+		}
+		for i := 0; i < 20; i++ {
+			renamed := []trayMenuSpec{spec(fmt.Sprintf("n%d", i), fmt.Sprintf("n%d", i), true), realB, realC}
+			want = renamed
+			plan := trayPlanSettingsPool(pool, want)
+			if !plan.changed || plan.fresh != 0 || len(plan.retires) != 0 {
+				t.Fatalf("rename %d: changed/fresh/retires = %v/%d/%v, want true/0/[] (rebind in place - the ID counter never moves)", i, plan.changed, plan.fresh, plan.retires)
+			}
+			pool = applyPlan(pool, plan, want)
+			if len(pool) != 3 {
+				t.Fatalf("rename %d: pool length = %d, want 3 forever", i, len(pool))
+			}
+		}
+	})
+
+	t.Run("the hard bound stalls instead of ever growing the ID space", func(t *testing.T) {
+		huge := make([]trayMenuSpec, traySettingsRowsHardBound+1)
+		for i := range huge {
+			huge[i] = realA
+		}
+		pool := shown([]trayMenuSpec{realA, realB}, 0)
+		plan := trayPlanSettingsPool(pool, huge)
+		if !plan.changed || !plan.stall {
+			t.Fatalf("over-hard-bound want: changed/stall = %v/%v, want true/true (the executor logs and leaves the previous render untouched)", plan.changed, plan.stall)
+		}
+		if len(plan.assigns) != 0 || len(plan.retires) != 0 || plan.fresh != 0 {
+			t.Fatalf("stall plan = %+v, want no assignments, no retires, no fresh - NOTHING is touched", plan)
 		}
 	})
 }

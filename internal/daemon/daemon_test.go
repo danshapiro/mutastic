@@ -213,8 +213,13 @@ func TestConditionalMuteVerbs(t *testing.T) {
 		t.Fatalf("unknown-premise conditional ran something: writes=%d injects=%d, want 0/0", got, inj2.calls.Load())
 	}
 
-	// Malformed forms are NOT conditional verbs at all.
-	for _, bad := range []string{"mute-if sideways", "mute-if", "unmute-if MUTED", "mute-ify muted", "mute-if muted extra"} {
+	// Malformed forms are NOT conditional verbs at all - including the two
+	// unsafe same-state combinations (R11-F4: "mute-if muted" /
+	// "unmute-if unmuted" pass their premise whenever it holds yet would
+	// still inject the blind F24 sweep, desyncing the apps from an
+	// UNCHANGED mic; they are rejected at parse like every other malformed
+	// shape).
+	for _, bad := range []string{"mute-if sideways", "mute-if", "unmute-if MUTED", "mute-ify muted", "mute-if unmuted extra", "mute-if muted", "unmute-if unmuted"} {
 		if got := d2.HandleCommand(bad); got != "error: unknown command" {
 			t.Fatalf("HandleCommand(%q) = %q, want %q (malformed conditional forms fail loudly)", bad, got, "error: unknown command")
 		}
@@ -1392,8 +1397,8 @@ func TestUndecodableDeviceMuteEventResetsTrackedState(t *testing.T) {
 	if got := inj.calls.Load(); got != 1 {
 		t.Fatalf("injects = %d, want 1: the legacy F24 sweep still runs on an undecodable press", got)
 	}
-	if got := d.HandleCommand("mute-if muted"); got != "flipped unknown" {
-		t.Fatalf("mute-if muted after the reset = %q, want %q (the stale belief must NOT drive the verb)", got, "flipped unknown")
+	if got := d.HandleCommand("unmute-if muted"); got != "flipped unknown" {
+		t.Fatalf("unmute-if muted after the reset = %q, want %q (the stale belief must NOT drive the verb; R11-F4: only the safe opposite-state forms exist to probe with)", got, "flipped unknown")
 	}
 
 	// Control, fresh daemon: a decodable 0x21 press tracks AND injects.

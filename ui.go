@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	_ "embed"
 	"encoding/json"
@@ -17,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -497,7 +499,13 @@ func (s *uiServer) handleSettingsList(w http.ResponseWriter) {
 
 func (s *uiServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 	var req uiSettingsRequest
-	if err := decodeUIJSON(w, r, &req); err != nil {
+	// R11-F3: the RAW bounded body is UTF-8-gated BEFORE the decoder (the
+	// decoder's U+FFFD coercion would otherwise smuggle a raw invalid-UTF-8
+	// name past the daemon's utf8.ValidString check as a DISTINCT name).
+	// The gate covers every settings action identically - the refusal
+	// happens before the action switch, so save/apply/delete all get the
+	// same 400 with zero daemon calls.
+	if err := decodeUISettingsJSON(w, r, &req); err != nil {
 		writeUIJSON(w, http.StatusBadRequest, uiResponse{Error: err.Error()})
 		return
 	}
@@ -1067,12 +1075,56 @@ func intPointer(value int) *int {
 }
 
 func decodeUIJSON(w http.ResponseWriter, r *http.Request, dst any) error {
+	if err := uiJSONContentType(r); err != nil {
+		return err
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, uiBodyLimit)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		return fmt.Errorf("invalid JSON body: %w", err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return errors.New("request body must contain one JSON object")
+		}
+		return fmt.Errorf("invalid trailing JSON: %w", err)
+	}
+	return nil
+}
+
+func uiJSONContentType(r *http.Request) error {
 	contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || contentType != "application/json" {
 		return errors.New("content type must be application/json")
 	}
+	return nil
+}
+
+// decodeUISettingsJSON is the /api/settings arm of decodeUIJSON (R11-F3):
+// the RAW bounded body must be well-formed UTF-8 BEFORE the decoder runs.
+// encoding/json silently coerces invalid bytes inside JSON strings to
+// U+FFFD on decode, so the daemon-side utf8.ValidString name check would
+// otherwise only ever see replacement characters - a direct POST with a
+// raw "a\x80b" name would save, apply, or delete the DISTINCT existing
+// name "a�b". The whole body is bounded first (the same MaxBytesReader),
+// then utf8.Valid gates it, and only then does the decoder run, with the
+// same strictness as decodeUIJSON (unknown fields disallowed, one object
+// only). The refusal is the fixed string "invalid request encoding".
+func decodeUISettingsJSON(w http.ResponseWriter, r *http.Request, dst any) error {
+	if err := uiJSONContentType(r); err != nil {
+		return err
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, uiBodyLimit)
-	decoder := json.NewDecoder(r.Body)
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		return fmt.Errorf("invalid JSON body: %w", err)
+	}
+	if !utf8.Valid(raw) {
+		return errors.New("invalid request encoding")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(dst); err != nil {
 		return fmt.Errorf("invalid JSON body: %w", err)

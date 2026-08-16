@@ -102,8 +102,10 @@ func (d *Daemon) WriteReport(report []byte) error {
 
 // HandleCommand executes one UDP text command and returns the reply.
 // Mic replies are exactly: "muted", "unmuted", "unknown", or
-// "error: <reason>"; the atomic conditional mic verbs "mute-if
-// <expected>" / "unmute-if <expected>" (expected ∈ muted|unmuted, R6-F2)
+// "error: <reason>"; the atomic conditional mic verbs "mute-if unmuted"
+// / "unmute-if muted" (ONLY these two opposite-state forms exist -
+// R11-F4; same-state combinations are rejected at parse like any other
+// malformed shape, R6-F2)
 // reply "ok" (premise matched: the absolute verb AND one F24 meeting-app
 // sweep ran in this same step), "flipped muted|unmuted" or "flipped
 // unknown" (premise failed: NO verb, NO inject), or "error: <reason>".
