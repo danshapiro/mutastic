@@ -294,6 +294,33 @@ func TestSavedSettingsStoreLoadValidation(t *testing.T) {
 	if got := fullStore.List(); len(got) != maxSettingsCount {
 		t.Fatalf("%d-entry List = %d names, want %d", maxSettingsCount, len(got), maxSettingsCount)
 	}
+
+	// R9-F2: a HANDCRAFTED store file (raw bytes - NOT the coercing
+	// marshaler - carrying a multi-byte UTF-8 name) whose decoded names are
+	// valid stays loadable and lists byte-exactly: the utf8.ValidString
+	// clause changes NOTHING on load, because JSON decode itself can only
+	// ever hand the shared predicate valid strings (invalid bytes would
+	// already have been coerced to U+FFFD by the decoder, and the coerced
+	// name is grammar-valid). Load classification is a function of the
+	// decoded names, exactly as before - the clause fires pre-persistence
+	// (wire/save), never on a decodable file.
+	craftedDir := t.TempDir()
+	craftedPath := filepath.Join(craftedDir, "light-settings.json")
+	craftedName := "映画 夜"
+	crafted := []byte(`{"` + craftedName + `":{"lights":{"COM4":{"on":true,"brightness":50,"temp_byte":9}}}}`)
+	if err := os.WriteFile(craftedPath, crafted, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	craftedStore := NewSettingsStore(craftedPath)
+	if !craftedStore.Enabled() {
+		t.Fatal("a handcrafted store whose decoded names are valid must load enabled")
+	}
+	if got := craftedStore.List(); !reflect.DeepEqual(got, []string{craftedName}) {
+		t.Fatalf("handcrafted store List = %q, want [%q] byte-exactly", got, craftedName)
+	}
+	if got, ok := craftedStore.Get(craftedName); !ok || got.Lights["COM4"].Brightness != 50 {
+		t.Fatalf("handcrafted store Get(%q) = %+v, %v; want the persisted snapshot", craftedName, got, ok)
+	}
 }
 
 func TestSavedSettingsSaveWriteFailure(t *testing.T) {
@@ -904,6 +931,23 @@ func TestSavedSettingsNameValidation(t *testing.T) {
 	if got := mm.HandleCommand("settings list"); got != "" {
 		t.Fatalf("list after control-byte rejects = %q, want empty", got)
 	}
+	// R9-F2: INVALID UTF-8 is rejected with the same grammar error. The
+	// byte scan alone passes a raw stray continuation byte (lone 0x80), a
+	// truncated multi-byte sequence, and 0xFF/0xFE, but every
+	// JSON/UTF16-carrying surface would then render a different string
+	// than the one accepted - the name must be one consistent string
+	// across wire, file, and menu. Save, apply, AND delete enforce it
+	// identically.
+	for _, name := range []string{"a\x80b", "\x80", "caf\xc3", "ok\xfffename", "\xfe"} {
+		for _, verb := range []string{"save", "apply", "delete"} {
+			if got := mm.HandleCommand("settings " + verb + " " + name); got != invalid {
+				t.Errorf("settings %s <invalid-UTF-8 name %q> = %q, want %q", verb, name, got, invalid)
+			}
+		}
+	}
+	if got := mm.HandleCommand("settings list"); got != "" {
+		t.Fatalf("list after invalid-UTF-8 rejects = %q, want empty", got)
+	}
 	// 43 bytes is over; 42 (the inclusive cap) is accepted by all verbs.
 	tooLong := strings.Repeat("a", 43)
 	const wantTooLong = "error: settings name too long (max 42 bytes)"
@@ -1022,6 +1066,7 @@ func TestSettingsStoreSaveValidatesEntryInvariants(t *testing.T) {
 			"": {On: true, Brightness: 50, TempByte: 9}}}},
 		{"empty Lights map", "look", SavedSetting{Lights: map[string]SavedLightState{}}},
 		{"control byte in the name", "a\nb", base},
+		{"invalid UTF-8 in the name (R9-F2)", "a\x80b", base},
 		{"over-long name", strings.Repeat("c", 43), base},
 	}
 	for _, c := range cases {

@@ -277,7 +277,11 @@ hardware state. The active paths are loop-free:
   Empty names, names containing ANY control byte (NUL, newline, tab, CR,
   and the rest of the <0x20 band, plus DEL 0x7F — every saved name is
   printable: a single list line, and representable as a Windows menu
-  string), and names starting with
+  string), names that are not well-formed UTF-8 (a raw stray byte like
+  0x80 or a truncated multi-byte sequence — a name must be the same
+  string across the wire, the JSON file, and the menu, and JSON/UTF-16
+  conversion would otherwise render each differently), and names starting
+  with
   `error:` (case-insensitive) answer `error: invalid settings name`;
   printable multi-byte UTF-8 names (CJK, emoji, accented text) are
   allowed and list byte-exactly. Names

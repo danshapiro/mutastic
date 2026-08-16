@@ -1464,6 +1464,93 @@ func TestReconnectResetsTrackedState(t *testing.T) {
 	waitFor(t, "press sweep + verb sweep", func() bool { return inj.calls.Load() == 2 })
 }
 
+// --- R9-F1: device bind + tracker reset are ONE atomic opMu compound ---
+
+// TestConditionalVerbBlockedDuringBindRefusesUnknown pins the blocked-verb
+// half of R9-F1: a conditional verb that arrives while Run's session bind
+// holds opMu (device published AND tracker reset as one step) must park
+// until the bind completes, then observe tracked-state UNKNOWN and refuse
+// with "flipped unknown" - NEVER act on the NEW device under the OLD
+// session's premise. The test is in-package so it can hold opMu across
+// the locked bind body exactly like Run does (bindDeviceLocked).
+func TestConditionalVerbBlockedDuringBindRefusesUnknown(t *testing.T) {
+	d := New(testLogger())
+	dev1, dev2 := newFakeDevice(), newFakeDevice()
+	inj := &fakeInjector{}
+	d.Inject = inj
+	d.SetDevice(dev1)
+	d.Track.Set(false) // old session's belief: known unmuted
+
+	// Hold opMu exactly as Run's bind does and run the locked bind body:
+	// dev2 is published and the tracker reset, atomically w.r.t. verbs.
+	d.opMu.Lock()
+	d.bindDeviceLocked(dev2)
+
+	// A conditional verb arriving NOW parks on opMu (the bind is mid-step).
+	replyCh := make(chan string, 1)
+	go func() { replyCh <- d.HandleCommand("mute-if unmuted") }()
+	select {
+	case r := <-replyCh:
+		t.Fatalf("conditional replied %q while the bind held opMu - it must park until the bind completes", r)
+	case <-time.After(100 * time.Millisecond):
+	}
+	d.opMu.Unlock()
+
+	if got := <-replyCh; got != "flipped unknown" {
+		t.Fatalf("conditional after the bind = %q, want %q (the reset leaves no premise to act on)", got, "flipped unknown")
+	}
+	if got := dev2.writeCount(); got != 0 {
+		t.Fatalf("dev2 writes = %d, want 0: a verb blocked on the bind must never act on the NEW device under the OLD premise", got)
+	}
+	if got := inj.calls.Load(); got != 0 {
+		t.Fatalf("injects = %d, want 0 (a refused conditional never sweeps)", got)
+	}
+}
+
+// TestConditionalVerbEntirelyBeforeBindUnaffected pins the other half of
+// R9-F1: a conditional verb that completes BEFORE the bind is a serialized
+// decision on the OLD device under the OLD premise - it runs its HID
+// write and sweep exactly once, and the later bind neither undoes nor
+// duplicates it; only AFTER the bind does the dropped belief make
+// follow-up conditionals refuse.
+func TestConditionalVerbEntirelyBeforeBindUnaffected(t *testing.T) {
+	d := New(testLogger())
+	dev1, dev2 := newFakeDevice(), newFakeDevice()
+	inj := &fakeInjector{}
+	d.Inject = inj
+	d.SetDevice(dev1)
+	d.Track.Set(false) // old session's belief: known unmuted
+
+	// Entirely before the bind: the premise matches the old session's
+	// belief, so the verb acts on the OLD device and sweeps once.
+	if got := d.HandleCommand("mute-if unmuted"); got != "ok" {
+		t.Fatalf("pre-bind conditional = %q, want ok", got)
+	}
+	if got := dev1.writeCount(); got != 1 {
+		t.Fatalf("dev1 writes = %d, want 1 (the matched verb wrote the OLD device)", got)
+	}
+	if got := inj.calls.Load(); got != 1 {
+		t.Fatalf("injects = %d, want 1 (one matched verb, one sweep)", got)
+	}
+
+	// The real public bind path: publishes dev2 AND drops the old belief in
+	// one opMu step. A follow-up conditional premised on the dead session's
+	// belief (muted) now refuses; the pre-bind verb's work is untouched.
+	d.bindDevice(dev2)
+	if got := d.HandleCommand("status"); got != "unknown" {
+		t.Fatalf("status after bind = %q, want unknown", got)
+	}
+	if got := d.HandleCommand("unmute-if muted"); got != "flipped unknown" {
+		t.Fatalf("post-bind conditional premised on the old belief = %q, want %q", got, "flipped unknown")
+	}
+	if got := dev2.writeCount(); got != 0 {
+		t.Fatalf("dev2 writes = %d, want 0", got)
+	}
+	if got := inj.calls.Load(); got != 1 {
+		t.Fatalf("injects after the refused conditional = %d, want 1 (the pre-bind sweep stands; the refusal adds none)", got)
+	}
+}
+
 func TestServeUDPSerializesDeltaBeforeNextDatagram(t *testing.T) {
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {

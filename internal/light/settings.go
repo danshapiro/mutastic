@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
 // SavedLightState is one light's look inside a SavedSetting: power state,
@@ -287,6 +288,19 @@ func (s *SettingsStore) writeLocked(byName map[string]SavedSetting) error {
 // set has no business crossing every surface the name traverses (wire,
 // JSON, log, menu). Multi-byte UTF-8 printable runes remain allowed: a
 // BYTE-level scan never touches them - continuation bytes are >= 0x80.
+// The byte scan alone is not the whole grammar (R9-F2): the name must
+// ALSO be well-formed UTF-8. A raw stray continuation byte (lone 0x80) or
+// a truncated multi-byte sequence passes the scan, but every
+// JSON/UTF16-carrying surface then renders a DIFFERENT string - Go's
+// encoding/json coerces invalid UTF-8 to U+FFFD on marshal AND unmarshal
+// (the persisted file's decoded name would differ from the in-memory key
+// and from what list replies), and the tray's Windows UTF-16 conversion
+// coerces a third rendering, so one stored name would mean one thing to
+// the click and another to the file. Rejecting at the grammar keeps a
+// name the same string across wire, file, and menu. Because JSON decode
+// itself coerces, this clause can only ever fire pre-persistence (the
+// wire/save path); load classification via the shared predicate sees only
+// already-coerced names and is unchanged.
 // Names case-insensitively starting with "error:" are likewise rejected
 // (clients parse error:-prefixed replies as failures). The two guarantees
 // the grammar buys: every accepted name is exactly ONE wire-list line
@@ -301,6 +315,9 @@ func validateSettingsName(name string) string {
 		if name[i] < 0x20 || name[i] == 0x7F {
 			return "error: invalid settings name"
 		}
+	}
+	if !utf8.ValidString(name) {
+		return "error: invalid settings name"
 	}
 	if len(name) > maxSettingsNameLen {
 		return fmt.Sprintf("error: settings name too long (max %d bytes)", maxSettingsNameLen)

@@ -54,7 +54,12 @@ type Daemon struct {
 	// read and its tracker update - the pre-R7-F1 straddle, where the
 	// event flipped the tracked state AND swept while the already-matched
 	// verb, past its premise read, swept again: one real transition, two
-	// sweeps (apps end toggled twice = desynced from the mic).
+	// sweeps (apps end toggled twice = desynced from the mic). R9-F1 adds
+	// Run's session bind point to the same compound rule: the device
+	// publication AND the tracker reset are one atomic opMu step
+	// (bindDevice), so a conditional verb can never act on the NEW device
+	// under the OLD session's premise. Lock order is uniform: opMu ->
+	// (d.mu | Track.mu).
 	opMu sync.Mutex
 
 	gate injectGate // debounces physical mute-button injections; session goroutine only (additionally opMu-covered)
@@ -231,13 +236,31 @@ func (d *Daemon) setMute(muted bool) string {
 	return d.setMuteLocked(muted)
 }
 
-// resetTracker drops the tracked mute state to unknown under opMu
-// (R8-F2). It exists for callers that do NOT already hold the mutex -
-// Run's session binding point; handleEvent resets the tracker directly
-// because it already holds opMu for its whole compound.
-func (d *Daemon) resetTracker() {
+// bindDevice publishes a freshly-opened device handle AND drops the
+// tracked mute state to UNKNOWN as ONE atomic step under opMu (R9-F1;
+// the reset half is R8-F2b). A conditional verb then either runs
+// ENTIRELY before this step (old device, old premise - a serialized
+// decision the R8-F2 logic stands behind: that belief was premise-worthy
+// while its session lived) or starts after it and observes tracked-state
+// unknown, refusing with "flipped unknown". The pre-R9-F1 split pair -
+// SetDevice under d.mu, then a separate opMu reset - left a gap where a
+// verb holding opMu between them read the OLD session's premise while
+// WriteReport already reached the NEW device: acting on the new device
+// under a belief that predates it. Lock order here is the uniform one:
+// opMu -> d.mu (SetDevice) and opMu -> Track.mu (Reset).
+func (d *Daemon) bindDevice(dev Device) {
 	d.opMu.Lock()
 	defer d.opMu.Unlock()
+	d.bindDeviceLocked(dev)
+}
+
+// bindDeviceLocked is bindDevice's body with opMu already held - the
+// same split as setMute/setMuteLocked (R7-F1). Run calls the locking
+// wrapper; tests drive the locked body to park a conditional verb on
+// opMu exactly while the bind is mid-step, proving the blocked verb then
+// refuses instead of acting under the old premise.
+func (d *Daemon) bindDeviceLocked(dev Device) {
+	d.SetDevice(dev)
 	d.Track.Reset()
 }
 
@@ -290,7 +313,6 @@ func Run(ctx context.Context, open OpenFunc, light CommandHandler, inject KeyInj
 			continue
 		}
 		logger.Printf("device opened")
-		d.SetDevice(dev)
 		// R8-F2b: a fresh session cannot inherit the PREVIOUS session's
 		// tracked mute state - the mic may have been toggled while the
 		// daemon was disconnected, and there is no readable state query
@@ -298,9 +320,12 @@ func Run(ctx context.Context, open OpenFunc, light CommandHandler, inject KeyInj
 		// UNKNOWN the moment the new device binds, so conditional verbs
 		// refuse with "flipped unknown" until a real event or a successful
 		// verb re-establishes truth, instead of acting on the dead
-		// session's belief. Serialized with every other tracker move under
-		// opMu (R7-F1's uniform rule).
-		d.resetTracker()
+		// session's belief. R9-F1 makes the publication and the reset ONE
+		// atomic opMu step (R7-F1's uniform rule): a conditional verb
+		// either ran entirely before the bind (old device, old premise -
+		// serialized) or parks on opMu and then observes the unknown
+		// state, never acting on the NEW device under the OLD premise.
+		d.bindDevice(dev)
 		err = d.session(ctx, dev)
 		d.SetDevice(nil)
 		dev.Close()
