@@ -74,7 +74,11 @@ No other semantic divergence. Additionally, the tree was passed through
 comment/whitespace-only normalization applied to `systray.go`'s Chinese
 doc comments and `internal/generated/notifier/status_notifier_item.go`'s
 generated doc comments (upstream predates the gofmt version that formats
-these).
+these). Likewise `systray_darwin.m` was stripped of upstream's one
+trailing-whitespace line (a two-space blank line inside
+`addOrUpdateMenuItem`) so the parent repo's `git diff --check` gate stays
+clean (delta review round 12, R12-F2): a whitespace-only normalization,
+no behavior change.
 
 ### Why not upstream-shaped timing discipline instead
 

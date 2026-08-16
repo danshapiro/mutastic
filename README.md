@@ -209,27 +209,28 @@ hardware state. The active paths are loop-free:
   `(no saved settings)` for an empty store, `(settings unavailable)`
   covering both an unreachable daemon and a broken store; a `&` in a name
   renders correctly in the tray (menu titles escape `&` as `&&` for
-  display) and the click applies the verbatim name; the submenu is a
-  BOUNDED pool of native rows kept for the process's lifetime — on any
-  change to the saved set, every row's click binding is FIRST cleared
-  (so a click dispatched from a stale row no-ops), then the current
-  names are re-bound onto the pool's lowest-ID rows in order (the menu
-  library displays rows sorted by their immutable menu IDs, so
-  lowest-ID-first binding shows exactly the daemon's sorted list);
-  surplus rows past the list length are retired (hidden, disabled,
-  unbound — ready for reuse when the list grows again), and NEW rows
-  are created only when the list exceeds the pool's largest-ever size.
-  Windows hands a menu row's identifier only in the low 16 bits of the
-  click message, so this bounded pool is load-bearing: the library's
-  global menu
-  ID counter advances only when the pool actually grows, maxing at the
-  static menu items plus the largest list ever displayed (≤ 100 names)
-  — about 120 IDs in the worst case, over 500× below
-  the 65536 boundary at which IDs would start aliasing and clicks could
-  hit wrong rows — with no duplicates and no phantom rows left from
-  earlier name sets, and a click that raced a rebuild found an already
-  cleared binding (no-op; the row also re-verifies what the menu
-  natively displays for it before applying), never a wrong apply),
+  display) and the click applies the verbatim name; **the tray lists
+  saved settings in the order you first created them, while the web UI
+  sorts alphabetically** — each distinct name gets its OWN menu row the
+  first time the tray sees it, bound to that name for the rest of the
+  tray process's life (the menu library displays rows sorted by their
+  immutable creation-order menu IDs, so first-created shows first),
+  a deleted name's row is hidden and disarmed, and re-saving the same
+  name brings the SAME row back — rows are never recycled onto other
+  names; the row's click binding is therefore stored ONCE when the row
+  is created and never repointed, so a click queued against a stale
+  display of the menu can no-op but can never apply a different setting
+  than the row showed (the row also re-verifies what the menu natively
+  displays for it before applying), with no duplicates and no phantom
+  rows left from earlier name sets. Windows hands a menu row's
+  identifier only in the low 16 bits of the click message, so the
+  library's global menu ID budget is load-bearing: the counter advances
+  only when a never-before-seen name appears — deletions and re-saves
+  cost nothing — maxing at the static menu items plus the two
+  placeholder rows plus the distinct names this tray process has seen
+  (at most the 100-name store cap per store) — about 123 IDs in the
+  worst case, over 500× below the 65536 boundary at which IDs would
+  start aliasing and clicks could hit wrong rows),
   **Panel…**,
   and **Quit** — Quit stops everything
   mutastic runs in one click: it sends the daemon's `shutdown` command,

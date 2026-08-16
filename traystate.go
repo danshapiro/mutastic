@@ -6,7 +6,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -171,9 +170,10 @@ type trayMenuSpec struct {
 const traySavedSettingsListCmd = "light settings list"
 
 // The two placeholder row titles. Both are tray-side UI text, NEVER sent
-// by the daemon - and neither contains "&", so they need no escaping. The
-// retired-row repaint (R6-F1) reuses trayNoSavedSettingsTitle so a row
-// whose name was just retired no longer displays the old name anywhere.
+// by the daemon - and neither contains "&", so they need no escaping.
+// They title the two STATIC, never-name-bound placeholder rows (R12-F1,
+// ROUND-13) - a real saved name equal to one of them gets its own ENABLED
+// identity row instead.
 const (
 	traySettingsUnavailableTitle = "(settings unavailable)"
 	trayNoSavedSettingsTitle     = "(no saved settings)"
@@ -243,191 +243,239 @@ func traySameMenuSpecs(a, b []trayMenuSpec) bool {
 	return true
 }
 
-// --- bounded ID-positional settings-row pool (R11-F2, ROUND-12) ---
+// --- permanent row<->name identity map (R12-F1, ROUND-13) ---
 //
-// History: the ROUND-7 generation-retirement pool rested on a FALSE fork
-// assumption (treating insertion/Show order as display order). Verified
-// fork behavior (energye/systray v1.0.3 systray_windows.go): each
-// parent's VISIBLE list is kept sorted by the row's IMMUTABLE command ID
-// (addToVisibleItems appends then sort.Slice ascending; Show re-inserts a
-// hidden row at its ID-sorted position, never the end), and IDs are
-// monotonic in creation order (one atomic counter). ROUND-8's answer was
-// full-rebuild: retire every row and create FRESH ones per name-set
-// change, so ascending IDs always matched daemon order. That traded a
-// NEW leak: every change consumed len(want) fresh IDs from the fork's
-// GLOBAL counter, and retired rows stay in the fork's map forever (it
-// has no remove API). Windows WM_COMMAND supplies a menu item's
-// identifier ONLY in the low 16 bits of wParam, and the fork dispatches
-// on that value - once cumulative IDs crossed 65536, a current row's
-// truncated ID aliased EARLIER map entries (inert retired rows at best,
-// unrelated actions - mic mute, light toggle - at worst), permanently
-// breaking the tray until restart (R11-F2; the full-rebuild "growth
-// bound" residual is REPLACED by this discipline).
+// History: rows were first re-bound in place, then retired and recreated
+// fresh per name-set change (ROUND-8 full-rebuild - killed by R11-F2:
+// its per-change fresh IDs marched the fork's GLOBAL counter toward
+// WM_COMMAND's 16-bit truncation), then pooled forever and re-bound
+// POSITIONALLY (ROUND-12's bounded ID-positional pool: want[k] onto the
+// k-th ascending-ID row). Delta review round 12 (R12-F1) closed the pool
+// too: a WM_COMMAND queued from a row the user read as name A but
+// dispatched AFTER a rebuild had re-bound that row to name B would
+// execute B - and the click's native-title verification could no longer
+// refuse, because the rebind had already painted B's title. The
+// thrice-ruled non-blocking one-message-turn residual was only tolerated
+// while the alternatives were worse; the identity map eliminates the
+// wrong-apply window STRUCTURALLY: a row is NEVER re-bound to a
+// different name.
 //
-// The fix is the bounded ID-positional pool: settings rows are pooled
-// FOREVER and re-bound POSITIONALLY. The pool holds every settings row
-// ever created (shown or retired), in creation order - which IS
-// ascending immutable-ID order, and the fork displays visible rows by
-// ascending ID, so binding the wanted names to pool rows 0..len(want)-1
-// in order makes display order == daemon order. Rebuilds are still
-// change-gated by traySameMenuSpecs (identical ticks no-op - no churn of
-// any native row). On ANY genuine change the executor:
+// The discipline: the tray keeps a name->row identity map across
+// rebuilds. A row, once created for a name, is bound to that name for
+// the process lifetime - its command slot is stored ONCE at creation
+// ("light settings apply <name>") and never changed to another name; its
+// title is painted from that name at creation and re-asserted verbatim
+// on every re-show; its stable Click closure (R2-F3) reads that row's
+// own slot at click time. Each reconcile (change-gated by
+// traySameMenuSpecs) walks the daemon's CURRENT name list and:
 //
-//  1. clears EVERY settings row's command slot FIRST (the stale-click
-//     defense: from that instant, every in-flight click against ANY
-//     settings row - shown or retired - loads "" and no-ops);
-//  2. binds want[k] to the k-th ascending-ID row - title, enabled bit,
-//     Show (a previously-retired row re-appears exactly at its ID-sorted
-//     position among the shown rows - the k-th), command slot STORED
-//     LAST (before it lands, the row can only no-op; after it lands the
-//     native title already matches, so the ROUND-6 click-time title
-//     verification passes only the truthful pair);
-//  3. retires surplus rows beyond len(want) (slots stay cleared,
-//     placeholder retitle, disabled, hidden - awaiting reuse on growth,
-//     NOT leaked);
-//  4. creates FRESH rows only for positions beyond the current pool size
-//     (growth), appending them so pool order stays ascending-ID.
+//  1. for a name no longer present, RETAINS the row but disarms it: the
+//     command slot is cleared FIRST (a stale WM_COMMAND dispatched from
+//     the pre-change display loads "" and no-ops), then the row is
+//     disabled, then hidden. The binding is conceptually kept - the row
+//     is never re-titled and never slotted to another name.
+//  2. for a current name with no row yet, creates ONE fresh row: a fresh
+//     immutable fork ID (IDs strictly increasing per name, never reused
+//     across names), the slot stored BEFORE the create call and the
+//     closure on the statement after (R3-F4), enabled and visible.
+//  3. for a current name whose row already exists, re-shows THE SAME
+//     row - title re-asserted (same name => same title), enabled, shown,
+//     and its slot RESTORED to the identical command LAST, after the
+//     paint - so delete+re-save consumes zero new IDs.
+//  4. renders the two placeholders ("(no saved settings)", "(settings
+//     unavailable)") as STATIC rows of their own, never name-bound:
+//     permanently "" slots, always disabled, shown/hidden per regime. A
+//     real saved name equal to a placeholder string gets its own ENABLED
+//     identity row - the placeholder<->real transition is a show/hide
+//     pair between DISTINCT rows, never a rebind.
 //
-// Placeholder rows participate in the same discipline: an empty store's
-// one disabled placeholder is bound onto the lowest-ID row exactly like a
-// real name (slot stays ""), and reused across regimes.
+// DISPLAY ORDER IS CREATION ORDER, not the daemon's sorted order: the
+// fork keeps each parent's visible list sorted by the row's IMMUTABLE
+// command ID (verified fork behavior: addToVisibleItems appends then
+// sort.Slice ascending; Show re-inserts a hidden row at its ID-sorted
+// position, never the end) and IDs are monotonic in creation, so visible
+// order == first-seen order. The tray therefore lists saved settings in
+// the order they were first created (after a tray start the very first
+// poll seeds every current name in the daemon's sorted order; names
+// saved later append at the END) - while the web UI sorts alphabetically
+// and the daemon's wire list stays sorted. The divergence from daemon
+// order is deliberate and documented: positional rebinding - the only
+// scheme that could track daemon order with immutable IDs and no remove
+// API - is exactly the wrong-apply window R12-F1 closed, and the row a
+// name eternally owns is the only binding the click-time native-title
+// verification can trust (it now compares the live title against the
+// row's eternally-bound name, so ANY divergence - a failed native paint,
+// an unreadable HMENU - refuses with one WARN).
 //
-// ID usage therefore MAXES at the static items plus the HISTORICAL
-// MAXIMUM displayed list length (the placeholder counts as length 1):
-// renames, reorders, deletions, and placeholder<->real churn re-bind the
-// same rows and create NOTHING. With 21 static IDs and the 100-name
-// store cap the lifetime total is <= 122 (plus the planner's hard bound
-// below) - over 500x below the 65536 truncation point
-// the fork's global counter must never cross (~122 max IDs vs 65536).
+// ID budget (16-bit WM_COMMAND): distinct names EVER SEEN by this tray
+// process consume one ID each; deletions, re-saves, reorders, and
+// placeholder flips consume ZERO (no native row is created for them).
+// With ~21 static menu IDs plus the 2 placeholder rows, the store's
+// 100-name cap puts an ordinary session at ~123 IDs - over 500x below
+// the 65536 truncation point - and even pathological delete+recreate
+// churn across a long session stays far below it. The defense-in-depth
+// hard bound below stalls any reconcile that would push the identity map
+// past 1024 distinct names (dead code by construction; the stall leaves
+// the previous render untouched and logs one WARN per poll).
 //
-// The recorded residual narrows back to the standing R3-F4/R4-F2/R5-F2
-// shape, and stays non-blocking per those rulings (reversible, one Win32
-// turn): a WM_COMMAND dispatched from a row that displayed name A can
-// execute name B only if a rebuild re-bound that row within the SAME
-// message turn. Before the rebind lands the click no-ops (step 1 cleared
-// the slot); title/slot halves can never disagree beyond it (slot stored
-// last) and the native-title verification rejects any other divergence
-// (failed native paint, unreadable HMENU) with a WARN. No deterministic
-// winner exists between the safe orderings with the fork's ID-only
-// dispatch and no remove API; the alternative (fresh rows per change)
-// ends in permanent WM_COMMAND aliasing - a strictly worse failure.
+// The recorded residuals on this path are now refusal-shaped ONLY: a
+// stale click dispatched while its row is disarmed no-ops (the cleared
+// slot), and a click whose live native title diverges from the row's
+// bound name refuses with one WARN. A click can NEVER apply a setting
+// other than the one its row displays.
 //
-// traySettingsRowsHardBound is a defense-in-depth refusal on the WANTED
-// list length (independent of the store's 100-name cap, so a bogus
-// caller stalls rather than ever growing the ID space toward the 65536
-// truncation point): 1024 exceeds every legal list by 10x while standing
-// still over 60x below 65536 (21 static IDs + 1024 rows).
-const traySettingsRowsHardBound = 1024
+// traySettingsIdentityHardBound is that defense-in-depth cap on the
+// identity map's size - the number of DISTINCT names ever bound to rows
+// by this tray process. Independent of the store's 100-name cap, 1024
+// exceeds every legal name history by an order of magnitude while
+// standing ~60x below 65536 (21 static IDs + 2 placeholders + 1024 name
+// rows) - the fork's global command-ID counter must never approach
+// WM_COMMAND's low-16-bit truncation point.
+const traySettingsIdentityHardBound = 1024
 
-// traySettingsPoolRow is the PURE model of one pooled "Saved settings"
-// submenu row the planner consumes: the immutable fork command ID (the
-// sort key - the fork displays visible rows ascending-ID, so the visual
-// order invariant is "want[k] lands on the k-th ascending-ID row"), the
-// spec the row currently renders, and whether it is currently shown (a
-// retired row carries its pre-retirement spec unevaluated - Shown=false
-// alone stops it matching any wanted position, which is exactly what a
-// stale placeholder title demands on the rebind path).
-type traySettingsPoolRow struct {
+// traySettingsPlaceholder identifies the submenu's static placeholder
+// regime: which (if any) of the two never-name-bound placeholder rows is
+// currently on screen.
+type traySettingsPlaceholder int
+
+const (
+	// trayPhNone: real name-bound rows are on screen; both placeholder
+	// rows are hidden.
+	trayPhNone traySettingsPlaceholder = iota
+	// trayPhEmpty: the daemon answered with an empty store -
+	// "(no saved settings)".
+	trayPhEmpty
+	// trayPhUnavailable: the poll failed or the store is disabled/corrupt
+	// - "(settings unavailable)".
+	trayPhUnavailable
+)
+
+// traySettingsIdentityRow is the PURE model of one name-bound "Saved
+// settings" submenu row the planner consumes: the immutable fork command
+// ID (monotonic in creation - visible order is ascending ID, i.e.
+// creation order, BY DESIGN), the VERBATIM saved name the row is bound
+// to for the process lifetime, and whether it is currently shown. A
+// hidden row keeps its name - the binding is the row's identity - while
+// its command slot is held cleared ("") for the whole hidden time, so a
+// stale click dispatched from the pre-change display no-ops.
+type traySettingsIdentityRow struct {
 	ID    uint32
-	spec  trayMenuSpec
+	Name  string
 	Shown bool
 }
 
-// traySettingsPoolPlan is the complete pure reconcile decision for one
-// pool rebuild under the bounded ID-positional discipline (R11-F2).
-type traySettingsPoolPlan struct {
+// traySettingsSyncPlan is the complete pure reconcile decision for one
+// "Saved settings" submenu sync under the permanent identity discipline
+// (R12-F1). The executor half is tray_windows.go's savedSettingsMenu.sync,
+// which runs the actions on the refresh loop's goroutine in class order:
+// hides (slot cleared FIRST, then disable, then hide) before the
+// placeholder flip before shows before creates, and a row's slot is
+// stored LAST inside every show/create, after the paint.
+type traySettingsSyncPlan struct {
 	// changed is the identical/changed decision: false means NO-OP - the
-	// executor touches nothing, not even a slot.
+	// executor touches nothing, not even a slot (identical ticks never
+	// churn a native row).
 	changed bool
-	// stall is the hard-bound refusal (len(want) beyond
-	// traySettingsRowsHardBound): the executor logs one WARN and touches
-	// nothing, leaving the previous render exactly as it was.
+	// stall is the hard-bound refusal (the identity map would exceed
+	// traySettingsIdentityHardBound distinct names): the executor logs
+	// one WARN and touches nothing, leaving the previous render exactly
+	// as it was.
 	stall bool
-	// assigns lists every wanted binding, in WANTED order: want[k] binds
-	// the pool row at index assigns[k].row (which is the pool's k-th
-	// ascending-ID row, ALL k) - display order then equals daemon order
-	// under the fork's ascending-ID listing.
-	assigns []trayPoolAssignment
-	// retires lists the SHOWN surplus rows beyond len(want), in
-	// ascending-ID order (the executor clears their slots, repaints the
-	// placeholder, disables, hides). Already-retired surplus rows are
-	// not listed (nothing to do).
-	retires []int
-	// fresh is the exact COUNT of new rows to create (positions
-	// len(pool)..len(want)-1, bound in order to want[len(pool)..]) - a
-	// count, not a list, so churn can never smuggle growth past the
-	// accounting.
-	fresh int
+	// create lists the first-seen names needing a FRESH row, in the
+	// wanted list's order (their first-seen order): each becomes a new
+	// identity row eternally bound to its name (strictly increasing
+	// fresh IDs, never reused across names).
+	create []trayMenuSpec
+	// show lists the wanted names whose identity rows already exist and
+	// must be (re-)shown: title re-asserted, enabled, shown, and the
+	// slot restored to the row's OWN eternally-bound command - never
+	// another name's.
+	show []trayMenuSpec
+	// hide lists the raw names of the shown rows no longer present in
+	// the wanted list: disarmed (slot cleared FIRST) and hidden, with
+	// the binding kept. Already-hidden rows are not listed (nothing to
+	// do).
+	hide []string
+	// phFrom/phTo is the placeholder-regime transition (equal means no
+	// flip): the executor hides the phFrom placeholder row and shows the
+	// phTo one, creating it lazily on first use.
+	phFrom, phTo traySettingsPlaceholder
 }
 
-// trayPoolAssignment binds one wanted spec to one pooled row (row indexes
-// the pool slice the planner was given). The executor rebinds the row -
-// it never re-sorts the pool itself.
-type trayPoolAssignment struct {
-	row  int
-	spec trayMenuSpec
+// trayWantPlaceholder reads the placeholder regime out of a rendered want
+// list. traySavedSettings emits EXACTLY ONE placeholder entry when a
+// regime applies, and placeholders are the only entries with an empty
+// raw name (the name grammar forbids empty names, so raw == "" is
+// unambiguous - even though the grammar permits a literal saved name
+// equal to a placeholder string: that name arrives ENABLED with a
+// non-empty raw field and takes the identity-row path).
+func trayWantPlaceholder(want []trayMenuSpec) traySettingsPlaceholder {
+	if len(want) == 1 && want[0].raw == "" {
+		switch want[0].Title {
+		case traySettingsUnavailableTitle:
+			return trayPhUnavailable
+		case trayNoSavedSettingsTitle:
+			return trayPhEmpty
+		}
+	}
+	return trayPhNone
 }
 
-// trayPlanSettingsPool decides one "Saved settings" pool reconcile from
-// the current pool (each row's immutable ID, current spec, shown bit -
-// the input order may be arbitrary; the planner sorts by ID itself) and
-// the wanted render list in daemon order. Comparing positionally:
+// trayPlanSettingsSync decides one "Saved settings" reconcile from the
+// known identity rows (the executor passes them in creation order; the
+// per-name decisions never depend on that order - IDs are carried so the
+// tests can pin strictly-increasing creation and no reuse across names)
+// and the wanted render list in daemon order:
 //
-//   - want[k] matches ONLY the pool's k-th ASCENDING-ID row, shown,
-//     rendering an equal spec (whole-struct compare: Title, raw, and the
-//     enabled bit all participate - a placeholder<->real transition with
-//     an identical title still forces the rebuild);
-//   - every pool row at position >= len(want) must be retired already;
+//   - a wanted name with no known row -> [create row];
+//   - a wanted name with a known, hidden row -> [show existing row X];
+//   - a known, shown row whose name is not wanted -> [hide row Y];
+//   - a placeholder regime mismatch -> the phFrom->phTo flip;
 //
-// anything else (rename, reorder, insert, remove, placeholder flips,
-// growth beyond the pool) is changed=true, and the plan then RE-BINDS
-// EVERY position: assignments land want[0..] on pool rows in ascending-ID
-// order (visual order == daemon order, because the fork displays visible
-// rows ascending-ID and the surplus rows are hidden), surplus shown rows
-// retire, and fresh counts exactly the positions beyond the pool's
-// length. len(want) beyond traySettingsRowsHardBound stalls instead.
-func trayPlanSettingsPool(pool []traySettingsPoolRow, want []trayMenuSpec) traySettingsPoolPlan {
-	if len(want) > traySettingsRowsHardBound {
-		return traySettingsPoolPlan{changed: true, stall: true}
+// a known, shown row still wanted, and a matching regime, need nothing
+// (identical tick => changed=false). The identity map NEVER rebinds: no
+// action points a row at a different name, and a daemon-order change of
+// the same name SET reconciles to a no-op (tray order is creation order
+// by design). The reconcile stalls - touching nothing - if the creates
+// would push the map past traySettingsIdentityHardBound.
+func trayPlanSettingsSync(known []traySettingsIdentityRow, phShown traySettingsPlaceholder, want []trayMenuSpec) traySettingsSyncPlan {
+	plan := traySettingsSyncPlan{phFrom: phShown, phTo: trayWantPlaceholder(want)}
+	// wanted double-duties as the duplicate guard: the daemon emits
+	// distinct map keys, but a hand-built want must never plan two rows
+	// for one name (identity is one row per name, first occurrence wins).
+	wanted := make(map[string]trayMenuSpec, len(want))
+	for _, spec := range want {
+		if spec.raw == "" {
+			continue // placeholders are never name-bound
+		}
+		if _, dup := wanted[spec.raw]; dup {
+			continue
+		}
+		wanted[spec.raw] = spec
+		knownHas := false
+		for _, row := range known {
+			if row.Name == spec.raw {
+				knownHas = true
+				break
+			}
+		}
+		if !knownHas {
+			plan.create = append(plan.create, spec)
+		}
 	}
-	// order holds the input indices sorted ascending by immutable row ID
-	// (stable; the executor's own pool order is already ascending by
-	// creation, so this sort is the test-facing honesty that ANY input
-	// permutation yields assignments on ascending IDs).
-	order := make([]int, len(pool))
-	for i := range order {
-		order[i] = i
+	if len(known)+len(plan.create) > traySettingsIdentityHardBound {
+		return traySettingsSyncPlan{changed: true, stall: true}
 	}
-	sort.SliceStable(order, func(a, b int) bool { return pool[order[a]].ID < pool[order[b]].ID })
-
-	changed := len(want) > len(pool) // growth beyond the pool needs fresh rows
-	for k := 0; !changed && k < len(pool); k++ {
-		row := pool[order[k]]
-		if k < len(want) {
-			if !row.Shown || row.spec != want[k] {
-				changed = true
+	for _, row := range known {
+		if spec, ok := wanted[row.Name]; ok {
+			if !row.Shown {
+				plan.show = append(plan.show, spec)
 			}
 		} else if row.Shown {
-			changed = true
+			plan.hide = append(plan.hide, row.Name)
 		}
 	}
-	if !changed {
-		return traySettingsPoolPlan{}
-	}
-	plan := traySettingsPoolPlan{changed: true}
-	binds := len(want)
-	if len(pool) < binds {
-		binds = len(pool)
-		plan.fresh = len(want) - len(pool)
-	}
-	for k := 0; k < binds; k++ {
-		plan.assigns = append(plan.assigns, trayPoolAssignment{row: order[k], spec: want[k]})
-	}
-	for k := len(want); k < len(pool); k++ {
-		if pool[order[k]].Shown {
-			plan.retires = append(plan.retires, order[k])
-		}
-	}
+	plan.changed = len(plan.create) > 0 || len(plan.show) > 0 || len(plan.hide) > 0 || plan.phTo != plan.phFrom
 	return plan
 }
 
@@ -450,24 +498,24 @@ func trayArmedMatchesNative(snap trayMuteSnapshot, nativeTitle string, nativeDis
 const traySettingsApplyPrefix = "light settings apply "
 
 // traySettingsCmdMatchesTitle is the pure half of the click-time native
-// title check (the ROUND-6 belt; R11-F2's clear-slots-first rebind
-// discipline is the suspenders - see trayPlanSettingsPool). On Windows the
-// fork dispatches a menu click by command ID alone (WM_COMMAND ->
+// title check (the ROUND-6 belt; ROUND-13's permanent row<->name identity
+// map is the suspenders - see trayPlanSettingsSync). On Windows the fork
+// dispatches a menu click by command ID alone (WM_COMMAND ->
 // menuItems[id].click): the native row's title is display-only, so a
 // WM_COMMAND dispatched from a STALE native row must never be able to
-// execute a command the row no longer displays - from every rebuild's
-// first step (ALL slots cleared) until a re-bound row's slot lands LAST,
-// the slot holds "" (no-op) or the command the freshly-painted title
-// already names; only the one-turn pre-queued dispatch lands after a
-// rebind, the recorded standing residual. The row's live native
-// title is the text the menu shows for that command ID right now, and
-// the click executes only when it still names the slot's setting. The
-// comparison is exact and escaping-aware: the slot command carries the
-// VERBATIM raw name ("light settings apply <name>") while the native
-// title carries the menu-ESCAPED display form ("&" -> "&&", see
-// traySavedSettings), so the raw name is re-escaped before comparing. A
-// malformed command (missing prefix or empty name) never matches -
-// refusal is always the safe direction.
+// execute a command the row no longer displays. Under the identity
+// discipline a row's slot holds only "" (held while the row is hidden -
+// a stale dispatch no-ops) or the row's ETERNALLY-bound command (while
+// shown), and the title it displays is that bound name's; the check
+// reads the row's live native title and executes only when it still
+// names the slotted setting, catching the residual the slot discipline
+// cannot: a FAILED native paint (a SetTitle that never landed) or an
+// unreadable HMENU. The comparison is exact and escaping-aware: the slot
+// command carries the VERBATIM raw name ("light settings apply <name>")
+// while the native title carries the menu-ESCAPED display form ("&" ->
+// "&&", see traySavedSettings), so the raw name is re-escaped before
+// comparing. A malformed command (missing prefix or empty name) never
+// matches - refusal is always the safe direction.
 func traySettingsCmdMatchesTitle(cmd, nativeTitle string) bool {
 	name, ok := strings.CutPrefix(cmd, traySettingsApplyPrefix)
 	if !ok || name == "" {
@@ -477,23 +525,26 @@ func traySettingsCmdMatchesTitle(cmd, nativeTitle string) bool {
 }
 
 // traySetSettingsClick is the single click-closure constructor for every
-// "Saved settings" submenu row (tray_windows.go's newSavedMenuChild).
-// The closure is STABLE for the item's lifetime (R2-F3: it is assigned
-// once at creation and never rebound); rebuilds re-bind the row's NAME
-// in place under R11-F2's bounded ID-positional pool discipline - the
-// atomic SLOT is the rebinding surface (this closure reads it at click
-// time), and the discipline keeps every interleaving safe: the executor
-// clears EVERY pool row's slot FIRST (a click racing the rebuild no-ops
-// on ""), and stores a re-bound row's new command only AFTER its new
-// title painted (native title and slot can never disagree beyond the
-// cleared window). After loading the slot it ALSO re-verifies that the
-// row's live NATIVE title still names the slotted setting
-// (trayVerifySettingsItemTitle; portable default true, real read-back on
-// Windows) - the remaining belt to the slot discipline's suspenders. An
-// unbound slot ("" - a placeholder, a retired row, or a row mid-rebind)
-// or a failed check is a no-op; the failed check also logs one WARN, and
-// the just-finished rebuild has already painted the truthful row for the
-// next click.
+// "Saved settings" submenu row (tray_windows.go's newSavedMenuChild and
+// newSavedSettingsPlaceholder). The closure is STABLE for the item's
+// lifetime (R2-F3: it is assigned once at creation and never rebound);
+// under ROUND-13's permanent row<->name identity the row behind it is
+// bound to ONE name for the process lifetime. The atomic slot is the
+// only state the closure reads: it holds the row's eternally-bound
+// "light settings apply <name>" while the row is shown, and "" while it
+// is hidden (its name deleted, or every name disarmed behind a
+// placeholder regime) - hides clear the slot BEFORE the native Hide, so
+// a click queued from the pre-change display but dispatched after loads
+// "" and no-ops, and a re-save of the SAME name restores the IDENTICAL
+// command to the SAME row: the slot is never repointed to another name,
+// so the R12-F1 wrong-apply shape of the old positional rebind is
+// structurally closed. After loading the slot the closure ALSO
+// re-verifies that the row's live NATIVE title still names the slotted
+// setting (trayVerifySettingsItemTitle; portable default true, real
+// read-back on Windows) - the remaining belt to the slot discipline's
+// suspenders. An unbound slot ("" - a placeholder or a hidden row) or a
+// failed check is a no-op; the failed check also logs one WARN, and the
+// current poll state paints the truthful row for the next click.
 func traySetSettingsClick(item *systray.MenuItem, slot *atomic.Value, lightCmd func(string) func(), logger *slog.Logger) func() {
 	return func() {
 		cmd, _ := slot.Load().(string)

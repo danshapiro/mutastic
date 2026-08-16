@@ -129,7 +129,7 @@ withParentMenuId: (int)theParentMenuId
       [parentItem setSubmenu:theMenu];
     }
   }
-  
+
   NSMenuItem *menuItem;
   menuItem = find_menu_item(theMenu, item->menuId);
   //item->shortcutKey

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -749,11 +750,11 @@ func TestTraySameMenuSpecs(t *testing.T) {
 // VERBATIM raw name ("light settings apply <name>") and the native title
 // carries the menu-ESCAPED display form ("&" -> "&&"), so a match
 // requires exact equality after re-escaping the raw name. The mismatched
-// case is the reassigned-row race the check exists to refuse: a WM_COMMAND
-// dispatched from a stale native row whose slot now names a DIFFERENT
-// setting must not execute. Malformed commands (missing prefix, empty
-// name, wrong verb, empty everything) never match: refusal is the safe
-// direction.
+// case is the divergence the check exists to refuse: the row's live
+// native title must still name the row's eternally-bound setting, so any
+// divergence (a failed native paint, an unescaped title) refuses.
+// Malformed commands (missing prefix, empty name, wrong verb, empty
+// everything) never match: refusal is the safe direction.
 func TestTraySettingsCmdMatchesTitle(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -765,7 +766,7 @@ func TestTraySettingsCmdMatchesTitle(t *testing.T) {
 		{"ampersand name vs escaped title", "light settings apply fish & chips", "fish && chips", true},
 		{"unescaped native title must not match", "light settings apply fish & chips", "fish & chips", false},
 		{"double ampersand name", "light settings apply a && b", "a &&&& b", true},
-		{"reassigned row (the race the check refuses)", "light settings apply dark", "party", false},
+		{"divergent native title (the mismatch the check refuses)", "light settings apply dark", "party", false},
 		{"prefix-of-another name", "light settings apply tom", "tomato", false},
 		{"malformed: missing arg after prefix", "light settings apply ", "x", false},
 		{"malformed: prefix without trailing space", "light settings apply", "apply", false},
@@ -780,13 +781,21 @@ func TestTraySettingsCmdMatchesTitle(t *testing.T) {
 	}
 }
 
-// TestTraySetSettingsClick pins the stable settings closure's semantics on
-// the portable path (the tray gate runs Linux-only; the Windows arm's
-// native read-back is review-verified): an UNBOUND slot ("" - a
-// placeholder or hidden pool orphan) dispatches nothing, and a bound slot
-// dispatches exactly its command. The portable default
-// trayVerifySettingsItemTitle always verifies true, which the bound case
-// pins transitively - and pins directly below so a regression on the
+// TestTraySetSettingsClick pins the stable settings closure's slot
+// semantics on the portable path (the tray gate runs Linux-only; the
+// Windows arm's native read-back is review-verified). Under ROUND-13's
+// permanent row<->name identity (R12-F1) a row's slot holds the row's
+// ETERNALLY-bound command while shown and "" while hidden: an unbound
+// slot (a placeholder, or a row whose name is gone) dispatches nothing;
+// the bound slot dispatches exactly its command; a stale click queued
+// from the pre-change display but dispatched AFTER a deletion - the
+// executor clears the slot BEFORE disabling/hiding the row - loads ""
+// and no-ops (it can NEVER apply a different setting); and a re-save of
+// the SAME name restores the IDENTICAL command to the SAME row - the
+// slot is never repointed to another name, which is exactly the R12-F1
+// wrong-apply shape no rebuild ever performs. The portable default
+// trayVerifySettingsItemTitle always verifies true, which the bound
+// cases pin transitively - and pin directly below so a regression on the
 // non-Windows path cannot silently drop every settings click.
 func TestTraySetSettingsClick(t *testing.T) {
 	if !trayVerifySettingsItemTitle(nil, "light settings apply focus") {
@@ -797,34 +806,31 @@ func TestTraySetSettingsClick(t *testing.T) {
 	lightCmd := func(c string) func() { return func() { fired = append(fired, c) } }
 	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	click := traySetSettingsClick(nil, &slot, lightCmd, logger)
-	click() // unbound slot: a placeholder/pool-orphan click is a no-op
+	click() // unbound slot: a never-name-bound placeholder's click is a no-op
 	if len(fired) != 0 {
 		t.Fatalf("unbound slot dispatched %v, want nothing", fired)
 	}
+	// Creation: the slot is stored ONCE, with this row's eternally-bound
+	// command.
 	slot.Store("light settings apply focus")
 	click()
 	if len(fired) != 1 || fired[0] != "light settings apply focus" {
 		t.Fatalf("bound slot dispatched %v, want exactly [light settings apply focus]", fired)
 	}
-	// Stale-click pin (R11-F2): every rebuild clears EVERY settings row's
-	// slot FIRST - so a click dispatched mid-rebind (the fork dispatches by
-	// immutable command ID, and the user read the row's pre-rebuild name)
-	// loads the cleared "" slot and no-ops: no settings row can apply
-	// anything during the rebind window. Retired rows keep that cleared
-	// slot forever (until growth re-binds them with a fresh title).
-	slot.Store("") // the executor's phase-A cleared window / a retired row
+	// Deletion (the R12-F1 stale-click shape): the executor clears the
+	// slot BEFORE disabling+hiding the row, so a click queued from the
+	// pre-change display but dispatched afterwards loads "" and no-ops.
+	slot.Store("") // the cleared-while-hidden slot
 	click()
 	if len(fired) != 1 {
-		t.Fatalf("stale click during a rebind (or on a retired row) dispatched %v, want no new dispatch", fired)
+		t.Fatalf("stale click after deletion dispatched %v, want no new dispatch", fired)
 	}
-	// The closure still reads the slot at click time (R2-F3): after the
-	// rebuild's cleared window, the executor re-binds the row IN PLACE
-	// (title painted first, command stored last), and the bound slot
-	// dispatches exactly that command.
-	slot.Store("light settings apply party")
+	// Re-save of the SAME name: the SAME row is re-shown and its slot is
+	// restored to the IDENTICAL command - never repointed to another name.
+	slot.Store("light settings apply focus")
 	click()
-	if len(fired) != 2 || fired[1] != "light settings apply party" {
-		t.Fatalf("re-bound slot dispatched %v, want the stored command last", fired)
+	if len(fired) != 2 || fired[1] != "light settings apply focus" {
+		t.Fatalf("restored slot dispatched %v, want the identical command again", fired)
 	}
 }
 
@@ -861,215 +867,294 @@ func TestTrayArmedMatchesNative(t *testing.T) {
 	}
 }
 
-// TestTrayPlanSettingsPool pins the pure bounded ID-positional pool
-// reconcile (R11-F2). The visual-order invariant: the fork displays
-// visible rows sorted by their IMMUTABLE command ID, so want[k] must land
-// on the pool's k-th ASCENDING-ID row - from ANY input order the
-// assignments pin exactly that, making display order == daemon order.
-// Beyond ordering: identical ticks no-op (no churn of a single native
-// row); growth creates fresh rows ONLY for positions beyond the pool;
-// shrink retires exactly the SHOWN surplus (already-retired rows are not
-// listed again); and - the bound the whole discipline exists for - churn
-// (renames, reorders, deletes) creates NOTHING, so the fork's global ID
-// counter maxes at the static items plus the pool's historical maximum
-// length, three orders of magnitude below WM_COMMAND's 16-bit truncation
-// point.
-func TestTrayPlanSettingsPool(t *testing.T) {
-	spec := func(title, raw string, enabled bool) trayMenuSpec {
-		return trayMenuSpec{Title: title, raw: raw, Enabled: enabled}
+// TestTrayPlanSettingsSync pins the pure permanent row<->name identity
+// reconcile (R12-F1, ROUND-13). The discipline under test: a row, once
+// created for a name, is bound to that name for the process lifetime -
+// rename churn gives the NEW name a NEW row with a strictly increasing
+// ID and hides the OLD row (no reuse across names); delete+re-save
+// re-shows the SAME row with zero creates; the stale click after a
+// deletion no-ops on the cleared slot (pinned separately in
+// TestTraySetSettingsClick); the store's 100-name cap renders fully; the
+// defense-in-depth identity-map hard bound stalls touching nothing; and
+// the visible order is CREATION order - the fork displays visible rows
+// sorted by their immutable IDs and IDs are monotonic in creation - so
+// the daemon's sorted wire order deliberately does NOT dictate tray
+// order (a pure reorder of the same name SET is a no-op).
+func TestTrayPlanSettingsSync(t *testing.T) {
+	spec := func(name string) trayMenuSpec {
+		return trayMenuSpec{Title: strings.ReplaceAll(name, "&", "&&"), raw: name, Enabled: true}
 	}
-	realA := spec("a", "a", true)
-	realB := spec("b", "b", true)
-	realC := spec("c", "c", true)
-	realX := spec("x", "x", true)
-	placeholder := spec(trayNoSavedSettingsTitle, "", false)
-	// shown builds an ascending-ID pool whose first len(specs) rows
-	// render specs and the rest are retired (extras), exactly the
-	// executor's by-construction model.
-	shown := func(specs []trayMenuSpec, extras int) []traySettingsPoolRow {
-		pool := make([]traySettingsPoolRow, 0, len(specs)+extras)
-		for _, s := range specs {
-			pool = append(pool, traySettingsPoolRow{ID: uint32(len(pool) * 7), spec: s, Shown: true})
-		}
-		for range extras {
-			pool = append(pool, traySettingsPoolRow{ID: uint32(len(pool) * 7), spec: realA, Shown: false})
-		}
-		return pool
+	unavailable := trayMenuSpec{Title: traySettingsUnavailableTitle} // raw "", disabled
+	empty := trayMenuSpec{Title: trayNoSavedSettingsTitle}
+
+	// harness mirrors the executor (savedSettingsMenu.sync): rows are
+	// kept in creation order (== ascending fork-ID order, since creates
+	// append with the next strictly-increasing ID and IDs are never
+	// reused); hides un-show, shows re-show the SAME row (same ID,
+	// same name), and the placeholder flip moves the regime.
+	type harness struct {
+		rows   []traySettingsIdentityRow // creation order
+		ph     traySettingsPlaceholder
+		nextID uint32
 	}
-	// applyPlan mirrors the executor: binds assign the positions,
-	// retires un-show, fresh rows append (ascending new IDs).
-	applyPlan := func(pool []traySettingsPoolRow, plan traySettingsPoolPlan, want []trayMenuSpec) []traySettingsPoolRow {
-		for _, assign := range plan.assigns {
-			pool[assign.row].spec = assign.spec
-			pool[assign.row].Shown = true
+	apply := func(h *harness, plan traySettingsSyncPlan) {
+		if plan.stall {
+			return // a stalled reconcile touches NOTHING
 		}
-		for _, i := range plan.retires {
-			pool[i].Shown = false
+		for _, name := range plan.hide {
+			for i := range h.rows {
+				if h.rows[i].Name == name {
+					h.rows[i].Shown = false
+				}
+			}
 		}
-		for _, s := range want[len(want)-plan.fresh:] {
-			pool = append(pool, traySettingsPoolRow{ID: uint32(len(pool) * 7), spec: s, Shown: true})
+		for _, s := range plan.show {
+			found := false
+			for i := range h.rows {
+				if h.rows[i].Name == s.raw {
+					h.rows[i].Shown = true
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("show planned for %q, which no identity row owns (a show must never create or rebind)", s.raw)
+			}
 		}
-		return pool
+		for _, s := range plan.create {
+			for _, r := range h.rows {
+				if r.Name == s.raw {
+					t.Fatalf("create planned for %q, which an identity row already owns (a name gets ONE row ever)", s.raw)
+				}
+			}
+			h.rows = append(h.rows, traySettingsIdentityRow{ID: h.nextID, Name: s.raw, Shown: true})
+			h.nextID++
+		}
+		h.ph = plan.phTo
+	}
+	// visibleNames is what the fork renders: the SHOWN rows in ascending
+	// immutable-ID order (== creation order by construction).
+	visibleNames := func(h *harness) []string {
+		shown := make([]traySettingsIdentityRow, 0, len(h.rows))
+		for _, r := range h.rows {
+			if r.Shown {
+				shown = append(shown, r)
+			}
+		}
+		sort.Slice(shown, func(a, b int) bool { return shown[a].ID < shown[b].ID })
+		out := make([]string, 0, len(shown))
+		for _, r := range shown {
+			out = append(out, r.Name)
+		}
+		return out
 	}
 
-	t.Run("visual-order invariant holds from any input permutation", func(t *testing.T) {
-		// Same three rows, deliberately UNORDERED inputs: the k-th
-		// wanted spec must land on the row whose ID is k-th ASCENDING,
-		// regardless of where that row sits in the input slice.
-		permutations := [][]traySettingsPoolRow{
-			{{ID: 42, spec: realA, Shown: true}, {ID: 7, spec: realB, Shown: true}, {ID: 30, spec: realC, Shown: true}},
-			{{ID: 7, spec: realA, Shown: true}, {ID: 30, spec: realB, Shown: true}, {ID: 42, spec: realC, Shown: true}},
-			{{ID: 30, spec: realA, Shown: true}, {ID: 42, spec: realB, Shown: true}, {ID: 7, spec: realC, Shown: true}},
+	t.Run("display order is creation order, not the daemon's sorted order", func(t *testing.T) {
+		h := &harness{}
+		// The first poll sees just "b" (say the other saves land later):
+		// creation order starts with b even though the daemon sorts.
+		plan := trayPlanSettingsSync(nil, h.ph, []trayMenuSpec{spec("b")})
+		if !plan.changed || plan.stall || len(plan.create) != 1 || plan.create[0].raw != "b" || len(plan.show) != 0 || len(plan.hide) != 0 || plan.phFrom != plan.phTo {
+			t.Fatalf("first render plan = %+v, want changed with exactly [create b] and no placeholder flip", plan)
 		}
-		want := []trayMenuSpec{realX, realA, spec("zzz", "zzz", true)}
-		wantIDs := []uint32{7, 30, 42} // x on the lowest ID, then a, then zzz
-		for pi, pool := range permutations {
-			plan := trayPlanSettingsPool(pool, want)
-			if !plan.changed || plan.stall || plan.fresh != 0 || len(plan.retires) != 0 {
-				t.Fatalf("permutation %d: changed/stall/fresh/retires = %v/%v/%d/%v, want true/false/0/[]", pi, plan.changed, plan.stall, plan.fresh, plan.retires)
-			}
-			if len(plan.assigns) != len(want) {
-				t.Fatalf("permutation %d: assigns = %v, want one per wanted spec", pi, plan.assigns)
-			}
-			for k, assign := range plan.assigns {
-				if assign.spec != want[k] {
-					t.Fatalf("permutation %d: assigns[%d].spec = %+v, want %+v (assignments are in WANTED order)", pi, k, assign.spec, want[k])
-				}
-				if got := pool[assign.row].ID; got != wantIDs[k] {
-					t.Fatalf("permutation %d: want[%d] landed on row ID %d, want %d (ascending-ID positional binding = daemon-order display)", pi, k, got, wantIDs[k])
-				}
-			}
+		apply(h, plan)
+		// "a" arrives; the daemon lists [a b] sorted, but a's row is
+		// created AFTER b's - so the tray shows b, a (creation order).
+		plan = trayPlanSettingsSync(h.rows, h.ph, []trayMenuSpec{spec("a"), spec("b")})
+		if !plan.changed || len(plan.create) != 1 || plan.create[0].raw != "a" || len(plan.show) != 0 || len(plan.hide) != 0 {
+			t.Fatalf("second render plan = %+v, want exactly [create a] - b's row already exists and stays", plan)
+		}
+		apply(h, plan)
+		if got := visibleNames(h); !reflect.DeepEqual(got, []string{"b", "a"}) {
+			t.Fatalf("visible order = %v, want [b a] - creation order by design, NOT the daemon's sorted [a b]", got)
+		}
+		// A pure reorder of the same name SET reconciles to a no-op:
+		// tray order never follows daemon order.
+		if plan = trayPlanSettingsSync(h.rows, h.ph, []trayMenuSpec{spec("a"), spec("b")}); plan.changed {
+			t.Fatalf("re-planned same-set plan = %+v, want the identical no-op", plan)
+		}
+		// A third name appends at the END regardless of sort position.
+		apply(h, trayPlanSettingsSync(h.rows, h.ph, []trayMenuSpec{spec("a"), spec("b"), spec("m")}))
+		if got := visibleNames(h); !reflect.DeepEqual(got, []string{"b", "a", "m"}) {
+			t.Fatalf("visible order after a mid-sort insert = %v, want [b a m] - first-seen appends at the end", got)
 		}
 	})
 
-	t.Run("steady state is a no-op: identical ticks skip everything", func(t *testing.T) {
+	t.Run("identical ticks no-op, including the placeholder regimes", func(t *testing.T) {
 		for _, c := range []struct {
-			name string
-			pool []traySettingsPoolRow
-			want []trayMenuSpec
+			name  string
+			known []traySettingsIdentityRow
+			ph    traySettingsPlaceholder
+			want  []trayMenuSpec
 		}{
-			{"empty pool, nothing wanted (before the first poll)", nil, nil},
-			{"steady two-name render", shown([]trayMenuSpec{realA, realB}, 0), []trayMenuSpec{realA, realB}},
-			{"steady placeholder render with retired surplus", shown([]trayMenuSpec{placeholder}, 2), []trayMenuSpec{placeholder}},
+			{"nothing known, nothing wanted (before the first poll)", nil, trayPhNone, nil},
+			{"steady two-name render", []traySettingsIdentityRow{{ID: 3, Name: "a", Shown: true}, {ID: 7, Name: "b", Shown: true}}, trayPhNone, []trayMenuSpec{spec("a"), spec("b")}},
+			{"steady render with a hidden row staying hidden", []traySettingsIdentityRow{{ID: 3, Name: "a", Shown: true}, {ID: 7, Name: "b", Shown: false}}, trayPhNone, []trayMenuSpec{spec("a")}},
+			{"steady empty-store placeholder", nil, trayPhEmpty, []trayMenuSpec{empty}},
+			{"steady unavailable placeholder", nil, trayPhUnavailable, []trayMenuSpec{unavailable}},
 		} {
-			plan := trayPlanSettingsPool(c.pool, c.want)
-			if plan.changed || len(plan.assigns) != 0 || len(plan.retires) != 0 || plan.fresh != 0 {
+			plan := trayPlanSettingsSync(c.known, c.ph, c.want)
+			if plan.changed || len(plan.create) != 0 || len(plan.show) != 0 || len(plan.hide) != 0 || plan.phFrom != plan.phTo {
 				t.Errorf("%s: plan = %+v, want the empty no-op (identical ticks never churn a native row)", c.name, plan)
 			}
 		}
 	})
 
-	t.Run("growth creates fresh rows only for positions beyond the pool", func(t *testing.T) {
-		plan := trayPlanSettingsPool(shown([]trayMenuSpec{realA, realB, realC}, 0), []trayMenuSpec{realA, realB})
-		if plan.fresh != 0 {
-			t.Fatalf("shrink fresh = %d, want 0", plan.fresh)
-		}
-		plan = trayPlanSettingsPool(shown([]trayMenuSpec{realA, realB, realC}, 0), []trayMenuSpec{realA, realB, realC, realX})
-		if plan.fresh != 1 {
-			t.Fatalf("grow-by-one fresh = %d, want exactly 1 (only the position beyond the 3-row pool)", plan.fresh)
-		}
-		if len(plan.assigns) != 3 {
-			t.Fatalf("grow-by-one assigns = %v, want the 3 pooled positions bound", plan.assigns)
-		}
-		// Growth from the reused PLACEHOLDER row (one row, disabled, no
-		// name) to a three-name list: the placeholder row takes position
-		// 0, exactly two fresh rows cover the rest.
-		plan = trayPlanSettingsPool(shown([]trayMenuSpec{placeholder}, 0), []trayMenuSpec{realA, realB, realC})
-		if plan.fresh != 2 || len(plan.assigns) != 1 || plan.assigns[0].spec != realA {
-			t.Fatalf("placeholder growth assigns/fresh = %v/%d, want the placeholder row bound to position 0 plus 2 fresh", plan.assigns, plan.fresh)
-		}
-		// Growth with a retired surplus: the retired rows take the new
-		// positions BEFORE any fresh row is needed.
-		plan = trayPlanSettingsPool(shown([]trayMenuSpec{realA}, 2), []trayMenuSpec{realA, realB, realC})
-		if plan.fresh != 0 || len(plan.assigns) != 3 || len(plan.retires) != 0 {
-			t.Fatalf("growth into the retired surplus assigns/retires/fresh = %v/%v/%d, want 3 assigns (two of them re-showing retired rows), 0 retires, 0 fresh", plan.assigns, plan.retires, plan.fresh)
-		}
-	})
-
-	t.Run("shrink retires exactly the shown surplus", func(t *testing.T) {
-		pool := shown([]trayMenuSpec{realA, realB, realC}, 2) // rows 3,4 already retired
-		plan := trayPlanSettingsPool(pool, []trayMenuSpec{realA})
-		if !plan.changed || plan.fresh != 0 {
-			t.Fatalf("shrink changed/fresh = %v/%d, want true/0", plan.changed, plan.fresh)
-		}
-		if len(plan.assigns) != 1 || plan.assigns[0].row != 0 || plan.assigns[0].spec != realA {
-			t.Fatalf("shrink assigns = %+v, want row 0 re-bound to realA", plan.assigns)
-		}
-		if !reflect.DeepEqual(plan.retires, []int{1, 2}) {
-			t.Fatalf("shrink retires = %v, want [1 2] - exactly the SHOWN surplus (already-retired rows 3,4 are not listed again)", plan.retires)
-		}
-		// Full shrink to nothing wanted (impossible from traySavedSettings,
-		// which always renders at least a placeholder) retires everything.
-		plan = trayPlanSettingsPool(shown([]trayMenuSpec{realA, realB}, 0), nil)
-		if !plan.changed || len(plan.assigns) != 0 || !reflect.DeepEqual(plan.retires, []int{0, 1}) || plan.fresh != 0 {
-			t.Fatalf("shrink-to-nothing plan = %+v, want changed, no assigns, both rows retired, no fresh", plan)
-		}
-	})
-
-	t.Run("every change class re-binds positionally (rename, reorder, insert, placeholder flips)", func(t *testing.T) {
-		for _, c := range []struct {
-			name string
-			pool []traySettingsPoolRow
-			want []trayMenuSpec
-		}{
-			{"rename at the same position", shown([]trayMenuSpec{realA}, 0), []trayMenuSpec{realB}},
-			{"pure reorder of an identical name set", shown([]trayMenuSpec{realA, realB}, 0), []trayMenuSpec{realB, realA}},
-			{"insert mid-list keeps the pool, shifts positions", shown([]trayMenuSpec{realA, realB, realC}, 0), []trayMenuSpec{realA, realX, realB, realC}},
-			{"placeholder-to-real with an identical title", shown([]trayMenuSpec{placeholder}, 0), []trayMenuSpec{spec(trayNoSavedSettingsTitle, trayNoSavedSettingsTitle, true)}},
-			{"real-to-placeholder with an identical title", shown([]trayMenuSpec{spec(trayNoSavedSettingsTitle, trayNoSavedSettingsTitle, true)}, 0), []trayMenuSpec{placeholder}},
-			{"everything vanishes (store corrupted mid-poll)", shown([]trayMenuSpec{realA, realB}, 0), []trayMenuSpec{spec(traySettingsUnavailableTitle, "", false)}},
-			{"first render from empty", nil, []trayMenuSpec{realA}},
-		} {
-			t.Run(c.name, func(t *testing.T) {
-				plan := trayPlanSettingsPool(c.pool, c.want)
-				if !plan.changed || plan.stall {
-					t.Fatal("changed/stall = false/true, want true/false (any whole-spec difference forces the rebuild)")
-				}
-				got := applyPlan(append([]traySettingsPoolRow(nil), c.pool...), plan, c.want)
-				if len(got) != max(len(c.pool), len(c.want)) {
-					t.Fatalf("pool length after apply = %d, want max(pool, want) = %d", len(got), max(len(c.pool), len(c.want)))
-				}
-				// The applied model must be a positional no-op against want
-				// (shown prefix renders want, surplus retired): plan again.
-				if again := trayPlanSettingsPool(got, c.want); again.changed {
-					t.Fatalf("a second plan over the applied model = %+v, want the positional no-op (the applied render IS want)", again)
-				}
-			})
-		}
-	})
-
-	t.Run("churn creates nothing: rename 20x at size 3 allocates zero fresh rows", func(t *testing.T) {
-		want := []trayMenuSpec{realA, realB, realC}
-		pool := applyPlan(nil, trayPlanSettingsPool(nil, want), want)
-		if len(pool) != 3 {
-			t.Fatalf("pool after the first render = %d rows, want 3", len(pool))
-		}
+	t.Run("rename churn: the old row hides, the new name gets a NEW row with a strictly increasing ID", func(t *testing.T) {
+		h := &harness{}
+		apply(h, trayPlanSettingsSync(nil, h.ph, []trayMenuSpec{spec("a"), spec("b"), spec("c")}))
+		prev := "a"
 		for i := 0; i < 20; i++ {
-			renamed := []trayMenuSpec{spec(fmt.Sprintf("n%d", i), fmt.Sprintf("n%d", i), true), realB, realC}
-			want = renamed
-			plan := trayPlanSettingsPool(pool, want)
-			if !plan.changed || plan.fresh != 0 || len(plan.retires) != 0 {
-				t.Fatalf("rename %d: changed/fresh/retires = %v/%d/%v, want true/0/[] (rebind in place - the ID counter never moves)", i, plan.changed, plan.fresh, plan.retires)
+			ni := fmt.Sprintf("n%d", i)
+			plan := trayPlanSettingsSync(h.rows, h.ph, []trayMenuSpec{spec(ni), spec("b"), spec("c")})
+			if !plan.changed || plan.stall {
+				t.Fatalf("rename %d: changed/stall = %v/%v, want true/false", i, plan.changed, plan.stall)
 			}
-			pool = applyPlan(pool, plan, want)
-			if len(pool) != 3 {
-				t.Fatalf("rename %d: pool length = %d, want 3 forever", i, len(pool))
+			if len(plan.create) != 1 || plan.create[0].raw != ni {
+				t.Fatalf("rename %d: create = %+v, want exactly one fresh row for %q (the new name gets a NEW row)", i, plan.create, ni)
 			}
+			if len(plan.show) != 0 {
+				t.Fatalf("rename %d: show = %+v, want none (b and c are already shown, untouched)", i, plan.show)
+			}
+			if !reflect.DeepEqual(plan.hide, []string{prev}) {
+				t.Fatalf("rename %d: hide = %v, want [%q] (exactly the old name's row retires)", i, plan.hide, prev)
+			}
+			apply(h, plan)
+			prev = ni
+		}
+		// 3 initial rows + 20 renames = 23 DISTINCT identity rows, IDs
+		// strictly increasing in creation order, none ever reused across
+		// names, and only the current names are visible.
+		if len(h.rows) != 23 {
+			t.Fatalf("after 20 renames at size 3 the identity map holds %d rows, want 23 (one per distinct name EVER seen)", len(h.rows))
+		}
+		seen := map[string]uint32{}
+		var lastID uint32
+		for i, r := range h.rows {
+			if i > 0 && r.ID <= lastID {
+				t.Fatalf("row %d has ID %d after %d - IDs must be strictly increasing in creation order", i, r.ID, lastID)
+			}
+			lastID = r.ID
+			if _, dup := seen[r.Name]; dup {
+				t.Fatalf("name %q owns two rows - a row must never be reused across names", r.Name)
+			}
+			seen[r.Name] = r.ID
+		}
+		if got := visibleNames(h); !reflect.DeepEqual(got, []string{"b", "c", "n19"}) {
+			t.Fatalf("visible order after churn = %v, want [b c n19] - the renamed slot's row retires; the new name appends in creation order", got)
 		}
 	})
 
-	t.Run("the hard bound stalls instead of ever growing the ID space", func(t *testing.T) {
-		huge := make([]trayMenuSpec, traySettingsRowsHardBound+1)
-		for i := range huge {
-			huge[i] = realA
+	t.Run("delete and re-save of the same name re-shows the SAME row with zero creates", func(t *testing.T) {
+		h := &harness{}
+		apply(h, trayPlanSettingsSync(nil, h.ph, []trayMenuSpec{spec("a")}))
+		rowID := h.rows[0].ID
+		// Delete: the store goes empty, so the name's row disarms + hides
+		// and the (no saved settings) placeholder regime flips on.
+		plan := trayPlanSettingsSync(h.rows, h.ph, []trayMenuSpec{empty})
+		if !plan.changed || !reflect.DeepEqual(plan.hide, []string{"a"}) || len(plan.create) != 0 || len(plan.show) != 0 || plan.phTo != trayPhEmpty {
+			t.Fatalf("delete plan = %+v, want hide [a], zero creates, zero shows, placeholder flip to empty", plan)
 		}
-		pool := shown([]trayMenuSpec{realA, realB}, 0)
-		plan := trayPlanSettingsPool(pool, huge)
+		apply(h, plan)
+		if h.rows[0].Shown || len(h.rows) != 1 {
+			t.Fatalf("after deletion the row is %+v over %d rows, want the SAME row hidden and the map unchanged", h.rows[0], len(h.rows))
+		}
+		// Re-save the SAME name: the original row re-shows - no new ID.
+		plan = trayPlanSettingsSync(h.rows, h.ph, []trayMenuSpec{spec("a")})
+		if !plan.changed || len(plan.create) != 0 || len(plan.show) != 1 || plan.show[0].raw != "a" || len(plan.hide) != 0 || plan.phTo != trayPhNone {
+			t.Fatalf("re-save plan = %+v, want exactly [show a] with ZERO creates and the placeholder flip back", plan)
+		}
+		apply(h, plan)
+		if !h.rows[0].Shown || h.rows[0].ID != rowID || len(h.rows) != 1 {
+			t.Fatalf("after re-save the row is %+v over %d rows, want the ORIGINAL row (ID %d) re-shown and no new IDs", h.rows[0], len(h.rows), rowID)
+		}
+		// The planner's decision never carries ID 0 churn: a steady re-poll no-ops.
+		if plan = trayPlanSettingsSync(h.rows, h.ph, []trayMenuSpec{spec("a")}); plan.changed {
+			t.Fatalf("re-planned steady plan = %+v, want the no-op", plan)
+		}
+	})
+
+	t.Run("daemon-down hides every name row behind the unavailable placeholder", func(t *testing.T) {
+		h := &harness{}
+		apply(h, trayPlanSettingsSync(nil, h.ph, []trayMenuSpec{spec("a"), spec("b")}))
+		plan := trayPlanSettingsSync(h.rows, h.ph, []trayMenuSpec{unavailable})
+		if !plan.changed || len(plan.create) != 0 || len(plan.show) != 0 || !reflect.DeepEqual(plan.hide, []string{"a", "b"}) || plan.phTo != trayPhUnavailable {
+			t.Fatalf("daemon-down plan = %+v, want hide [a b], zero creates, placeholder flip to unavailable", plan)
+		}
+		apply(h, plan)
+		if got := visibleNames(h); len(got) != 0 {
+			t.Fatalf("while the daemon is down the visible names = %v, want none (the placeholder row is not name-bound)", got)
+		}
+		// Recovery re-shows the SAME rows - zero creates - in creation order.
+		plan = trayPlanSettingsSync(h.rows, h.ph, []trayMenuSpec{spec("a"), spec("b")})
+		if !plan.changed || len(plan.create) != 0 || len(plan.show) != 2 || len(plan.hide) != 0 || plan.phTo != trayPhNone {
+			t.Fatalf("recovery plan = %+v, want exactly [show a, show b], zero creates, placeholder flip off", plan)
+		}
+		apply(h, plan)
+		if got := visibleNames(h); !reflect.DeepEqual(got, []string{"a", "b"}) {
+			t.Fatalf("visible order after recovery = %v, want [a b] - the SAME rows back", got)
+		}
+	})
+
+	t.Run("a literal saved name equal to a placeholder string gets its OWN identity row", func(t *testing.T) {
+		odd := spec(trayNoSavedSettingsTitle) // Title AND raw "(no saved settings)", enabled
+		if got := trayWantPlaceholder([]trayMenuSpec{odd}); got != trayPhNone {
+			t.Fatalf("trayWantPlaceholder(real name equal to the placeholder string) = %v, want none - the ENABLED raw-bearing spec is NOT the placeholder", got)
+		}
+		h := &harness{}
+		plan := trayPlanSettingsSync(nil, h.ph, []trayMenuSpec{odd})
+		if !plan.changed || len(plan.create) != 1 || plan.create[0] != odd || plan.phTo != trayPhNone {
+			t.Fatalf("plan for the placeholder-named setting = %+v, want exactly [create the identity row], no placeholder regime", plan)
+		}
+		apply(h, plan)
+		// Later the store genuinely empties: the name's row hides and the
+		// STATIC placeholder takes over - two DISTINCT rows, never a rebind.
+		plan = trayPlanSettingsSync(h.rows, h.ph, []trayMenuSpec{empty})
+		if !plan.changed || !reflect.DeepEqual(plan.hide, []string{trayNoSavedSettingsTitle}) || len(plan.create) != 0 || plan.phTo != trayPhEmpty {
+			t.Fatalf("placeholder-after-real plan = %+v, want hide [the name], zero creates, empty regime", plan)
+		}
+	})
+
+	t.Run("the 100-name store cap renders fully", func(t *testing.T) {
+		h := &harness{}
+		want := make([]trayMenuSpec, 0, 100)
+		for i := 0; i < 100; i++ {
+			want = append(want, spec(fmt.Sprintf("s%02d", i)))
+		}
+		plan := trayPlanSettingsSync(nil, h.ph, want)
+		if !plan.changed || plan.stall || len(plan.create) != 100 || len(plan.hide) != 0 {
+			t.Fatalf("100-name plan = changed %v, stall %v, creates %d, hides %v, want changed, no stall, 100 creates, no hides", plan.changed, plan.stall, len(plan.create), plan.hide)
+		}
+		apply(h, plan)
+		if got := visibleNames(h); len(got) != 100 {
+			t.Fatalf("a full 100-name store renders %d visible rows, want all 100", len(got))
+		}
+	})
+
+	t.Run("the identity-map hard bound stalls rather than ever growing toward the 16-bit wall", func(t *testing.T) {
+		// Exactly AT the bound is legal (dead code by construction at the
+		// 100-name store cap; the stall is a defensive refusal past it).
+		h := &harness{}
+		full := make([]trayMenuSpec, 0, traySettingsIdentityHardBound)
+		for i := 0; i < traySettingsIdentityHardBound; i++ {
+			full = append(full, spec(fmt.Sprintf("s%d", i)))
+		}
+		plan := trayPlanSettingsSync(nil, h.ph, full)
+		if plan.stall || len(plan.create) != traySettingsIdentityHardBound {
+			t.Fatalf("at-bound plan: stall %v, creates %d, want no stall and %d creates", plan.stall, len(plan.create), traySettingsIdentityHardBound)
+		}
+		apply(h, plan)
+		// One more DISTINCT name would push the map past the bound: stall.
+		before := append([]traySettingsIdentityRow(nil), h.rows...)
+		plan = trayPlanSettingsSync(h.rows, h.ph, append(full, spec("one-too-many")))
 		if !plan.changed || !plan.stall {
-			t.Fatalf("over-hard-bound want: changed/stall = %v/%v, want true/true (the executor logs and leaves the previous render untouched)", plan.changed, plan.stall)
+			t.Fatalf("over-bound plan: changed/stall = %v/%v, want true/true (the executor logs and leaves the previous render untouched)", plan.changed, plan.stall)
 		}
-		if len(plan.assigns) != 0 || len(plan.retires) != 0 || plan.fresh != 0 {
-			t.Fatalf("stall plan = %+v, want no assignments, no retires, no fresh - NOTHING is touched", plan)
+		if len(plan.create) != 0 || len(plan.show) != 0 || len(plan.hide) != 0 {
+			t.Fatalf("stall plan = %+v, want no creates, no shows, no hides - NOTHING is touched", plan)
+		}
+		apply(h, plan)
+		if !reflect.DeepEqual(h.rows, before) {
+			t.Fatal("a stalled reconcile mutated the identity map - the previous render must stay exactly as it was")
 		}
 	})
 }
