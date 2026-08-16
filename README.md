@@ -74,8 +74,18 @@ hardware state. The active paths are loop-free:
   unknown`); a write or injection failure replies `error: <reason>` as
   usual (a failed mic write runs NO sweep, so the apps never desync from
   an unmoved mic). The tray's mute item is their only client; grammar is
-  pinned in `internal/proto`. Reconnects automatically if the mic
-  disappears.
+  pinned in `internal/proto`. The tracked mute state stays
+  premise-worthy or `unknown`, never silently stale: a fresh device
+  session (every reconnect; there is no readable state query, so the new
+  session cannot inherit the old one's belief) resets tracking to
+  `unknown`, and a physical press whose value byte does not decode does
+  the same while STILL running its F24 sweep — conditional verbs refuse
+  `flipped unknown` in either case until a real event or verb
+  re-establishes truth. On the wire, the daemon receives with a 128-byte
+  buffer while the largest legal command is 64 bytes; a datagram that
+  FILLS the buffer is definitionally truncated or hostile and is refused
+  `error: command too long` without ever being dispatched. Reconnects
+  automatically if the mic disappears.
   On a physical mute-button press (`0x21` DeviceMute event), it injects a
   synthetic `F24` keystroke via `SendInput` so the AHK script sweeps the
   meeting apps; injections are debounced (400 ms) and logged as
@@ -122,14 +132,15 @@ hardware state. The active paths are loop-free:
   **Saved settings** card lists the daemon's named light snapshots and
   saves the current look under a chosen name: Save snapshots every
   known-state light, Apply restores one name, Delete removes it — the same
-  `light settings save|apply|delete <name>` verbs the tray menu uses,
-  backed by `GET`/`POST /api/settings`. Saved names are capped at 42
-  BYTES: the page itself rejects an over-long save or delete name BEFORE
-  any network call, showing the daemon's own `error: settings name too
-  long (max 42 bytes)` in the banner (the daemon's 128-byte receive buffer
-  answers a 65–128-byte over-cap name with exactly that error on every
-  platform; a datagram beyond 128 bytes gets no reply on Windows, so the
-  page gate spares the wait and covers that band); the byte count is UTF-8, so the name input's
+   `light settings save|apply|delete <name>` verbs the tray menu uses,
+   backed by `GET`/`POST /api/settings`. Saved names are capped at 42
+   BYTES: the page itself rejects an over-long save or delete name BEFORE
+   any network call, showing the daemon's own `error: settings name too
+   long (max 42 bytes)` in the banner (the daemon's 128-byte receive buffer
+   answers a 65–127-byte over-cap name with exactly that error on every
+   platform; a datagram that fills the buffer or exceeds it is refused
+   `error: command too long` on Unix and dies unanswered on Windows, so the
+   page gate spares the wait and covers that band); the byte count is UTF-8, so the name input's
   `maxlength` — which counts characters (plain ASCII: up to 42; CJK/emoji
   names fit fewer) — remains only a UX hint; the panel API enforces the
   same 42-byte cap server-side too (any `/api/settings` POST with an
@@ -193,6 +204,12 @@ hardware state. The active paths are loop-free:
   and **Quit** — Quit stops everything
   mutastic runs in one click: it sends the daemon's `shutdown` command,
   posts the light-panel server's `/api/shutdown`, and exits the tray.
+  The tray's menu library is a vendored copy of the energye/systray
+  v1.0.3 fork at `third_party/systray` (`go.mod` `replace`s the module
+  path) carrying exactly one patch, documented in its `PATCHES.md`: the
+  native click-dispatch callback bindings are synchronized with atomic
+  store/load, so a handler (re)bound while the menu message pump is
+  already dispatching can never be observed half-written.
   If a live daemon or panel *refuses* to stop, Quit logs the failure and
   the tray stays up — click Quit again to retry. (A port that actively
   refuses connections counts as already stopped; a hang or silence keeps
@@ -257,17 +274,24 @@ hardware state. The active paths are loop-free:
   boundary: leading/trailing whitespace is never meaningful, so
   `settings save foo ` and `settings save foo` are the same setting; quote
   multi-word names (`mutastic.exe light settings save "movie mode"`).
-  Empty names, names containing a newline, and names starting with
-  `error:` (case-insensitive) answer `error: invalid settings name`; names
+  Empty names, names containing ANY control byte (NUL, newline, tab, CR,
+  and the rest of the <0x20 band, plus DEL 0x7F — every saved name is
+  printable: a single list line, and representable as a Windows menu
+  string), and names starting with
+  `error:` (case-insensitive) answer `error: invalid settings name`;
+  printable multi-byte UTF-8 names (CJK, emoji, accented text) are
+  allowed and list byte-exactly. Names
   over 42 bytes answer `error: settings name too long (max 42 bytes)` —
   with the 22-byte `light settings delete ` prefix the largest legal
   command is exactly 64 bytes, and the daemon's UDP receive buffer is 128
   bytes, so an over-cap name arrives whole and the store's own byte cap
-  rejects it identically on every platform (datagrams beyond 128 bytes
-  get no reply: Windows fails the read and the client times out — an
-  accepted edge — and even a >128-byte datagram truncated on Unix still
-  leaves a >42-byte surviving name, so truncation can never act on a
-  different valid name). The store caps at
+  rejects it identically on every platform. A datagram that FILLS the
+  128-byte buffer is definitionally truncated (or hostile filler) and is
+  refused `error: command too long` without ever being dispatched — no
+  verb runs, so a padded command's truncated head can never be
+  reinterpreted as a shorter valid command (datagrams beyond the buffer
+  on Windows get no reply: the read itself fails and the client times
+  out — an accepted edge). The store caps at
   100 names: a NEW name past the cap answers
   `error: too many saved settings (max 100)` while overwriting an existing
   name always fits; there is deliberately no rename verb (delete + save
@@ -276,7 +300,13 @@ hardware state. The active paths are loop-free:
   whose state is known in its `saved "<name>" (N lights)` reply — a light
   still `unknown` since daemon start is omitted, and when none are known
   the reply is `error: no known light state to save` and nothing is
-  stored; a persistence failure answers `error: settings save failed:
+  stored; the save also validates the same invariants the file loader
+  enforces (brightness 0–100, hardware temperature step, COM-port keys),
+  so a live light state driven out of range — e.g. by a garbage hardware
+  broadcast frame — refuses the save with a clear `error: live state
+  violates the saved-settings invariants ...` and nothing is stored
+  (persisting it would make the file look corrupt at the next load);
+  a persistence failure answers `error: settings save failed:
   <err>`. `settings apply` answers one line per saved light in the fleet
   fan-out shape (`COM4 desk: on 47% 2900K`); an unknown name answers
   `error: unknown setting "<name>"`, as does delete; apply with no lights

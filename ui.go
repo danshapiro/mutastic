@@ -104,14 +104,17 @@ type uiSettingsRequest struct {
 // uiMaxSettingsNameBytes mirrors the daemon store's maxSettingsNameLen in
 // internal/light/settings.go (42: with the 22-byte longest verb prefix,
 // "light settings delete ", the largest legal wire command is 64 bytes -
-// the daemon's receive buffer is 128 with 2x headroom, R7-F3). R4-F3:
+// the daemon's receive buffer is 128 with 2x headroom, R7-F3, and a
+// read filling it is refused without dispatch, R8-F1). R4-F3:
 // the UI enforces the SAME byte cap server-side on every settings action
 // BEFORE any daemon call - the page's JS gate (R3-F6) is bypassable by a
-// direct caller. Since R7-F3 an over-cap name of 65-128 bytes arrives
+// direct caller. Since R7-F3 an over-cap name of 65-127 bytes arrives
 // whole and draws the daemon's documented rejection on every platform;
-// this gate remains the defense for >128-byte datagrams, which die
-// unanswered on Windows (WSAEMSGSIZE, surfacing as a timeout), and saves
-// the pointless round trip in the first place. The daemon's own
+// since R8-F1 a datagram that FILLS or exceeds the buffer is refused with
+// "error: command too long" on Unix (truncated to the full buffer, never
+// dispatched) and still dies unanswered on Windows (WSAEMSGSIZE,
+// surfacing as a timeout); this gate remains the defense that skips the
+// pointless round trip in the first place. The daemon's own
 // identical check stays authoritative; the two constants must stay equal.
 const uiMaxSettingsNameBytes = 42
 

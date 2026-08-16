@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -188,6 +189,11 @@ func TestSavedSettingsStoreLoadValidation(t *testing.T) {
 	}{
 		{"newline-bearing name", mustJSON(t, map[string]SavedSetting{"a\nb": entry})},
 		{"carriage-return name", mustJSON(t, map[string]SavedSetting{"a\rb": entry})},
+		// R8-F3: the printable-only name grammar loads identically to the
+		// save side (shared validStoreName predicate).
+		{"NUL-bearing name", mustJSON(t, map[string]SavedSetting{"a\x00b": entry})},
+		{"tab-bearing name", mustJSON(t, map[string]SavedSetting{"a\tb": entry})},
+		{"DEL-bearing name", mustJSON(t, map[string]SavedSetting{"a\x7fb": entry})},
 		{"untrimmed name", mustJSON(t, map[string]SavedSetting{" look": entry})},
 		{"trailing-space name", mustJSON(t, map[string]SavedSetting{"look ": entry})},
 		{"empty name", mustJSON(t, map[string]SavedSetting{"": entry})},
@@ -875,6 +881,29 @@ func TestSavedSettingsNameValidation(t *testing.T) {
 			}
 		}
 	}
+	// R8-F3: EVERY control byte is rejected with the grammar error -
+	// NUL, tab, newline, CR, ESC, DEL, and a lone NUL at a name position
+	// (never "just the newline checks"). Byte-level is what matters: no
+	// accepted name may forge list lines (NUL/\n/\r), break the tray's
+	// Windows UTF16 conversion (NUL EINVAL), or smuggle invisibles
+	// (\t/0x1B/0x7F) - while real internal spaces and printable unicode
+	// stay legal (pinned further below).
+	for _, name := range []string{"a\x00b", "café\x00", "foo\tbar", "a\x1bb", "del\x7f", "\x01whole"} {
+		if got := mm.HandleCommand("settings save " + name); got != invalid {
+			t.Errorf("settings save <control-byte name> = %q, want %q", got, invalid)
+		}
+		// The same grammar is enforced for apply AND delete identically.
+		if got := mm.HandleCommand("settings apply " + name); got != invalid {
+			t.Errorf("settings apply <control-byte name> = %q, want %q", got, invalid)
+		}
+		if got := mm.HandleCommand("settings delete " + name); got != invalid {
+			t.Errorf("settings delete <control-byte name> = %q, want %q", got, invalid)
+		}
+	}
+	// Nothing from the rejected batch may have landed in the store.
+	if got := mm.HandleCommand("settings list"); got != "" {
+		t.Fatalf("list after control-byte rejects = %q, want empty", got)
+	}
 	// 43 bytes is over; 42 (the inclusive cap) is accepted by all verbs.
 	tooLong := strings.Repeat("a", 43)
 	const wantTooLong = "error: settings name too long (max 42 bytes)"
@@ -914,6 +943,158 @@ func TestSavedSettingsNameValidation(t *testing.T) {
 	}
 	if got := mm.HandleCommand("settings list"); got != "foo\nmovie mode" {
 		t.Fatalf("list = %q, want %q", got, "foo\nmovie mode")
+	}
+}
+
+// TestSavedSettingsUnicodeNamesRoundTripByteExactly pins R8-F3's
+// allowance half: printable multi-byte UTF-8 names are legal, save/list
+// byte-exactly, and survive a store reload unchanged - the control-byte
+// rejection is a BYTE-level scan (< 0x20, == 0x7F) that can never touch
+// UTF-8 continuation bytes (>= 0x80).
+func TestSavedSettingsUnicodeNamesRoundTripByteExactly(t *testing.T) {
+	fastTimings(t)
+	dir := t.TempDir()
+	fleet := newFakeFleet("COM4")
+	mm, ctx := newTestMulti(t, fleet, dir)
+	mm.rescan(ctx)
+	waitConnected(t, mm, "COM4")
+	sessionManager(t, mm, "COM4").state.Set(50, 0)
+
+	// CJK, accented latin + emoji, and a full-width space: each under the
+	// 42-BYTE cap, each a single wire-list line.
+	names := []string{"映画 夜", "café ☕ night", "fullwidth　space"}
+	for _, name := range names {
+		if len(name) > maxSettingsNameLen {
+			t.Fatalf("test premise broken: %q is %d bytes, want <= %d", name, len(name), maxSettingsNameLen)
+		}
+		if got, want := mm.HandleCommand("settings save "+name), fmt.Sprintf("saved %q (1 lights)", name); got != want {
+			t.Fatalf("save %q = %q, want %q", name, got, want)
+		}
+	}
+	// Sorted newline-joined, byte-exact - and the order must be Go's
+	// byte-wise sort of the raw names.
+	sorted := append([]string(nil), names...)
+	sort.Strings(sorted)
+	wantList := strings.Join(sorted, "\n")
+	if got := mm.HandleCommand("settings list"); got != wantList {
+		t.Fatalf("list = %q, want %q (byte-exact unicode round trip)", got, wantList)
+	}
+	// A reload sees exactly the same names (the on-disk JSON carried them).
+	reloaded := NewSettingsStore(filepath.Join(dir, "light-settings.json"))
+	if got := reloaded.List(); !reflect.DeepEqual(got, sorted) {
+		t.Fatalf("reloaded List = %q, want %q", got, sorted)
+	}
+}
+
+// TestSettingsStoreSaveValidatesEntryInvariants pins the R8-F5 store-level
+// refusal: Save runs THE SAME invariant predicates load runs, so a
+// candidate that load would classify corrupt is refused with
+// errSettingsInvalidEntry, NOTHING is persisted, and the store is left
+// unchanged (the pre-existing name still lists, the file byte-for-byte).
+func TestSettingsStoreSaveValidatesEntryInvariants(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "light-settings.json")
+	s := NewSettingsStore(path)
+	base := SavedSetting{Lights: map[string]SavedLightState{
+		"COM4": {On: true, Brightness: 50, TempByte: 9},
+	}}
+	if err := s.Save("base", base); err != nil {
+		t.Fatalf("baseline save: %v", err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	oneLight := func(ls SavedLightState) SavedSetting {
+		return SavedSetting{Lights: map[string]SavedLightState{"COM4": ls}}
+	}
+	cases := []struct {
+		label string
+		name  string
+		snap  SavedSetting
+	}{
+		{"negative brightness", "look", oneLight(SavedLightState{On: true, Brightness: -1, TempByte: 9})},
+		{"brightness above 100", "look", oneLight(SavedLightState{On: true, Brightness: 101, TempByte: 9})},
+		{"temp byte past the firmware step table", "look", oneLight(SavedLightState{On: true, Brightness: 50, TempByte: maxTempByte + 1})},
+		{"non-COM snapshot key", "look", SavedSetting{Lights: map[string]SavedLightState{
+			"desk": {On: true, Brightness: 50, TempByte: 9}}}},
+		{"empty snapshot key", "look", SavedSetting{Lights: map[string]SavedLightState{
+			"": {On: true, Brightness: 50, TempByte: 9}}}},
+		{"empty Lights map", "look", SavedSetting{Lights: map[string]SavedLightState{}}},
+		{"control byte in the name", "a\nb", base},
+		{"over-long name", strings.Repeat("c", 43), base},
+	}
+	for _, c := range cases {
+		err := s.Save(c.name, c.snap)
+		if !errors.Is(err, errSettingsInvalidEntry) {
+			t.Errorf("%s: Save error = %v, want errSettingsInvalidEntry", c.label, err)
+		}
+		if got := s.List(); !reflect.DeepEqual(got, []string{"base"}) {
+			t.Errorf("%s: List after the refused save = %v, want [base] (store unchanged)", c.label, got)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(data, before) {
+			t.Errorf("%s: the store file changed after the refused save (err %v) - NOTHING may persist", c.label, err)
+		}
+	}
+	// A valid overwrite still works after all the refusals (the refusal
+	// never wedges the store).
+	if err := s.Save("base", oneLight(SavedLightState{On: true, Brightness: 90, TempByte: 18})); err != nil {
+		t.Fatalf("valid overwrite after refusals: %v", err)
+	}
+	if got, ok := s.Get("base"); !ok || got.Lights["COM4"].Brightness != 90 {
+		t.Fatalf("Get(base) = %+v, %v; want the overwritten 90%% entry", got, ok)
+	}
+}
+
+// TestSavedSettingsSaveRefusesOutOfRangeLiveState pins R8-F5 against the
+// LIVE path (flags.txt: settingsSnapshot -> Save): an out-of-range INBOUND
+// CCT frame drives State past the store's invariants exactly as a
+// garbage/foreign firmware broadcast would (the parser feeds
+// pwr/brightness/temp bytes through unchecked); the save then refuses
+// with a clear error: wire reply, NOTHING is persisted, the store is
+// unchanged - and a subsequent valid frame lets the retry save.
+func TestSavedSettingsSaveRefusesOutOfRangeLiveState(t *testing.T) {
+	fastTimings(t)
+	dir := t.TempDir()
+	fleet := newFakeFleet("COM4")
+	mm, ctx := newTestMulti(t, fleet, dir)
+	mm.rescan(ctx)
+	waitConnected(t, mm, "COM4")
+	m := sessionManager(t, mm, "COM4")
+
+	// Out-of-range inbound frame: brightness 150 (> 100) and temp 0x60
+	// (> maxTempByte); the daemon tracks it (0x60 renders clamped as the
+	// top step, 7000K), and the save must REFUSE rather than persist a
+	// file the next load would classify corrupt.
+	fleet.port("COM4").reads <- Frame(TagCCT, 0x01, 150, 0x60)
+	waitFor(t, "out-of-range frame tracked", func() bool {
+		return m.HandleCommand("status") == "on 150% 7000K"
+	})
+	want := "error: live state violates the saved-settings invariants (brightness 0-100, temp step, COM key, name grammar); refusing to save"
+	if got := mm.HandleCommand("settings save look"); got != want {
+		t.Fatalf("save over out-of-range state = %q, want %q", got, want)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "light-settings.json")); !os.IsNotExist(err) {
+		t.Fatalf("the refused save must not write the store file (err %v)", err)
+	}
+	if got := mm.HandleCommand("settings list"); got != "" {
+		t.Fatalf("list after the refused save = %q, want empty (store unchanged)", got)
+	}
+
+	// A valid frame re-ranges the state and the retry saves normally.
+	fleet.port("COM4").reads <- Frame(TagCCT, 0x01, 50, 9)
+	waitFor(t, "valid frame tracked", func() bool {
+		return m.HandleCommand("status") == "on 50% 4950K"
+	})
+	if got := mm.HandleCommand("settings save look"); got != `saved "look" (1 lights)` {
+		t.Fatalf("retry save = %q, want the saved reply", got)
+	}
+	if got := mm.HandleCommand("settings list"); got != "look" {
+		t.Fatalf("list after the retry = %q, want look", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "light-settings.json")); err != nil {
+		t.Fatalf("the retry must persist the store file: %v", err)
 	}
 }
 

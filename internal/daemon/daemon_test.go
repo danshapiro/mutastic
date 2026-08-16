@@ -1286,6 +1286,184 @@ func TestOversizedSettingsDeleteRejectsWholeOnWire(t *testing.T) {
 	}
 }
 
+// --- R8-F1: full-buffer datagrams are refused, never dispatched ---
+
+// TestFullBufferDatagramRefusedOnWire pins R8-F1 (Critical) over a REAL
+// socket pair with the REAL light store handler: a read that FILLS the
+// 128-byte receive buffer can never be a legal command (the largest legal
+// command is 64 bytes), so it is definitionally truncated or hostile and
+// is answered "error: command too long" WITHOUT dispatch. The pinned
+// attack: "light settings delete " + 100 spaces + "target" + a >128-byte
+// suffix truncates on Unix at 128 bytes into exactly "delete ... target"
+// with the padding in between - TrimSpace and the handler's raw-suffix
+// name re-read collapse
+// the padding, so pre-R8-F1 the daemon DELETED the existing "target"
+// setting (a hostile command manufactured from a legal one plus pure
+// whitespace). Post-fix the attack is refused and "target" SURVIVES; an
+// exactly-128-byte padded "status" (not even truncated - just hostile
+// size) is refused by the same size rule; 63/64-byte deletes still act
+// normally end-to-end; and the 65-byte delete of a 43-byte name still
+// draws the store's documented 42-byte validation error.
+func TestFullBufferDatagramRefusedOnWire(t *testing.T) {
+	dir := t.TempDir()
+	name42 := strings.Repeat("b", 42)
+	entry := light.SavedSetting{Lights: map[string]light.SavedLightState{
+		"COM4": {On: true, Brightness: 30, TempByte: 0},
+	}}
+	seed := map[string]light.SavedSetting{"target": entry, name42: entry}
+	data, err := json.Marshal(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "light-settings.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	storeHandler := light.NewMultiManager(testLogger(), dir, light.NewRegistry(""), func() ([]string, error) { return nil, nil }, nil)
+	open := func() (Device, error) { return newFakeDevice(), nil }
+	_, ask := startDaemonLight(t, open, storeHandler)
+
+	// 1) The 100-spaces pad attack (Critical): 22 + 100 + 6 + 64 = 192
+	// bytes, truncated by the 128-byte buffer - refused, NEVER dispatched.
+	attack := "light settings delete " + strings.Repeat(" ", 100) + "target" + strings.Repeat("s", 64)
+	if len(attack) <= 128 {
+		t.Fatalf("test premise broken: attack is %d bytes, want > 128", len(attack))
+	}
+	if got, want := ask(attack), "error: command too long"; got != want {
+		t.Fatalf("padded delete attack = %q, want %q", got, want)
+	}
+	// "target" MUST still exist: pre-fix the truncated head parsed as a
+	// valid delete of the shortest name after the padding. ("b..."b < "t...")
+	if got, want := ask("light settings list"), name42+"\ntarget"; got != want {
+		t.Fatalf("list after the refused attack = %q, want %q (the padded delete must NOT have dispatched)", got, want)
+	}
+
+	// 2) An exactly-128-byte datagram: not even truncated, just hostile
+	// size - the size rule refuses it too (nothing legal is 128 bytes).
+	exact := "status" + strings.Repeat(" ", 122)
+	if len(exact) != 128 {
+		t.Fatalf("test premise broken: exact is %d bytes, want 128", len(exact))
+	}
+	if got, want := ask(exact), "error: command too long"; got != want {
+		t.Fatalf("exactly-128B datagram = %q, want %q (a dispatched status would answer muted|unmuted|unknown)", got, want)
+	}
+
+	// 3) Legal sizes still work: the 64-byte delete (largest legal
+	// command) deletes the 42-byte name for real...
+	const deletePrefix = "light settings delete " // 22 bytes
+	cmd64 := deletePrefix + name42
+	if len(cmd64) != 64 {
+		t.Fatalf("test premise broken: cmd64 is %d bytes, want 64", len(cmd64))
+	}
+	if got, want := ask(cmd64), `deleted "`+name42+`"`; got != want {
+		t.Fatalf("64-byte delete = %q, want %q", got, want)
+	}
+	// ...and the 65-byte delete of a 43-byte name still arrives WHOLE and
+	// draws the store's documented byte-cap error (R7-F3, kept green).
+	cmd65 := deletePrefix + "target" + strings.Repeat("x", 37)
+	if len(cmd65) != 65 {
+		t.Fatalf("test premise broken: cmd65 is %d bytes, want 65", len(cmd65))
+	}
+	if got, want := ask(cmd65), "error: settings name too long (max 42 bytes)"; got != want {
+		t.Fatalf("65-byte delete = %q, want %q", got, want)
+	}
+	if got, want := ask("light settings list"), "target"; got != want {
+		t.Fatalf("list at the end = %q, want %q", got, want)
+	}
+}
+
+// --- R8-F2: tracker staleness resets to unknown ---
+
+// TestUndecodableDeviceMuteEventResetsTrackedState pins R8-F2a: a PHYSICAL
+// 0x21 press whose value byte does not decode leaves the mic's true state
+// unreadable, so the tracker drops to UNKNOWN (conditional verbs refuse
+// with "flipped unknown" instead of acting on stale belief) - while the
+// legacy F24 sweep STILL fires on that same press (the button's
+// meeting-app behavior never depended on the value byte). A DECODABLE
+// 0x21 press (the control) keeps tracking and injecting normally.
+func TestUndecodableDeviceMuteEventResetsTrackedState(t *testing.T) {
+	d := New(testLogger())
+	inj := &fakeInjector{}
+	d.Inject = inj
+	d.Track.Set(true) // known muted: believable premise pre-reset
+	d.handleEvent(proto.Event{Op: proto.EvtDeviceMute, Value: 0x0b})
+	if _, known := d.Track.Status(); known {
+		t.Fatal("an undecodable 0x21 value must reset the tracked state to unknown (premise safety, R8-F2)")
+	}
+	if got := inj.calls.Load(); got != 1 {
+		t.Fatalf("injects = %d, want 1: the legacy F24 sweep still runs on an undecodable press", got)
+	}
+	if got := d.HandleCommand("mute-if muted"); got != "flipped unknown" {
+		t.Fatalf("mute-if muted after the reset = %q, want %q (the stale belief must NOT drive the verb)", got, "flipped unknown")
+	}
+
+	// Control, fresh daemon: a decodable 0x21 press tracks AND injects.
+	d2 := New(testLogger())
+	inj2 := &fakeInjector{}
+	d2.Inject = inj2
+	d2.handleEvent(proto.Event{Op: proto.EvtDeviceMute, Value: 0x01})
+	if muted, known := d2.Track.Status(); !known || !muted {
+		t.Fatalf("tracker after a decodable 0x21 = (%v, %v), want (true, true)", muted, known)
+	}
+	if got := inj2.calls.Load(); got != 1 {
+		t.Fatalf("injects after the decodable press = %d, want 1", got)
+	}
+}
+
+// TestReconnectResetsTrackedState pins R8-F2b end-to-end through Run's
+// reconnect machinery: a fresh session/handshake must NOT inherit the
+// dead session's tracked mute state (the mic may have been toggled while
+// disconnected, and there is no state query), so after the new device
+// binds, status is "unknown" and conditional verbs refuse with "flipped
+// unknown" - until a real event re-establishes truth and the verbs act
+// again.
+func TestReconnectResetsTrackedState(t *testing.T) {
+	dev1 := newFakeDevice()
+	dev2 := newFakeDevice()
+	var opens atomic.Int32
+	open := func() (Device, error) {
+		if opens.Add(1) == 1 {
+			return dev1, nil
+		}
+		return dev2, nil
+	}
+	inj := &fakeInjector{}
+	_, ask := startDaemonInject(t, open, inj)
+	waitFor(t, "first handshake", func() bool { return dev1.writeCount() >= 2 })
+	if got := ask("unmute"); got != "unmuted" {
+		t.Fatalf("setup unmute = %q, want unmuted (establishes a known tracked state on session 1)", got)
+	}
+
+	dev1.readErr <- errors.New("device unplugged")
+	// The reset happens when the NEW device binds, BEFORE its handshake
+	// writes - so observing the handshake proves the reset already ran.
+	// Reconnect delay is 2s; allow up to 5s.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && dev2.writeCount() < 2 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if dev2.writeCount() < 2 {
+		t.Fatal("daemon did not reconnect and re-handshake after a read error")
+	}
+	if got := ask("status"); got != "unknown" {
+		t.Fatalf("status after reconnect = %q, want unknown (the dead session's belief must be dropped)", got)
+	}
+	if got := ask("mute-if unmuted"); got != "flipped unknown" {
+		t.Fatalf("mute-if unmuted after reconnect = %q, want %q (conditional verbs refuse on unknown)", got, "flipped unknown")
+	}
+	if got := inj.calls.Load(); got != 0 {
+		t.Fatalf("injects = %d, want 0 (a refused conditional never injects)", got)
+	}
+
+	// A real event on the new session re-establishes truth and the
+	// conditional verbs act again (one press sweep + one verb sweep).
+	dev2.events <- inputReport(0x21, 0x01)
+	waitFor(t, "status after press on the new session", func() bool { return ask("status") == "muted" })
+	if got := ask("unmute-if muted"); got != "ok" {
+		t.Fatalf("unmute-if muted after the press = %q, want ok", got)
+	}
+	waitFor(t, "press sweep + verb sweep", func() bool { return inj.calls.Load() == 2 })
+}
+
 func TestServeUDPSerializesDeltaBeforeNextDatagram(t *testing.T) {
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {

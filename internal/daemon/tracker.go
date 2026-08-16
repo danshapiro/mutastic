@@ -52,6 +52,21 @@ func (t *Tracker) Set(muted bool) {
 	t.muted = muted
 }
 
+// Reset drops the tracked state back to UNKNOWN (R8-F2): the belief the
+// tracker holds stops being premise-worthy when the mic told us something
+// we could not read (a 0x21 event with an undecodable value byte) or when
+// the device session that belief came from is gone (a fresh session binds
+// a device whose true state cannot be read - there is no state query).
+// Conditional verbs then refuse with "flipped unknown" instead of acting
+// on stale truth, until a real event or a successful verb re-establishes
+// it.
+func (t *Tracker) Reset() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.known = false
+	t.muted = false
+}
+
 // Status returns the current state; known is false if no mute event or Set
 // has been seen yet.
 func (t *Tracker) Status() (muted bool, known bool) {

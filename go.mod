@@ -13,3 +13,8 @@ require (
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect
 )
+
+// R8-F4: the systray fork is vendored at third_party/systray with its
+// native-dispatch callback bindings synchronized (third_party/systray/
+// PATCHES.md); imports stay github.com/energye/systray.
+replace github.com/energye/systray => ./third_party/systray

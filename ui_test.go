@@ -1339,9 +1339,11 @@ func TestUIAPISettingsValidatesAndPassesDaemonErrorsThrough(t *testing.T) {
 // daemon store's 42-BYTE name cap server-side for EVERY action, before any
 // daemon call - the page's JS gate (R3-F6) is bypassable by a direct caller.
 // (Wire backdrop: since R7-F3 the daemon's 128-byte receive buffer lets a
-// 65-128-byte over-cap name arrive whole and draw the daemon's documented
-// rejection everywhere; >128-byte datagrams still die unanswered on Windows
-// - WSAEMSGSIZE, a timeout - and pre-R7-F3 a 65-byte delete TRUNCATED into
+// 65-127-byte over-cap name arrive whole and draw the daemon's documented
+// rejection everywhere; since R8-F1 a datagram FILLING or exceeding the
+// buffer is refused "error: command too long" without dispatch on Unix,
+// while on Windows the oversized read still fails and the client times
+// out - WSAEMSGSIZE; pre-R7-F3 a 65-byte delete TRUNCATED into
 // its 42-byte prefix on Unix, a destructive mis-delete.) A 42-byte
 // name passes through to the daemon; 43 bytes - plain ASCII, or a
 // 15-character CJK name at 45 UTF-8 bytes - answers HTTP 400 with ZERO

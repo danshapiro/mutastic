@@ -569,14 +569,19 @@ func (mm *MultiManager) handleSettings(cmd string) string {
 }
 
 // settingsSave snapshots the live-connected, known-state fleet and stores
-// it under name (overwriting by exact name).
+// it under name (overwriting by exact name). R8-F5: the store re-validates
+// the candidate against the SAME invariant predicates its load path runs
+// (factored in settings.go so the sides cannot drift), so a live state
+// driven out of range by a garbage inbound frame can never be persisted
+// into a self-corrupting file - the save refuses, nothing is written, and
+// the store is unchanged.
 func (mm *MultiManager) settingsSave(name string) string {
 	snap := mm.settingsSnapshot()
 	if len(snap.Lights) == 0 {
 		return "error: no known light state to save"
 	}
 	if err := mm.settings.Save(name, snap); err != nil {
-		if errors.Is(err, errSettingsCap) {
+		if errors.Is(err, errSettingsCap) || errors.Is(err, errSettingsInvalidEntry) {
 			return "error: " + err.Error()
 		}
 		return fmt.Sprintf("error: settings save failed: %v", err)

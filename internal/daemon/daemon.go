@@ -231,6 +231,16 @@ func (d *Daemon) setMute(muted bool) string {
 	return d.setMuteLocked(muted)
 }
 
+// resetTracker drops the tracked mute state to unknown under opMu
+// (R8-F2). It exists for callers that do NOT already hold the mutex -
+// Run's session binding point; handleEvent resets the tracker directly
+// because it already holds opMu for its whole compound.
+func (d *Daemon) resetTracker() {
+	d.opMu.Lock()
+	defer d.opMu.Unlock()
+	d.Track.Reset()
+}
+
 // setMuteLocked is setMute's body with opMu already held (R7-F1); the
 // replies are byte-identical to the pre-opMu verbs (no behavior change,
 // only the serialization).
@@ -281,6 +291,16 @@ func Run(ctx context.Context, open OpenFunc, light CommandHandler, inject KeyInj
 		}
 		logger.Printf("device opened")
 		d.SetDevice(dev)
+		// R8-F2b: a fresh session cannot inherit the PREVIOUS session's
+		// tracked mute state - the mic may have been toggled while the
+		// daemon was disconnected, and there is no readable state query
+		// (the handshake does not report the state either). Reset to
+		// UNKNOWN the moment the new device binds, so conditional verbs
+		// refuse with "flipped unknown" until a real event or a successful
+		// verb re-establishes truth, instead of acting on the dead
+		// session's belief. Serialized with every other tracker move under
+		// opMu (R7-F1's uniform rule).
+		d.resetTracker()
 		err = d.session(ctx, dev)
 		d.SetDevice(nil)
 		dev.Close()
@@ -353,6 +373,18 @@ func (d *Daemon) handleEvent(ev proto.Event) {
 	if d.Track.Apply(ev) {
 		muted, _ := d.Track.Status()
 		d.Logger.Printf("event op=0x%02x value=0x%02x -> muted=%v", ev.Op, ev.Value, muted)
+	} else if ev.Op == proto.EvtDeviceMute {
+		// R8-F2a: a PHYSICAL press whose value byte does not decode means
+		// the mic moved but we cannot read the direction, so every premise
+		// built on the tracker's belief is unsafe. Drop the tracked state
+		// to UNKNOWN - conditional verbs then refuse with "flipped unknown"
+		// until truth re-arrives - while the legacy F24 sweep below STILL
+		// runs exactly as before: that sweep predates the conditional verbs
+		// (it exists so the physical button carries the meeting apps along
+		// even on firmware whose value bytes this build cannot read), and
+		// skipping it here would silently change the button's app behavior.
+		d.Track.Reset()
+		d.Logger.Printf("event op=0x%02x value=0x%02x: undecodable physical press - tracked state reset to unknown (premise safety); sweep still runs", ev.Op, ev.Value)
 	} else {
 		d.Logger.Printf("event op=0x%02x value=0x%02x (ignored)", ev.Op, ev.Value)
 	}
@@ -380,19 +412,29 @@ func (d *Daemon) handleEvent(ev proto.Event) {
 // net.ErrClosed (the shutdown path: Run's goroutine closing pc) ends the
 // loop; every other error is logged and survived.
 func (d *Daemon) serveUDP(pc net.PacketConn) {
-	// 128-byte receive buffer (R7-F3): the largest LEGAL command on the
-	// wire is exactly 64 bytes (the 22-byte "light settings delete "
-	// prefix + the store's 42-byte name cap), so an oversize legal-shape
-	// command now arrives WHOLE and parsing rejects it with the documented
-	// too-long error on every platform. Under the old 64-byte buffer a
-	// 65-byte delete TRUNCATED on Unix into the 42-byte prefix name and
-	// deleted it - a destructive mis-delete (R4-F3's class, one layer
-	// down: the wire itself). Beyond 128 bytes: Windows fails the read
-	// (WSAEMSGSIZE - logged, survived; the client sees a timeout), Unix
-	// truncates, and every settings verb's surviving 100+-byte name still
-	// exceeds the cap and draws the same rejection - truncation can never
-	// manufacture a different VALID name anymore (106 bytes of surviving
-	// name > 42 always).
+	// 128-byte receive buffer (R7-F3) plus the ROUND-9 full-buffer refusal
+	// rule (R8-F1). The largest LEGAL command on the wire is exactly 64
+	// bytes (the 22-byte "light settings delete " prefix + the store's
+	// 42-byte name cap), so an oversize legal-shape command (a 65-byte
+	// delete of a 43-byte name) arrives WHOLE and parsing rejects it with
+	// the documented too-long error on every platform - under the old
+	// 64-byte buffer it TRUNCATED on Unix into the 42-byte prefix name and
+	// deleted it (R4-F3's class, one layer down: the wire itself). R8-F1
+	// closes what raw headroom cannot: a read that FILLS the entire buffer
+	// (n == 128) is definitionally a truncated datagram (Unix) or hostile
+	// exact-fit filler - never a legal command - and the surviving HEAD of
+	// a truncated command can parse as a DIFFERENT VALID command with the
+	// padding swallowed by TrimSpace and the settings handler's raw-suffix
+	// name read: the 100-spaces pad attack ("light settings delete " + 100
+	// spaces + "target" + a >128-byte suffix) truncates at the buffer into
+	// exactly "...delete <spaces> target", which parses as deleting the
+	// EXISTING setting "target" - a hostile command manufactured from
+	// nothing but whitespace. So a full-buffer read is answered
+	// "error: command too long" and is NEVER dispatched (no handler runs,
+	// no shutdown hook can fire on a padded "shutdown" either). Datagrams
+	// beyond the buffer on Windows fail the read instead (WSAEMSGSIZE -
+	// logged, survived; the client sees a timeout), which is identical in
+	// effect: the command never dispatches.
 	buf := make([]byte, 128)
 	for {
 		n, addr, err := pc.ReadFrom(buf)
@@ -402,6 +444,16 @@ func (d *Daemon) serveUDP(pc net.PacketConn) {
 			}
 			d.Logger.Printf("udp read: %v (continuing)", err)
 			time.Sleep(100 * time.Millisecond) // don't spin if the error repeats
+			continue
+		}
+		if n == len(buf) {
+			// Full buffer: truncated or hostile (see the header comment).
+			// Refuse without dispatching - the reply still goes out so
+			// legitimate clients see the same error: shape they parse.
+			d.logCommand("<full datagram, refused>", "error: command too long")
+			if _, err := pc.WriteTo([]byte("error: command too long"), addr); err != nil {
+				d.Logger.Printf("udp write to %s: %v (continuing)", addr, err)
+			}
 			continue
 		}
 		cmd := strings.TrimSpace(string(buf[:n]))

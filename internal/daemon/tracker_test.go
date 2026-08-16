@@ -71,3 +71,20 @@ func TestTrackerSet(t *testing.T) {
 		t.Fatalf("Status() after Set(true) = %v, %v; want true, true", muted, known)
 	}
 }
+
+// TestTrackerReset pins the R8-F2 primitive: Reset drops a known state
+// back to unknown, and the next Set/event re-establishes truth normally.
+func TestTrackerReset(t *testing.T) {
+	var tr Tracker
+	tr.Set(true)
+	tr.Reset()
+	if _, known := tr.Status(); known {
+		t.Fatal("Status() after Reset must report known=false")
+	}
+	if !tr.Apply(proto.Event{Op: proto.EvtDeviceMute, Value: 0x01}) {
+		t.Fatal("Apply after Reset must track normally again")
+	}
+	if muted, known := tr.Status(); !known || !muted {
+		t.Fatalf("Status() after Reset+Apply = %v, %v; want true, true", muted, known)
+	}
+}
