@@ -453,6 +453,57 @@ func TestSavedSettingsSaveExcludesDisconnectedCachedState(t *testing.T) {
 	}
 }
 
+// TestSavedSettingsSaveExcludesRetainedNilPortSession pins R3-F1: a session
+// RETAINED by the rescan debounce (one missing scan, below missThreshold)
+// whose serial link is already gone - read error ended the session, the
+// port is nil while the reconnect loop retries against the vanished port -
+// holds only STALE cached state. The snapshot must exclude it (not count it
+// in N) even though it is still a member of the enumerated session set and
+// its state is known. The exclusion uses the nonblocking liveLink probe,
+// never Connected (which can wedge behind a dead write).
+func TestSavedSettingsSaveExcludesRetainedNilPortSession(t *testing.T) {
+	fastTimings(t)
+	dir := t.TempDir()
+	fleet := newFakeFleet("COM4", "COM7")
+	mm, ctx := newTestMulti(t, fleet, dir)
+	mm.rescan(ctx)
+	waitConnected(t, mm, "COM4", "COM7")
+	sessionManager(t, mm, "COM4").state.Set(50, 0)
+	sessionManager(t, mm, "COM7").state.Set(70, 3) // known, then the link dies below
+
+	// Unplug COM7: it leaves the enumerated set (so reconnect opens fail)
+	// AND its live read errors, ending the session mid-debounce.
+	fp7 := fleet.port("COM7")
+	fleet.set("COM4")
+	fp7.readErr <- errors.New("unplugged")
+	waitFor(t, "COM7 session dropped its port", func() bool {
+		return !sessionManager(t, mm, "COM7").liveLink()
+	})
+
+	mm.rescan(ctx) // miss 1: debounced - the session is RETAINED
+	mm.mu.Lock()
+	_, retained := mm.sessions["COM7"]
+	mm.mu.Unlock()
+	if !retained {
+		t.Fatal("COM7 session must be RETAINED after one missing scan (the debounce window under test)")
+	}
+
+	got := mm.HandleCommand("settings save survivor")
+	if got != `saved "survivor" (1 lights)` {
+		t.Fatalf("save = %q; the retained-but-nil-port session must not count in N", got)
+	}
+	snap, _ := mm.settings.Get("survivor")
+	if len(snap.Lights) != 1 {
+		t.Fatalf("snapshot = %+v, want only the live linked light", snap.Lights)
+	}
+	if _, bad := snap.Lights["COM7"]; bad {
+		t.Fatal("a retained session whose port is nil must be excluded from the snapshot")
+	}
+	if _, ok := snap.Lights["COM4"]; !ok {
+		t.Fatal("the live linked known light must be saved")
+	}
+}
+
 func TestSavedSettingsApplyRestoresLiveStateInOrder(t *testing.T) {
 	fastTimings(t)
 	dir := t.TempDir()

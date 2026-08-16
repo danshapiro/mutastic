@@ -288,6 +288,21 @@ func (m *Manager) Connected() bool {
 	return m.port != nil
 }
 
+// liveLink is the NONBLOCKING twin of Connected: a TryLock, so a wedged
+// writeFrame holding m.mu (an abandoned timed-out call) degrades the
+// answer to "not live" instead of stalling the caller - a light whose only
+// serial link is occupied by a dead write cannot refresh its state anyway.
+// The settings snapshot runs on the daemon's serial UDP loop; it gates on
+// this because Connected() taking m.mu could wedge that loop behind a dead
+// write.
+func (m *Manager) liveLink() bool {
+	if !m.mu.TryLock() {
+		return false
+	}
+	defer m.mu.Unlock()
+	return m.port != nil
+}
+
 // PowerState reports the tracked power state. known stays false until the
 // first echo/broadcast or optimistic write; the fleet toggle treats
 // unknown as off.

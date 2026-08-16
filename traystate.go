@@ -337,32 +337,39 @@ func (a *trayActions) onMicSet(verb string) {
 // The click loads the {title, armed} snapshot EXACTLY ONCE (one read of
 // what the user saw: the menu's title and enabled bit are only the last
 // completed poll's rendering), then revalidates the premise AT ACTION TIME
-// with a fresh status probe. Three regimes (R2-F1 corrected ruling):
+// with a fresh status probe. Three regimes (R3-F2 FINAL RULE, superseding
+// r2's sweep-on-flip):
 //
 //   - Premise reproduced (a definitive probe equal to the armed state): the
 //     click fires the label's ABSOLUTE verb - armed unmuted ("Mute") fires
 //     "mute", armed muted ("Unmute") fires "unmute" - then the sweep and a
 //     refresh, via onMicSet. Spy order: ask:status,ask:<verb>,inject,refresh.
 //   - Flipped-but-definitive probe (the mic already sits in the label's
-//     TARGET state): NO mic verb - the mic half of the item's
-//     mute-everything contract is already satisfied - but the F24 sweep
-//     STILL RUNS, because the meeting apps are never guaranteed to have
-//     followed the flip, then one WARN and a refresh. Spy order:
-//     ask:status,inject,refresh.
+//     TARGET state - it flipped between the last poll and the click): NO
+//     mic verb AND NO sweep - one WARN and a refresh only. The flip's cause
+//     is unknowable per click: (a) a SWEEPING path made the flip (physical
+//     button, tray item, Stream Deck key - the frequent real-world case,
+//     e.g. a post-meeting physical press inside the 2 s poll window), in
+//     which case the apps were already carried along and sweeping again
+//     would UNDO them (apps toggle back while the mic stays put); (b) a
+//     mic-only path made the flip (panel card, CLI), in which case the apps
+//     were never moved. Choosing no-sweep keeps case (a) correct; case
+//     (b)'s app desync is the deliberate, documented limitation whose
+//     recovery is the manual resync procedure (toggle the apps once by
+//     hand, then every sweeping path keeps them in sync). Spy order:
+//     ask:status,refresh.
 //   - Unknown probe or a dead daemon (no truthful direction exists), or an
 //     unarmed premise: NOTHING runs - no verb, no sweep - only one WARN and
 //     a refresh. Spy order: ask:status,refresh.
 //
-// Declining the mic verb on a flip is the correct convergence, not a breach
-// of "click performs the displayed action": the label's TARGET state is
-// already true (a "Mute" label targets muted; a muted probe means the
-// mic's job is done), while the sweep still serves the app half of the
-// mute-everything contract. The native menu title can go cosmetically stale
-// between polls, but that staleness can never cause a wrong mic action
-// BECAUSE this probe gates every firing - this is a documented rendering
-// limitation, not a behavioral residual. Desync recovery for the apps stays
-// the documented manual procedure (toggle them once by hand, then every
-// sweeping path keeps them in sync).
+// Declining every half-action on a flip is the correct convergence, not a
+// breach of "click performs the displayed action": the label's TARGET
+// state is already true (a "Mute" label targets muted; a muted probe means
+// the mic's job is done) and the apps belong to whichever path made the
+// flip. The native menu title can go cosmetically stale between polls, but
+// that staleness can never cause a wrong mic action BECAUSE this probe
+// gates every firing - this is a documented rendering limitation, not a
+// behavioral residual.
 func (a *trayActions) muteClick(load func() trayMuteSnapshot) {
 	if !a.muteFlight.TryLock() {
 		a.logger.Warn("mute click dropped: a previous mute click is still in flight")
@@ -380,11 +387,11 @@ func (a *trayActions) muteClick(load func() trayMuteSnapshot) {
 			a.onMicSet(verb)
 			return
 		}
-		// Flipped-but-definitive premise: the mic is already at the label's
-		// target, so no mic verb fires - but the meeting apps are never
-		// guaranteed to have followed, so the sweep still runs.
-		sweepErr := a.injectSweep()
-		a.logger.Warn("mute click: premise flipped, the mic is already at the label's target - sweeping the apps without a mic verb", "armed", trayStateName(snap.Armed), "probe", trayStateName(probe), "sweep_err", errString(sweepErr))
+		// Flipped-but-definitive premise (R3-F2): the mic is already at the
+		// label's target AND the apps were carried by the sweeping path
+		// that made the flip (physical/tray/deck) - sweeping again here
+		// would undo them. No verb, no sweep.
+		a.logger.Warn("mute click declined: the mic is already at the label's target (flipped premise); the apps were carried by the sweeping path that made the flip, so no verb and no sweep", "armed", trayStateName(snap.Armed), "probe", trayStateName(probe))
 		a.signalRefresh()
 		return
 	}

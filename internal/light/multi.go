@@ -588,7 +588,12 @@ func (mm *MultiManager) settingsSave(name string) string {
 // fan-out enumerates (mm.sessions under mm.mu - NEVER per-light
 // Manager.Connected, which takes the per-light mutex and can block behind
 // a wedged write). All reads are memory-only state reads, so a wedged
-// light cannot stall the UDP loop. Lights whose state is still UNKNOWN
+// light cannot stall the UDP loop. Each retained session must additionally
+// show a LIVE serial link RIGHT NOW via the nonblocking liveLink TryLock
+// probe: the rescan debounce RETAINS a session for missThreshold scans
+// after its port vanished, and such a session (port nil, mid reconnect)
+// holds only STALE cached state - snapshotting it would record a look the
+// hardware no longer shows (R3-F1). Lights whose state is still UNKNOWN
 // (after a daemon restart, until an echo or knob event) are OMITTED:
 // snapshotting one would record invented defaults instead of the current
 // hardware look. Entries are keyed by COM port path ONLY; an off light
@@ -604,6 +609,12 @@ func (mm *MultiManager) settingsSnapshot() SavedSetting {
 	lights := make(map[string]SavedLightState, len(ports))
 	for _, p := range ports {
 		m := managers[p]
+		// Live-link gate (R3-F1): a rescan-debounced retained session whose
+		// serial link is gone (nil port, or a wedged write holding m.mu) is
+		// excluded here and not counted in N; its cached state is stale.
+		if !m.liveLink() {
+			continue
+		}
 		on, brightness, temp, known := m.state.Status()
 		if !known {
 			continue

@@ -226,15 +226,19 @@ func TestTrayMicToggleIsMuteEverything(t *testing.T) {
 // last completed poll's snapshot, and a click fires the ABSOLUTE verb the
 // displayed label names - so before asking for anything, the click re-probes
 // the daemon and fires the verb ONLY when the probe reproduces the
-// snapshot's armed premise (the state the label's verb targets). The R2-F1
-// corrected ruling splits the mismatch cases: a definitive-OPPOSITE probe
-// means the label's target is already true (flipped premise) - the mic half
-// of mute-everything is satisfied, so NO mic verb fires, but the F24 sweep
-// STILL RUNS (the meeting apps are never guaranteed to have followed the
-// flip) plus one WARN and a refresh; an unknown or dead-daemon probe means
-// no truthful direction exists, so NOTHING runs (no verb, no sweep) plus
-// one WARN and an immediate refresh so the redrawn truthful verb does not
-// wait for the next poll.
+// snapshot's armed premise (the state the label's verb targets). The R3-F2
+// FINAL RULE (superseding r2's sweep-on-flip ruling): a definitive-OPPOSITE
+// probe means the label's target is already true (flipped premise), and the
+// flip's cause is unknowable per click - made by a sweeping path
+// (physical/tray/deck, the frequent case) the apps were already carried and
+// sweeping again would UNDO them; made by a mic-only path (panel/CLI) the
+// apps were never moved. Choosing no-sweep keeps the sweeping-path case
+// correct, so a flip runs NO verb and NO sweep - the (b) app desync is the
+// deliberate documented limitation with the manual resync as its recovery;
+// an unknown or dead-daemon probe means no truthful direction exists, so
+// again NOTHING runs (no verb, no sweep). Both decline shapes get one WARN
+// and an immediate refresh so the redrawn truthful verb does not wait for
+// the next poll.
 func TestMuteClickRevalidates(t *testing.T) {
 	armedMute := trayMuteSnapshot{Title: "Mute", Armed: trayStateUnmuted}
 	armedUnmute := trayMuteSnapshot{Title: "Unmute", Armed: trayStateMuted}
@@ -263,11 +267,12 @@ func TestMuteClickRevalidates(t *testing.T) {
 		t.Fatalf("muteClick armed Unmute with a matching probe = %q, want %q", got, "ask:status,ask:unmute,inject,refresh")
 	}
 
-	// Flipped-but-definitive probe (R2-F1): the mic already sits in the
-	// label's TARGET state, so NO mic verb fires - but the item is
-	// mute-everything and the apps are never guaranteed to have followed, so
-	// the sweep still runs: spy order ask:status,inject,refresh plus exactly
-	// one WARN. Pinned in BOTH flip directions.
+	// Flipped-but-definitive probe (R3-F2): the mic already sits in the
+	// label's TARGET state, so NO mic verb fires - and NO sweep runs: the
+	// apps were carried by the sweeping path that made the flip
+	// (physical/tray/deck), and sweeping again would undo them. Spy order
+	// ask:status,refresh plus exactly one WARN. Pinned in BOTH flip
+	// directions.
 	flips := []struct {
 		name    string
 		snap    trayMuteSnapshot
@@ -282,8 +287,8 @@ func TestMuteClickRevalidates(t *testing.T) {
 		a := spy.actions()
 		a.logger = slog.New(levels)
 		a.muteClick(load(c.snap))
-		if got := spy.order(); got != "ask:status,inject,refresh" {
-			t.Fatalf("muteClick with %s = %q, want %q (no mic verb - the mic is already at the label's target - but the sweep runs: the apps are never guaranteed)", c.name, got, "ask:status,inject,refresh")
+		if got := spy.order(); got != "ask:status,refresh" {
+			t.Fatalf("muteClick with %s = %q, want %q (no mic verb, NO sweep - the sweeping path that made the flip already carried the apps; sweeping again would undo them)", c.name, got, "ask:status,refresh")
 		}
 		if len(levels.levels) != 1 || levels.levels[0] != slog.LevelWarn {
 			t.Fatalf("muteClick with %s levels = %v, want [WARN] (a flipped premise-check is not an error)", c.name, levels.levels)

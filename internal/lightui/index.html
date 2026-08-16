@@ -626,6 +626,23 @@
 
       const SETTINGS_LINE_DEFAULT = "Save the current look under a name; apply or delete it here or from the tray.";
 
+      // The daemon caps settings names at 42 BYTES (maxSettingsNameLen: its
+      // 64-byte UDP receive buffer minus the 22-byte "light settings delete "
+      // prefix), and Windows DROPS an oversize UDP datagram without a reply
+      // (WSAEMSGSIZE), so an over-long name would surface as a mute timeout
+      // instead of the daemon's error. Gate the name-taking mutations -
+      // Save and row Delete - here, BEFORE flushPendingSliders or any queue
+      // enqueue, with the daemon's own message in the banner (R3-F6). The
+      // byte count is UTF-8 (TextEncoder), not characters - the input's
+      // maxlength counts UTF-16 code units, so a 42-unit CJK/emoji name is
+      // far over the byte cap and still reaches this gate; Delete names come
+      // from the daemon's list (already capped), so that call site is
+      // defensive.
+      const SETTINGS_NAME_TOO_LONG = "error: settings name too long (max 42 bytes)";
+      function settingsNameOverByteCap(name) {
+        return new TextEncoder().encode(name).length > 42;
+      }
+
       function showApplyDetail(detail) {
         if (!detail) return;
         // Failure lines come in the daemon's two real shapes: line-initial
@@ -711,6 +728,12 @@
           button.dataset.settingsBound = "true";
           button.addEventListener("click", () => {
             const name = button.dataset.delete;
+            if (settingsNameOverByteCap(name)) {
+              // Rejected in the UI, before any network call, with the same
+              // message the daemon would send (R3-F6).
+              showError(SETTINGS_NAME_TOO_LONG);
+              return;
+            }
             flushPendingSliders();
             enqueueMutation(`settings:delete:${name}`, "/api/settings", {action: "delete", name}, false);
           });
@@ -721,6 +744,12 @@
         const input = $("settings-name");
         const name = input.value;
         if (name.trim() === "") return; // an empty/whitespace name never issues a mutation (F8)
+        if (settingsNameOverByteCap(name)) {
+          // Rejected in the UI, before any network call, with the same
+          // message the daemon would send (R3-F6); the input keeps its text.
+          showError(SETTINGS_NAME_TOO_LONG);
+          return;
+        }
         flushPendingSliders();
         enqueueMutation("settings:save", "/api/settings", {action: "save", name}, false);
       }

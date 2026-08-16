@@ -287,15 +287,17 @@ func trayRefreshLoop(logger *slog.Logger, refreshCh <-chan struct{}, header, mic
 		// (SetTitle, then Enable/Disable per the computed pair) and the
 		// premise snapshot is stored LAST: a click executes concurrently in
 		// its own goroutine, and store-first could arm the click to the NEW
-		// pair while the menu still shows the OLD verb - the matching probe
-		// then fires the opposite of the displayed action. Stored last, the
-		// premise is never FRESHER than the painted title, so a click
-		// racing the draw degrades to the probe-gated no-op (stale premise
-		// vs fresh probe -> decline + refresh). The residual sub-poll
-		// window - the PAINTED title itself lagging the daemon - is
-		// structurally unkillable without a read-back of what the user saw;
-		// the probe gate bounds it (any state change after premise capture
-		// mismatches the probe and the click declines).
+		// pair while the menu still shows the OLD verb. Stored last, the
+		// premise is never FRESHER than the painted title; and with flip =>
+		// NO-OP (R3-F2: a definitive-OPPOSITE probe runs no verb and no
+		// sweep), ANY paint/premise race degrades to the probe-gated no-op
+		// and NEVER an opposite action (R3-F3): a click holding a stale
+		// premise meets a fresh probe that mismatches it (a flip or a
+		// decline), and a mismatching probe runs nothing by rule. The
+		// residual sub-poll window - the PAINTED title itself lagging the
+		// daemon - is structurally unkillable without a read-back of what
+		// the user saw; the probe gate bounds it (any state change after
+		// premise capture mismatches the probe and the click no-ops).
 		// Linux can't drive the native menu, so this paint/store ordering
 		// is review-verified only - no automated test can observe it.
 		snap := trayMuteSnapshot{Title: trayMuteTitle(state), Armed: state}
@@ -347,9 +349,34 @@ type savedMenuChild struct {
 // newSavedMenuChild creates one submenu child with its STABLE click closure
 // - the only place Click is ever assigned: the closure reads the slot at
 // click time and dispatches whatever command is current then.
-func newSavedMenuChild(parent *systray.MenuItem, title string, lightCmd func(string) func()) *savedMenuChild {
-	child := &savedMenuChild{item: parent.AddSubMenuItem(title, "")}
-	child.slot.Store("")
+//
+// R3-F4 ordering discipline: BOTH click-time inputs are assigned around the
+// fork's create call, on this same refresh goroutine, with no channel
+// hand-off or other deliberate yield between the assignments and the
+// item's first revealing update. The command slot is stored FIRST - a
+// plain Go atomic write with no native side effect, so the FINAL command
+// is bound before the item exists; the fork's AddSubMenuItem is its only
+// create call and inserts the item into the submenu's HMENU on the spot
+// (there is no create-without-insert API), so for a brand-new child that
+// insert is the first revealing update; the Click closure is assigned on
+// the statement IMMEDIATELY following the create call. A click dispatched
+// in that one-statement window finds click == nil and no-ops (the fork's
+// dispatcher skips a nil binding) - never a wrong apply. From then on the
+// closure is NEVER rebound; rebuilds only re-store the slot (before each
+// revealing update, see syncSavedSettingsMenu).
+//
+// Recorded residual (R3-F4, verbatim): a click queued in the same Win32
+// message turn as a name-set rebuild applies the slot's new name. The
+// window is single-turn and user-action-triggered (a click must be queued
+// natively in the exact millisecond an external name-set change rebuilds
+// the menu), and the consequence is reversible - apply the intended name
+// again. No automated test can observe this: on Linux neither the fork's
+// native HMENU nor its message-turn dispatch exists, so this discipline is
+// review-verified only.
+func newSavedMenuChild(parent *systray.MenuItem, title, command string, lightCmd func(string) func()) *savedMenuChild {
+	child := &savedMenuChild{}
+	child.slot.Store(command) // bound BEFORE the create call: never an uninitialized slot behind a revealed item
+	child.item = parent.AddSubMenuItem(title, "")
 	child.item.Click(func() {
 		if cmd, _ := child.slot.Load().(string); cmd != "" {
 			lightCmd(cmd)()
@@ -365,13 +392,16 @@ func newSavedMenuChild(parent *systray.MenuItem, title string, lightCmd func(str
 // hidden back into a reuse pool and its slot cleared, then each wanted spec
 // reuses a hidden orphan first and only creates a NEW child (stable closure
 // bound at creation, newSavedMenuChild) when the pool is empty. Per item
-// the ordering is slot FIRST, then SetTitle, then Enable/Disable, then Show
-// LAST: the slot store is a plain atomic word with no native side effect,
-// while every update()-backed call (SetTitle, Enable, Disable, and Show
-// itself all route through addOrUpdateMenuItem, which inserts any item
-// missing from the visible list) reveals a hidden item on the spot - so the
-// command is final before the item's first revealing update renders it, and
-// the click binding itself never changes. The display/command split is
+// the ordering is slot FIRST (a recycled orphan re-stores it; a NEW child
+// arrives from newSavedMenuChild with slot AND closure already assigned),
+// then SetTitle, then Enable/Disable, then Show LAST - the slot store is a
+// plain atomic word with no native side effect, while every
+// update()-backed call (SetTitle, Enable, Disable, and Show itself all
+// route through addOrUpdateMenuItem, which inserts any item missing from
+// the visible list) reveals the item on the spot; both assignments happen
+// in this same goroutine with no yield between them and the item's first
+// revealing update, so the command and the binding are final before the
+// item's reveal renders it (R3-F4). The display/command split is
 // raw-vs-Title: spec.Title is the menu-ESCAPED display string ("&" -> "&&"),
 // spec.raw the VERBATIM saved name - the command must use raw, because the
 // daemon's store keys names raw and an escaped title would apply nothing.
@@ -381,11 +411,12 @@ func newSavedMenuChild(parent *systray.MenuItem, title string, lightCmd func(str
 // so retained items stay bounded by the menu size plus one change-width
 // even with delete churn. The returned spec copy is the new cached render.
 //
-// Recorded residual (R2-F3): a click the native side queued in the SAME
-// event-loop turn as a rebuild's retitle can apply the slot's NEW name
-// (the slot is stored before the native title update lands) - a single-turn,
-// sub-100ms window; beyond that one turn the on-screen title and the slot
-// command agree.
+// Recorded residual (R3-F4, verbatim): a click queued in the same Win32
+// message turn as a name-set rebuild applies the slot's new name - a
+// single-turn, user-action-triggered window whose consequence is reversible
+// (apply the intended name again); beyond that one turn the on-screen title
+// and the slot command agree. No automated test can observe the ordering on
+// Linux (no native menu, no message turn), so it is review-verified only.
 func syncSavedSettingsMenu(parent *systray.MenuItem, children []*savedMenuChild, cached, want []trayMenuSpec, lightCmd func(string) func()) ([]*savedMenuChild, []trayMenuSpec) {
 	for _, child := range children[:len(cached)] {
 		child.item.Hide()
@@ -395,16 +426,26 @@ func syncSavedSettingsMenu(parent *systray.MenuItem, children []*savedMenuChild,
 	reused := min(len(pool), len(want))
 	shown := make([]*savedMenuChild, 0, len(want))
 	for i, spec := range want {
+		// command is the child's new slot content: an ENABLED real entry's
+		// apply verb on the VERBATIM raw name; "" for placeholders (an
+		// unbound, disabled row can never fire).
+		command := ""
+		if spec.Enabled {
+			command = "light settings apply " + spec.raw
+		}
 		var child *savedMenuChild
 		if i < reused {
 			child = pool[i]
+			// R3-F4: the slot is re-stored BEFORE this item's first
+			// revealing update of the reconcile (the SetTitle below) -
+			// same goroutine, no yield between; the stable closure has
+			// been bound since creation.
+			child.slot.Store(command)
 		} else {
-			child = newSavedMenuChild(parent, spec.Title, lightCmd)
-		}
-		if spec.Enabled {
-			child.slot.Store("light settings apply " + spec.raw)
-		} else {
-			child.slot.Store("") // unbound: a placeholder never fires
+			// A NEW child arrives with its slot AND its stable closure
+			// already assigned (see newSavedMenuChild) before any
+			// SetTitle/Enable/Show below.
+			child = newSavedMenuChild(parent, spec.Title, command, lightCmd)
 		}
 		child.item.SetTitle(spec.Title)
 		if spec.Enabled {

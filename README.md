@@ -27,11 +27,16 @@ action, and `mutastic light ...` commands. The active mute paths remain:
    **Unmute** while muted), sends that absolute verb through the daemon
    with the same `F24` meeting-app sweep, and only after re-checking that
    the premise the label names still holds. If the mic flipped to the
-   label's target since the last poll, the click fires no mic verb — the
-   mic is already there — but still sweeps the apps (the item is
-   mute-everything, and the apps are never guaranteed to have followed),
-   warns, and redraws; at `unknown` state or with the daemon down the
-   click runs nothing at all — no verb, no sweep, immediate redraw.
+   label's target since the last poll, the click runs nothing at all — no
+   mic verb, no sweep: the mic is already there, and the apps were carried
+   by the sweeping path that made the flip (the physical button, the tray,
+   or the deck), so sweeping again would undo them; it just warns and
+   redraws. (A mic-only flip — the panel card's mic buttons or the CLI —
+   leaves the apps untouched by design; the fix is the documented manual
+   resync: toggle the apps once by hand, then every sweeping path keeps
+   them in sync.) At `unknown` state or with the daemon down the click
+   likewise runs nothing at all — one WARN, no verb, no sweep, immediate
+   redraw.
 
 Pressing the **mute button on the Yeti X itself** keeps the meeting apps
 in sync: the daemon sees the mic's `0x21` DeviceMute event (emitted only for
@@ -102,10 +107,14 @@ hardware state. The active paths are loop-free:
   known-state light, Apply restores one name, Delete removes it — the same
   `light settings save|apply|delete <name>` verbs the tray menu uses,
   backed by `GET`/`POST /api/settings`. Saved names are capped at 42
-  BYTES: the name input's `maxlength` counts characters (plain ASCII: up
-  to 42; CJK/emoji names fit fewer) and is only a UX hint — the daemon
-  validates authoritatively, so an over-long name surfaces the daemon's
-  own `error: settings name too long (max 42 bytes)` in the page. The
+  BYTES: the page itself rejects an over-long save or delete name BEFORE
+  any network call, showing the daemon's own `error: settings name too
+  long (max 42 bytes)` in the banner (Windows drops an oversize UDP
+  datagram without a reply, so letting one reach the wire would surface as
+  a mute timeout instead); the byte count is UTF-8, so the name input's
+  `maxlength` — which counts characters (plain ASCII: up to 42; CJK/emoji
+  names fit fewer) — remains only a UX hint, and the daemon still
+  validates authoritatively for every other client. The
   daemon owns and persists the
   store (`%LOCALAPPDATA%\mutastic\light-settings.json`), so the panel and
   the tray always see the same set. A partially successful apply replies
@@ -129,11 +138,15 @@ hardware state. The active paths are loop-free:
   as the Stream Deck mute key; the label always names the exact action a
   click performs, and the click re-checks the premise the label names
   before firing: if the mic already flipped to the label's target since
-  the last poll it sweeps the apps WITHOUT a mic verb — the mic is
-  already there — plus one WARN and an immediate redraw, and if the mic
-  state is unknown or the daemon is down it runs nothing at all — one
-  WARN, no verb, no sweep, immediate redraw; both halves are attempted on
-  every fired click and any failure is logged),
+  the last poll it runs NOTHING — no mic verb, no sweep — because the mic
+  is already there and the apps were carried by the sweeping path that
+  made the flip (physical button, tray, or deck), so sweeping again would
+  undo them; a mic-only flip from the panel card or the CLI leaves the
+  apps untouched, and the documented manual resync fixes that — one WARN
+  and an immediate redraw, and if the mic state is unknown or the daemon
+  is down it likewise runs nothing at all — one WARN, no verb, no sweep,
+  immediate redraw; both halves are attempted on every fired click and any
+  failure is logged),
   **Toggle lights**, **Brightness** (applied in click order),
   **Light preset**, **Saved settings** (the daemon's saved named light
   settings — the same names the web UI saves — polled every 2 s; click a

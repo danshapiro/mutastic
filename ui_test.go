@@ -1547,10 +1547,23 @@ func TestEmbeddedLightUIHasSavedSettingsSection(t *testing.T) {
 		"enqueueMutation(`settings:delete:${name}`, \"/api/settings\", {action: \"delete\", name}, false);",
 		"refreshLights(true);\n            showApplyDetail(result.detail);",
 		`function flushPendingSliders() {`,
+		// R3-F6: the in-page UTF-8 byte-length gate (before any network
+		// call) with the daemon's own too-long message.
+		`function settingsNameOverByteCap(name) {`,
+		`new TextEncoder().encode(name).length > 42`,
+		`const SETTINGS_NAME_TOO_LONG = "error: settings name too long (max 42 bytes)";`,
 	} {
 		if !strings.Contains(source, fragment) {
 			t.Fatalf("embedded UI is missing saved-settings queue fragment %q", fragment)
 		}
+	}
+	// Both name-taking mutation entry points (Save form, row Delete) reject
+	// an over-byte-cap name in-page with the daemon's message.
+	if got := strings.Count(source, "if (settingsNameOverByteCap(name)) {"); got != 2 {
+		t.Fatalf("settingsNameOverByteCap gates = %d, want exactly 2 (save, delete)", got)
+	}
+	if got := strings.Count(source, "showError(SETTINGS_NAME_TOO_LONG);"); got != 2 {
+		t.Fatalf("showError(SETTINGS_NAME_TOO_LONG) call sites = %d, want exactly 2 (save, delete)", got)
 	}
 	// R2-F4: every settings mutation entry point (Save, Apply, Delete)
 	// flushes the pending slider debounces BEFORE enqueueing, so the queued
@@ -1890,6 +1903,99 @@ assert.deepEqual(posts(), [
 	{url: "/api/group", body: {action: "set-temp", value: 3583}},
 	{url: "/api/settings", body: {action: "save", name: "evening"}},
 ], "the flushed temp-slider debounce must not fire a duplicate once its window lapses");
+`)
+}
+
+// TestEmbeddedLightUISettingsNameByteCapGateNodeDOMStub EXECUTES the
+// embedded page script under Node against the shared DOM stub and pins the
+// R3-F6 client-side name gate: a save or delete name whose UTF-8 BYTE
+// length exceeds 42 is rejected in the page BEFORE any network call - no
+// mutation request is issued and the error banner carries the daemon's own
+// too-long message verbatim - while a 42-byte name (the inclusive cap)
+// still sends. Byte-vs-character counting is the point: 21 CJK characters
+// (63 bytes, only 21 UTF-16 code units - well under the input's maxlength)
+// must be rejected too, and 14 (exactly 42 bytes) must send.
+func TestEmbeddedLightUISettingsNameByteCapGateNodeDOMStub(t *testing.T) {
+	runPageScriptWithDOMStub(t, `
+stubFetchScript({
+	"/api/lights": {status: 200, body: {lights: []}},
+	"/api/mic": {status: 200, body: {state: "unmuted"}},
+	"/api/settings": {status: 200, body: {names: ["look"]}},
+	"POST /api/settings": {status: 200, body: {names: ["look"]}},
+});
+const banner = document.getElementById("error-banner");
+const errorText = document.getElementById("error-text");
+const posts = () => fetchCalls
+	.filter((call) => call.options.method === "POST")
+	.map((call) => ({url: call.url, body: JSON.parse(call.options.body)}));
+
+// Delete buttons at the byte-cap boundary; the names change below forces
+// renderSettings to rebuild and bind them (the stub does not parse the list
+// innerHTML, so they are registered by selector like the mic buttons).
+const deleteTooLong = makeElement("settings-delete-too-long");
+deleteTooLong.dataset.delete = "d".repeat(43);
+const deleteAtCap = makeElement("settings-delete-at-cap");
+deleteAtCap.dataset.delete = "e".repeat(42);
+stubRegister("[data-delete]", [deleteTooLong, deleteAtCap]);
+intervalCallback();
+await flush();
+assert.equal(document.getElementById("settings-list").innerHTML.includes('data-apply="look"'), true, "setup: the names change rendered the settings list");
+
+fetchCalls.length = 0;
+banner.hidden = true;
+errorText.textContent = "";
+
+// A 43-byte Save is rejected in-page: NO mutation request, and the banner
+// carries the daemon's own too-long message verbatim.
+const saveInput = document.getElementById("settings-name");
+const saveForm = document.getElementById("settings-form");
+saveInput.value = "s".repeat(43);
+saveForm.submit();
+await flush();
+assert.deepEqual(posts(), [], "a 43-byte save name must never issue a mutation request");
+assert.equal(banner.hidden, false, "a rejected save must raise the error banner");
+assert.equal(errorText.textContent, "error: settings name too long (max 42 bytes)", "the banner must carry the daemon's too-long message verbatim");
+assert.equal(saveInput.value, "s".repeat(43), "a rejected save keeps the typed name (the input is not cleared)");
+
+// Byte-vs-character counting (TextEncoder): 21 CJK characters = 63 bytes
+// but only 21 UTF-16 code units - under the input's maxlength - and must
+// still be rejected.
+saveInput.value = "中".repeat(21);
+saveForm.submit();
+await flush();
+assert.deepEqual(posts(), [], "a 63-byte (21-char CJK) save name must never issue a mutation request");
+assert.equal(errorText.textContent, "error: settings name too long (max 42 bytes)", "the CJK rejection carries the daemon's message verbatim");
+
+// A 43-byte row Delete is rejected identically. Clear the banner first so
+// the assertions below can only come from THIS click (proving the button's
+// listener is bound and took the rejection path).
+banner.hidden = true;
+errorText.textContent = "";
+deleteTooLong.click();
+await flush();
+assert.deepEqual(posts(), [], "a 43-byte delete name must never issue a mutation request");
+assert.equal(banner.hidden, false, "a rejected delete must raise the error banner");
+assert.equal(errorText.textContent, "error: settings name too long (max 42 bytes)", "the banner must carry the daemon's too-long message verbatim for delete");
+
+// 42 bytes - the inclusive cap - SENDS for both verbs, and the successful
+// save's onSuccess clears the rejection banner again.
+saveInput.value = "s".repeat(42);
+saveForm.submit();
+await flush();
+assert.deepEqual(posts(), [{url: "/api/settings", body: {action: "save", name: "s".repeat(42)}}], "a 42-byte save name must send");
+assert.equal(banner.hidden, true, "a successful save clears the rejection banner");
+
+fetchCalls.length = 0;
+deleteAtCap.click();
+await flush();
+assert.deepEqual(posts(), [{url: "/api/settings", body: {action: "delete", name: "e".repeat(42)}}], "a 42-byte delete name must send");
+
+// 14 CJK characters = exactly 42 bytes: sends (the cap is BYTES, not chars).
+fetchCalls.length = 0;
+saveInput.value = "中".repeat(14);
+saveForm.submit();
+await flush();
+assert.deepEqual(posts(), [{url: "/api/settings", body: {action: "save", name: "中".repeat(14)}}], "a 42-byte (14-char CJK) save name must send");
 `)
 }
 
