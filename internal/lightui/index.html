@@ -626,11 +626,14 @@
 
       const SETTINGS_LINE_DEFAULT = "Save the current look under a name; apply or delete it here or from the tray.";
 
-      // The daemon caps settings names at 42 BYTES (maxSettingsNameLen: its
-      // 64-byte UDP receive buffer minus the 22-byte "light settings delete "
-      // prefix), and Windows DROPS an oversize UDP datagram without a reply
-      // (WSAEMSGSIZE), so an over-long name would surface as a mute timeout
-      // instead of the daemon's error. Gate the name-taking mutations -
+      // The daemon caps settings names at 42 BYTES (maxSettingsNameLen: with
+      // the 22-byte "light settings delete " prefix the largest legal command
+      // is exactly 64 bytes; the daemon's UDP receive buffer is 128 with 2x
+      // headroom, so a 65-128-byte over-cap name arrives whole and draws the
+      // daemon's documented error on every platform), and Windows DROPS a
+      // >128-byte oversize UDP datagram without a reply (WSAEMSGSIZE), so a
+      // much-over-long name would surface as a timeout instead of the
+      // daemon's error. Gate the name-taking mutations -
       // Save and row Delete - here, BEFORE flushPendingSliders or any queue
       // enqueue, with the daemon's own message in the banner (R3-F6). The
       // byte count is UTF-8 (TextEncoder), not characters - the input's

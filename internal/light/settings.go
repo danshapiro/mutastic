@@ -35,10 +35,15 @@ const (
 	// Headroom: 100 names x 43 bytes <= 4.3 KB < the 8192-byte client reply
 	// read buffer, so a full store's list can never silently truncate.
 	maxSettingsCount = 100
-	// maxSettingsNameLen: the daemon's 64-byte UDP receive buffer minus the
-	// 22-byte longest verb prefix ("light settings delete ") - a longer
-	// name would save fine, then silently truncate on delete/apply and
-	// could never be removed or applied.
+	// maxSettingsNameLen: with the 22-byte longest verb prefix
+	// ("light settings delete ") the largest legal command is exactly 64
+	// bytes; the daemon's UDP receive buffer is 128 (R7-F3: 2x headroom),
+	// so an over-cap name arrives WHOLE and this cap rejects it with the
+	// documented error on every platform - under the old 64-byte buffer a
+	// 65-byte delete truncated to the 42-byte prefix name ON UNIX and
+	// deleted it. Datagrams beyond 128 bytes still can't manufacture a
+	// valid <=42-byte name (see serveUDP), so the cap stays the single
+	// chokepoint that keeps every name reachable by every verb.
 	maxSettingsNameLen = 42
 )
 

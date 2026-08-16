@@ -1337,11 +1337,12 @@ func TestUIAPISettingsValidatesAndPassesDaemonErrorsThrough(t *testing.T) {
 
 // TestUIAPISettingsNameByteCap pins R4-F3: POST /api/settings enforces the
 // daemon store's 42-BYTE name cap server-side for EVERY action, before any
-// daemon call - the page's JS gate (R3-F6) is bypassable by a direct caller,
-// and an over-cap name on the wire either dies unanswered on Windows
-// (WSAEMSGSIZE drops the oversize datagram: a timeout) or TRUNCATES at the
-// daemon's 64-byte receive buffer on Unix, a destructive prefix path (a
-// delete can hit an existing setting sharing the 42-byte prefix). A 42-byte
+// daemon call - the page's JS gate (R3-F6) is bypassable by a direct caller.
+// (Wire backdrop: since R7-F3 the daemon's 128-byte receive buffer lets a
+// 65-128-byte over-cap name arrive whole and draw the daemon's documented
+// rejection everywhere; >128-byte datagrams still die unanswered on Windows
+// - WSAEMSGSIZE, a timeout - and pre-R7-F3 a 65-byte delete TRUNCATED into
+// its 42-byte prefix on Unix, a destructive mis-delete.) A 42-byte
 // name passes through to the daemon; 43 bytes - plain ASCII, or a
 // 15-character CJK name at 45 UTF-8 bytes - answers HTTP 400 with ZERO
 // daemon calls. The daemon's own identical check stays authoritative.

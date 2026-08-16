@@ -762,15 +762,23 @@ func TestTraySetSettingsClick(t *testing.T) {
 	if len(fired) != 1 || fired[0] != "light settings apply focus" {
 		t.Fatalf("bound slot dispatched %v, want exactly [light settings apply focus]", fired)
 	}
-	// A re-stored slot (R6-F1: a QUARANTINED pool row re-bound to a new
-	// name after its trayRetireAge retirement - live rows are never
-	// re-bound in place) dispatches the CURRENT command, not the one bound
-	// at creation - the closure is stable and reads the slot at click time
-	// (R2-F3).
+	// Stale-click pin (R7-F2): on any name-set change EVERY old row is
+	// retired - slot cleared, disabled, hidden - so a click dispatched
+	// from the pre-rebuild display (the fork dispatches by immutable
+	// command ID) loads the cleared "" slot and no-ops: the stale row can
+	// never apply anything.
+	slot.Store("") // the retirement hygiene's first step
+	click()
+	if len(fired) != 1 {
+		t.Fatalf("stale click on a retired (cleared-slot) row dispatched %v, want no new dispatch", fired)
+	}
+	// The closure still reads the slot at click time (R2-F3): a slot
+	// stored at CREATION (R7-F2 rows are never re-bound after creation -
+	// a changed set renders fresh rows) dispatches exactly that command.
 	slot.Store("light settings apply party")
 	click()
 	if len(fired) != 2 || fired[1] != "light settings apply party" {
-		t.Fatalf("re-stored slot dispatched %v, want the current command last", fired)
+		t.Fatalf("creation-stored slot dispatched %v, want the stored command last", fired)
 	}
 }
 
@@ -807,13 +815,14 @@ func TestTrayArmedMatchesNative(t *testing.T) {
 	}
 }
 
-// TestTrayPlanSettingsSync pins the pure generation-retirement reconcile
-// (R6-F1): identical rows keep their binding untouched; a row whose spec
-// vanished (a rename, or removal beyond the new list length) is RETIRED;
-// new names draw eldest-first from quarantine-eligible retired rows
-// (age >= trayRetireAge) and otherwise get a FRESH row - a live pooled row
-// is NEVER re-bound to a different name in the same second it still
-// displayed the old one.
+// TestTrayPlanSettingsSync pins the pure full-rebuild reconcile (R7-F2):
+// an identical set is a NO-OP (identical ticks skip - no churn, no
+// retires); ANY difference retires EVERY cached row and renders the
+// wanted list FRESH in exact daemon order. There is deliberately no
+// retired-pool input: retired rows are never reused, because the fork
+// displays rows sorted by their IMMUTABLE command ID and a reused row's
+// old ID could never sort into the new daemon order - only fresh rows
+// created in daemon order display in daemon order.
 func TestTrayPlanSettingsSync(t *testing.T) {
 	spec := func(title, raw string, enabled bool) trayMenuSpec {
 		return trayMenuSpec{Title: title, raw: raw, Enabled: enabled}
@@ -824,95 +833,73 @@ func TestTrayPlanSettingsSync(t *testing.T) {
 	realX := spec("x", "x", true)
 	placeholder := spec(trayNoSavedSettingsTitle, "", false)
 
-	t.Run("steady state keeps everything untouched", func(t *testing.T) {
-		plan := trayPlanSettingsSync([]trayMenuSpec{realA, realB}, []trayMenuSpec{realA, realB}, nil)
-		if len(plan.retires) != 0 {
-			t.Errorf("retires = %v, want none (no churn in the steady state)", plan.retires)
-		}
-		wantBinds := []traySyncBind{{cached: 0, retired: -1}, {cached: 1, retired: -1}}
-		if !reflect.DeepEqual(plan.binds, wantBinds) {
-			t.Errorf("binds = %+v, want %+v (identical rows CONTINUE, nothing re-bound)", plan.binds, wantBinds)
-		}
-	})
-
-	t.Run("rename same second retires the old row and binds FRESH", func(t *testing.T) {
-		plan := trayPlanSettingsSync([]trayMenuSpec{realA}, []trayMenuSpec{realB}, nil)
-		if !reflect.DeepEqual(plan.retires, []int{0}) {
-			t.Errorf("retires = %v, want [0] (the OLD row leaves the menu invisible/disabled/cleared)", plan.retires)
-		}
-		if plan.binds[0] != (traySyncBind{cached: -1, retired: -1}) {
-			t.Errorf("binds[0] = %+v, want fresh (a live row is NEVER re-bound to a different name in place)", plan.binds[0])
+	t.Run("steady state is a no-op: identical ticks skip everything", func(t *testing.T) {
+		for _, same := range [][2][]trayMenuSpec{
+			{nil, nil}, // before the first poll difference
+			{{realA, realB}, {realA, realB}},
+		} {
+			plan := trayPlanSettingsSync(same[0], same[1])
+			if plan.changed {
+				t.Errorf("changed = true, want false (identical ticks no-op - the steady-state poll must never churn native rows)")
+			}
+			if len(plan.retires) != 0 || len(plan.fresh) != 0 {
+				t.Errorf("retires/fresh = %v/%v, want both empty (nothing leaves, nothing is created)", plan.retires, plan.fresh)
+			}
 		}
 	})
 
-	t.Run("quarantine-eligible retired row is reused for a new name", func(t *testing.T) {
-		ages := []time.Duration{trayRetireAge} // exactly at the boundary: eligible
-		plan := trayPlanSettingsSync([]trayMenuSpec{realA}, []trayMenuSpec{realB}, ages)
-		if plan.binds[0] != (traySyncBind{cached: -1, retired: 0}) {
-			t.Errorf("binds[0] = %+v, want retired row 0 (a >=60s-old retired row may be reused)", plan.binds[0])
-		}
-	})
+	// Every change class behaves identically: retire ALL, render FRESH.
+	// Order-sensitivity is pinned by "pure reorder" and "insert kept names"
+	// (the ROUND-7 keep-the-identical-rows scheme could not reorder; the
+	// full rebuild can, because fresh IDs track the new list position).
+	for _, c := range []struct {
+		name         string
+		cached, want []trayMenuSpec
+	}{
+		{"rename at the same position", []trayMenuSpec{realA}, []trayMenuSpec{realB}},
+		{"removal beyond the new length retires the whole old set too", []trayMenuSpec{realA, realB, realC}, []trayMenuSpec{realA}},
+		{"insert mid-list: kept names retire with the rest", []trayMenuSpec{realA, realB, realC}, []trayMenuSpec{realA, realX, realC}},
+		{"pure reorder of an identical name set", []trayMenuSpec{realA, realB}, []trayMenuSpec{realB, realA}},
+		{"placeholder-to-real with an identical title", []trayMenuSpec{placeholder}, []trayMenuSpec{spec(trayNoSavedSettingsTitle, trayNoSavedSettingsTitle, true)}},
+		{"real-to-placeholder with an identical title", []trayMenuSpec{spec(trayNoSavedSettingsTitle, trayNoSavedSettingsTitle, true)}, []trayMenuSpec{placeholder}},
+		{"everything vanishes (store corrupted mid-poll)", []trayMenuSpec{realA, realB}, []trayMenuSpec{spec(traySettingsUnavailableTitle, "", false)}},
+		{"first render from empty", nil, []trayMenuSpec{realA}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			plan := trayPlanSettingsSync(c.cached, c.want)
+			if !plan.changed {
+				t.Fatal("changed = false, want true (any whole-spec difference forces the full rebuild)")
+			}
+			wantRetires := make([]int, len(c.cached))
+			for i := range c.cached {
+				wantRetires[i] = i
+			}
+			if !reflect.DeepEqual(plan.retires, wantRetires) {
+				t.Errorf("retires = %v, want %v (EVERY current row retires - the executor then does the click-safety hygiene on each: slot cleared, placeholder retitle, disabled, hidden)", plan.retires, wantRetires)
+			}
+			if !reflect.DeepEqual(plan.fresh, c.want) {
+				t.Errorf("fresh = %+v, want the wanted list VERBATIM in daemon order %+v (the executor creates fresh rows in exactly this order)", plan.fresh, c.want)
+			}
+			// The fresh list must be executable in order and produce that
+			// order on screen: fresh immutable IDs ascend with creation.
+			for i := 1; i < len(plan.fresh); i++ {
+				if plan.fresh[i] == plan.fresh[i-1] && plan.fresh[i] != c.want[i] {
+					t.Fatalf("fresh drifted from want at %d (the whole point is exact daemon order)", i)
+				}
+			}
+		})
+	}
 
-	t.Run("inside-quarantine retired row is NOT reused", func(t *testing.T) {
-		ages := []time.Duration{trayRetireAge - time.Second}
-		plan := trayPlanSettingsSync([]trayMenuSpec{realA}, []trayMenuSpec{realB}, ages)
-		if plan.binds[0] != (traySyncBind{cached: -1, retired: -1}) {
-			t.Errorf("binds[0] = %+v, want fresh (a row retired one second ago still might have a stale click in flight)", plan.binds[0])
+	t.Run("removal to empty retire to the placeholder render", func(t *testing.T) {
+		plan := trayPlanSettingsSync([]trayMenuSpec{realA, realB}, []trayMenuSpec{placeholder})
+		if !plan.changed || !reflect.DeepEqual(plan.retires, []int{0, 1}) {
+			t.Fatalf("changed/retires = %v/%v, want true/[0 1] (both names deleted: the one placeholder row renders fresh)", plan.changed, plan.retires)
 		}
-	})
-
-	t.Run("removal beyond the new list length retires the tail", func(t *testing.T) {
-		plan := trayPlanSettingsSync([]trayMenuSpec{realA, realB, realC}, []trayMenuSpec{realA}, nil)
-		if !reflect.DeepEqual(plan.retires, []int{1, 2}) {
-			t.Errorf("retires = %v, want [1 2]", plan.retires)
-		}
-		if !reflect.DeepEqual(plan.keeps, [][2]int{{0, 0}}) || len(plan.binds) != 1 || plan.binds[0].cached != 0 {
-			t.Errorf("keeps/binds = %+v/%+v, want only row 0 continuing", plan.keeps, plan.binds)
-		}
-	})
-
-	t.Run("identity matching keeps mid-list rows across an insert", func(t *testing.T) {
-		plan := trayPlanSettingsSync([]trayMenuSpec{realA, realB, realC}, []trayMenuSpec{realA, realX, realC}, nil)
-		if !reflect.DeepEqual(plan.keeps, [][2]int{{0, 0}, {2, 2}}) {
-			t.Errorf("keeps = %v, want [(0 0) (2 2)] (identical rows keep their binding wherever they land)", plan.keeps)
-		}
-		if !reflect.DeepEqual(plan.retires, []int{1}) {
-			t.Errorf("retires = %v, want [1]", plan.retires)
-		}
-		if plan.binds[1] != (traySyncBind{cached: -1, retired: -1}) {
-			t.Errorf("binds[1] = %+v, want fresh for the inserted name", plan.binds[1])
-		}
-	})
-
-	t.Run("placeholder-to-real transition with an identical title is retire+bind, never a re-flavoring", func(t *testing.T) {
-		realPlaceholderName := spec(trayNoSavedSettingsTitle, trayNoSavedSettingsTitle, true)
-		plan := trayPlanSettingsSync([]trayMenuSpec{placeholder}, []trayMenuSpec{realPlaceholderName}, nil)
-		if len(plan.keeps) != 0 {
-			t.Errorf("keeps = %v, want none (the whole spec differs: raw and Enabled changed)", plan.keeps)
-		}
-		if !reflect.DeepEqual(plan.retires, []int{0}) || plan.binds[0] != (traySyncBind{cached: -1, retired: -1}) {
-			t.Errorf("retires/binds = %v/%+v, want retire [0] + fresh bind", plan.retires, plan.binds)
-		}
-	})
-
-	t.Run("eldest eligible retired row wins; each retired row binds once", func(t *testing.T) {
-		ages := []time.Duration{2 * trayRetireAge, trayRetireAge, 2 * time.Second}
-		plan := trayPlanSettingsSync([]trayMenuSpec{realA}, []trayMenuSpec{realB, realC, realX}, ages)
-		if plan.binds[0].retired != 0 || plan.binds[1].retired != 1 {
-			t.Errorf("binds = %+v, want retired rows 0 then 1 reused in pool order", plan.binds)
-		}
-		if plan.binds[2] != (traySyncBind{cached: -1, retired: -1}) {
-			t.Errorf("binds[2] = %+v, want fresh (no eligible retired row left)", plan.binds[2])
-		}
-	})
-
-	t.Run("no cached rows: everything binds from pool or fresh", func(t *testing.T) {
-		plan := trayPlanSettingsSync(nil, []trayMenuSpec{realA}, []time.Duration{trayRetireAge})
-		if len(plan.retires) != 0 || len(plan.keeps) != 0 {
-			t.Errorf("retires/keeps = %v/%v, want none", plan.retires, plan.keeps)
-		}
-		if plan.binds[0] != (traySyncBind{cached: -1, retired: 0}) {
-			t.Errorf("binds[0] = %+v, want retired row 0", plan.binds[0])
+		// A CHANGE to an empty want list (impossible from traySavedSettings,
+		// which always renders at least a placeholder) still plans cleanly.
+		plan = trayPlanSettingsSync([]trayMenuSpec{realA}, nil)
+		if !plan.changed || !reflect.DeepEqual(plan.retires, []int{0}) || len(plan.fresh) != 0 {
+			t.Fatalf("changed/retires/fresh = %v/%v/%v, want true/[0]/empty", plan.changed, plan.retires, plan.fresh)
 		}
 	})
 }

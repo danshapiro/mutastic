@@ -242,119 +242,85 @@ func traySameMenuSpecs(a, b []trayMenuSpec) bool {
 	return true
 }
 
-// --- generation-retirement submenu pool (R6-F1, ROUND-7) ---
+// --- full-rebuild settings-menu discipline (R7-F2, ROUND-8) ---
 //
-// The R4-F2/R5-F2 standing residual ("a WM_COMMAND dispatched from a
-// stale native row can execute the row's NEW slot command" - the fork
-// dispatches clicks by command ID alone, and rows were recycled IN
-// PLACE) is eliminated structurally: a pooled row is NEVER re-bound to a
-// DIFFERENT name in place. A row whose name leaves the rendered list is
-// RETIRED (slot cleared, placeholder title, disabled, hidden, stamped
-// with its retirement time) and only becomes eligible for re-binding to
-// a NEW name after a full trayRetireAge quarantine, so no WM_COMMAND
-// queued while the row displayed its old name can still be in flight
-// when the row shows a new one (the menu's modal loop dispatches clicks
-// in the same message-era - a genuinely queued click is long processed
-// or discarded within milliseconds, and 60 s is an absurdly generous
-// bound). The click-time native-title verification
-// (trayVerifySettingsItemTitle) stays as the belt to these suspenders.
+// The ROUND-7 generation-retirement pool rested on a FALSE fork
+// assumption: it treated insertion/Show order as the display order. In
+// the energye/systray v1.0.3 Windows backend (verified in fork source)
+// each parent's VISIBLE list is kept sorted by the row's IMMUTABLE
+// command ID: addToVisibleItems appends then sort.Slice ascending, and
+// Show re-inserts a hidden row at its ID-sorted position - never at the
+// end. IDs are monotonic in creation order (one atomic counter), so the
+// displayed order IS creation order, and a row REUSED for a new name
+// keeps its old ID: it would sort back into its stale position. No
+// keep/rebind scheme can make the displayed order track the daemon's
+// list order, so that scheme is replaced: on ANY difference the
+// traySameMenuSpecs gate reports, RETIRE EVERY current row with the
+// existing click-safety hygiene (command slot cleared FIRST so a racing
+// click no-ops on "", title repainted to the placeholder so a click
+// still holding the pre-retire slot ALSO fails the native-title check
+// in traySetSettingsClick, disabled, hidden, stamped with the retirement
+// time) and render the new set with FRESH native rows created in daemon
+// order - ascending IDs then equal the daemon's order. Retired rows are
+// NEVER re-bound; retirement remains purely as click-safety, and the
+// ROUND-6 click-time native-title verification stays as the belt to
+// retirement's suspenders. The R4-F2/R5-F2/R6-F1 hazard (a stale
+// WM_COMMAND dispatching against a re-bound row) stays eliminated: the
+// row the user saw keeps its identity forever.
+//
+// Native-row growth is bounded by USER-TRIGGERED name-set changes only:
+// rebuilds are gated by traySameMenuSpecs to genuine changes (the 2 s
+// steady-state poll can never churn), each rebuild creates at most the
+// 100-name store cap in fresh rows, and renames are rare manual events
+// (delete + save) - the hidden/disabled/unbound residue of one old row
+// set per change tracks real user churn, a deliberate trade for exact
+// daemon-order display.
 //
 // Steady-state ticks reuse NOTHING: traySameMenuSpecs gates the whole
 // rebuild, so planning runs only on a genuine name-set change.
 
-// trayRetireAge is the quarantine a retired "Saved settings" row serves
-// before it may be re-bound to a NEW name.
-const trayRetireAge = 60 * time.Second
-
-// trayRetiredCap bounds the retired pool. Retirement past the cap drops
-// the row from the pool entirely (it stays permanently hidden, unbound,
-// and disabled - a leaked native row that is never displayed or bound
-// again): name-set churn is gated to genuine changes, and the 100-name
-// store cap bounds the live rows, so the cap bounds the reusable pool
-// while leaked orphans grow only with real rename churn over the
-// process's lifetime.
+// trayRetiredCap bounds the tracked retired pool. Retirement past the cap
+// drops the row from tracking entirely (it stays permanently hidden,
+// unbound, and disabled - a leaked native row that is never displayed or
+// bound again): name-set churn is gated to genuine changes, and the
+// 100-name store cap bounds each rebuild's retire count, so the cap
+// bounds the Go-side bookkeeping while leaked orphans track real rename
+// churn over the process's lifetime.
 const trayRetiredCap = 32
 
-// traySyncBind is the planning decision for ONE wanted row in the
-// submenu rebuild: exactly one source.
-type traySyncBind struct {
-	// cached >= 0: the currently-shown row rendering cached[cached]
-	// CONTINUES - its spec is identical, so nothing is re-bound (keeping
-	// an identical row is not the R6-F1 hazard; only rebinding to a
-	// DIFFERENT name is).
-	cached int
-	// retired >= 0: re-bind the quarantined row retired[retired], whose
-	// retirement age is >= trayRetireAge, to the new name (slot
-	// re-stored, title repainted, re-enabled, re-shown).
-	retired int
-	// Both -1: no eligible source exists - create a FRESH native row
-	// (every retired row is still inside its quarantine, or the pool is
-	// empty).
-}
-
 // traySettingsSyncPlan is the complete pure reconcile decision for one
-// submenu rebuild.
+// submenu rebuild under the full-rebuild discipline (R7-F2).
 type traySettingsSyncPlan struct {
-	// keeps are {cachedIndex, wantIndex} pairs: identical rows that
-	// continue untouched (the glue may still hide/re-show them purely
-	// for ordering - visibility alone is never a rebinding).
-	keeps [][2]int
-	// retires are cached indexes whose rows are removed from want (a
-	// name change at that identity, or a row beyond the new list
-	// length): the glue retires them.
+	// changed is the identical/changed decision (whole-spec identity via
+	// traySameMenuSpecs): false means NO-OP - the executor touches
+	// nothing, not even ordering.
+	changed bool
+	// retires lists EVERY cached index, in order, when changed: all
+	// currently-shown rows leave the menu. Empty when unchanged.
 	retires []int
-	// binds has one entry per wanted row, in want order.
-	binds []traySyncBind
+	// fresh is the wanted render list, VERBATIM, in daemon order: every
+	// row is created fresh in exactly this order. Immutable IDs ascend
+	// with creation and the fork displays ascending IDs, so display
+	// order == creation order == daemon order. Aliases want; read-only.
+	fresh []trayMenuSpec
 }
 
 // trayPlanSettingsSync decides one "Saved settings" submenu rebuild from
-// the cached (currently-rendered) specs, the wanted specs, and the
-// retired pool's retirement ages. Matching is by WHOLE-SPEC IDENTITY
-// (Title+raw+Enabled): a row keeps its binding only while it renders the
-// identical spec, so a placeholder->real transition with an identical
-// title (the name grammar permits the placeholder strings as literal
-// saved names) is a retire+bind, never a silent re-flavoring of a live
-// row. Retired rows are consumed oldest-first among the quarantine-
-// eligible (age >= trayRetireAge); everything else gets a fresh row.
-func trayPlanSettingsSync(cached, want []trayMenuSpec, retiredAges []time.Duration) traySettingsSyncPlan {
-	plan := traySettingsSyncPlan{binds: make([]traySyncBind, len(want))}
-	for j := range plan.binds {
-		plan.binds[j] = traySyncBind{cached: -1, retired: -1}
+// the cached (currently-rendered) specs and the wanted specs: identical
+// sets no-op; ANY difference - a rename, an addition/removal, a reorder,
+// or a placeholder<->real transition with an identical title (the name
+// grammar permits the placeholder strings as literal saved names, and
+// the whole-spec compare catches it) - retires ALL cached rows and
+// renders every wanted row fresh. There is deliberately NO pool input:
+// retired rows are never reused (their old immutable IDs could not sort
+// into the new daemon order).
+func trayPlanSettingsSync(cached, want []trayMenuSpec) traySettingsSyncPlan {
+	if traySameMenuSpecs(cached, want) {
+		return traySettingsSyncPlan{}
 	}
-	// Identity matching, first-in-want-order wins: each cached row
-	// continues at most one wanted row and vice versa.
-	wantTaken := make([]bool, len(want))
-	for i, cs := range cached {
-		matched := false
-		for j, ws := range want {
-			if wantTaken[j] || cs != ws {
-				continue
-			}
-			wantTaken[j] = true
-			plan.binds[j].cached = i
-			plan.keeps = append(plan.keeps, [2]int{i, j})
-			matched = true
-			break
-		}
-		if !matched {
-			plan.retires = append(plan.retires, i)
-		}
-	}
-	// New names (no identical cached row) draw from the quarantine-
-	// eligible retired rows, oldest first; otherwise a fresh row.
-	retiredTaken := make([]bool, len(retiredAges))
-	for j := range want {
-		if plan.binds[j].cached >= 0 {
-			continue
-		}
-		for k, age := range retiredAges {
-			if retiredTaken[k] || age < trayRetireAge {
-				continue
-			}
-			retiredTaken[k] = true
-			plan.binds[j].retired = k
-			break
-		}
+	plan := traySettingsSyncPlan{changed: true, retires: make([]int, len(cached)), fresh: want}
+	for i := range cached {
+		plan.retires[i] = i
 	}
 	return plan
 }
@@ -378,13 +344,14 @@ func trayArmedMatchesNative(snap trayMuteSnapshot, nativeTitle string, nativeDis
 const traySettingsApplyPrefix = "light settings apply "
 
 // traySettingsCmdMatchesTitle is the pure half of the click-time native
-// title check (the ROUND-6 belt; ROUND-7's generation-retirement pool is
-// the suspenders - see trayPlanSettingsSync). On Windows the fork
-// dispatches a menu click by command ID alone (WM_COMMAND ->
-// menuItems[id].click): the native row's title is display-only, and a
-// row re-bound to a NEW name (permitted only after its trayRetireAge
-// quarantine) means an old WM_COMMAND - if one could still exist - must
-// never be able to execute the row's new command. The row's live native
+// title check (the ROUND-6 belt; R7-F2's full-retire/fresh-render
+// discipline is the suspenders - see trayPlanSettingsSync). On Windows the
+// fork dispatches a menu click by command ID alone (WM_COMMAND ->
+// menuItems[id].click): the native row's title is display-only, so a
+// WM_COMMAND dispatched from a STALE native row must never be able to
+// execute a command the row no longer displays - and rows are never
+// re-bound at all now, so the row's slot only ever holds its creation-time
+// name or "" (retired). The row's live native
 // title is the text the menu shows for that command ID right now, and
 // the click executes only when it still names the slot's setting. The
 // comparison is exact and escaping-aware: the slot command carries the
@@ -405,17 +372,17 @@ func traySettingsCmdMatchesTitle(cmd, nativeTitle string) bool {
 // "Saved settings" submenu row (tray_windows.go's newSavedMenuChild).
 // The closure is STABLE for the item's lifetime (R2-F3: it is assigned
 // once at creation and never rebound); rebuilds never re-bind a live row
-// to a different name in place at all (R6-F1: the row is RETIRED -
-// slot cleared, placeholder title, disabled, hidden - and only a
-// row whose retirement is at least trayRetireAge old may be re-bound to
-// a new name). After loading the slot it ALSO re-verifies that the row's
-// live NATIVE title still names the slotted setting
-// (trayVerifySettingsItemTitle; portable default true, real read-back on
-// Windows) - the remaining belt to retirement's suspenders for the
-// re-bind path. An unbound slot ("" - a placeholder, a retired row, or
-// hidden pool orphan) or a failed check is a no-op; the failed check
-// also logs one WARN, and the just-finished rebuild has already painted
-// the truthful row for the next click.
+// to a different name in place at all (R6-F1/R7-F2: on any name-set
+// change the row is RETIRED - slot cleared, placeholder title, disabled,
+// hidden - and never re-bound: the full-rebuild discipline creates FRESH
+// rows, so a row's slot is stored exactly once, at creation). After
+// loading the slot it ALSO re-verifies that the row's live NATIVE title
+// still names the slotted setting (trayVerifySettingsItemTitle; portable
+// default true, real read-back on Windows) - the remaining belt to
+// retirement's suspenders. An unbound slot ("" - a placeholder or a
+// retired row) or a failed check is a no-op; the failed check also logs
+// one WARN, and the just-finished rebuild has already painted the
+// truthful row for the next click.
 func traySetSettingsClick(item *systray.MenuItem, slot *atomic.Value, lightCmd func(string) func(), logger *slog.Logger) func() {
 	return func() {
 		cmd, _ := slot.Load().(string)

@@ -126,9 +126,10 @@ hardware state. The active paths are loop-free:
   backed by `GET`/`POST /api/settings`. Saved names are capped at 42
   BYTES: the page itself rejects an over-long save or delete name BEFORE
   any network call, showing the daemon's own `error: settings name too
-  long (max 42 bytes)` in the banner (Windows drops an oversize UDP
-  datagram without a reply, so letting one reach the wire would surface as
-  a mute timeout instead); the byte count is UTF-8, so the name input's
+  long (max 42 bytes)` in the banner (the daemon's 128-byte receive buffer
+  answers a 65–128-byte over-cap name with exactly that error on every
+  platform; a datagram beyond 128 bytes gets no reply on Windows, so the
+  page gate spares the wait and covers that band); the byte count is UTF-8, so the name input's
   `maxlength` — which counts characters (plain ASCII: up to 42; CJK/emoji
   names fit fewer) — remains only a UX hint; the panel API enforces the
   same 42-byte cap server-side too (any `/api/settings` POST with an
@@ -158,8 +159,9 @@ hardware state. The active paths are loop-free:
   the exact action a click performs while the displayed state still
   matches the hardware truth at click time — committed by ONE atomic
   conditional daemon verb (`mute-if`/`unmute-if <expected>`) whose premise
-  check and action are a single daemon step, so no hardware event can slip
-  between a probe and the firing: if the mic already flipped to the
+  check and action are a single daemon step fully serialized against the
+  physical-button event path, so no hardware event can slip in between:
+  if the mic already flipped to the
   label's target since the last poll (state stale inside the poll window),
   the click REFUSES — the daemon ran no mic verb and no sweep, never a
   wrong action — because the mic is already there and the apps were
@@ -181,11 +183,13 @@ hardware state. The active paths are loop-free:
   `(no saved settings)` for an empty store, `(settings unavailable)`
   covering both an unreachable daemon and a broken store; a `&` in a name
   renders correctly in the tray (menu titles escape `&` as `&&` for
-  display) and the click applies the verbatim name; renamed or removed
-  rows are never recycled in place — a vanished row is retired invisible/
-  disabled/unbound and only re-used for a new name after a 60 s
-  quarantine, so a click on a stale row can never apply the wrong
-  setting), **Panel…**,
+  display) and the click applies the verbatim name; any change to the
+  saved set rebuilds the submenu from scratch — every old row is retired
+  (hidden, disabled, unbound, so a click dispatched from a stale row
+  no-ops) and fresh rows are created in the daemon's sorted order (the
+  menu library displays rows in creation order, so the menu always shows
+  exactly the daemon's current set, in order, with no duplicates and no
+  phantom rows left from earlier name sets), **Panel…**,
   and **Quit** — Quit stops everything
   mutastic runs in one click: it sends the daemon's `shutdown` command,
   posts the light-panel server's `/api/shutdown`, and exits the tray.
@@ -255,10 +259,15 @@ hardware state. The active paths are loop-free:
   multi-word names (`mutastic.exe light settings save "movie mode"`).
   Empty names, names containing a newline, and names starting with
   `error:` (case-insensitive) answer `error: invalid settings name`; names
-  over 42 bytes answer `error: settings name too long (max 42 bytes)` (42
-  is the daemon's 64-byte UDP receive buffer minus the 22-byte
-  `light settings delete ` prefix — a longer name would save fine but
-  truncate on delete/apply and could never be removed). The store caps at
+  over 42 bytes answer `error: settings name too long (max 42 bytes)` —
+  with the 22-byte `light settings delete ` prefix the largest legal
+  command is exactly 64 bytes, and the daemon's UDP receive buffer is 128
+  bytes, so an over-cap name arrives whole and the store's own byte cap
+  rejects it identically on every platform (datagrams beyond 128 bytes
+  get no reply: Windows fails the read and the client times out — an
+  accepted edge — and even a >128-byte datagram truncated on Unix still
+  leaves a >42-byte surviving name, so truncation can never act on a
+  different valid name). The store caps at
   100 names: a NEW name past the cap answers
   `error: too many saved settings (max 100)` while overwriting an existing
   name always fits; there is deliberately no rename verb (delete + save

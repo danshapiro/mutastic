@@ -3,16 +3,22 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"mutastic/internal/light"
+	"mutastic/internal/proto"
 )
 
 // fakeDevice implements Device for tests. Reads block on the events channel
@@ -1048,6 +1054,235 @@ func TestLightSettingsVerbsTraverseDaemonOverUDP(t *testing.T) {
 	}
 	if got := fleet.commands(); fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("handler received %v, want the verbatim command sequence %v", got, want)
+	}
+}
+
+// --- R7-F1: opMu makes conditional verbs atomic vs the event goroutine ---
+
+// blockingInjector blocks inside Inject until released (only the FIRST call
+// announces itself on entered), so a test can hold a compound operation
+// open exactly mid-sweep.
+type blockingInjector struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+	calls   atomic.Int32
+}
+
+func newBlockingInjector() *blockingInjector {
+	return &blockingInjector{entered: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (b *blockingInjector) Inject() error {
+	b.calls.Add(1)
+	b.once.Do(func() { close(b.entered) })
+	<-b.release
+	return nil
+}
+
+// TestConditionalVerbHoldsOpMuAcrossCompound pins R7-F1 structurally: the
+// conditional verb's whole stretch (premise read -> HID write -> tracker
+// update -> F24 sweep) runs under d.opMu, and the session goroutine's
+// event compound (tracker Apply -> sweep) takes the SAME mutex, so a
+// physical 0x21 press can never interleave with the verb's stretch. Pre
+// R7-F1 the event could flip the tracked state AND sweep while a matched
+// conditional, already past its premise read, swept again - one real
+// transition, two sweeps (apps toggled twice = desynced from the mic).
+// Pin: while a matched conditional blocks MID-SWEEP (inside Inject), the
+// event path on the same daemon MUST block; after the sweep releases, the
+// event applies normally, exactly one sweep per acting path.
+func TestConditionalVerbHoldsOpMuAcrossCompound(t *testing.T) {
+	d := New(testLogger())
+	dev := newFakeDevice()
+	inj := newBlockingInjector()
+	d.SetDevice(dev)
+	d.Inject = inj
+	d.Track.Set(false) // known unmuted: the "mute-if unmuted" premise
+
+	replyCh := make(chan string, 1)
+	go func() { replyCh <- d.HandleCommand("mute-if unmuted") }()
+	select {
+	case <-inj.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("conditional verb never reached the sweep")
+	}
+
+	// The verb is parked mid-sweep holding opMu; processing a physical
+	// 0x21 press right now MUST block (pre-R7-F1 it would have applied
+	// and swept concurrently - the double-sweep straddle).
+	eventDone := make(chan struct{})
+	go func() {
+		d.handleEvent(proto.Event{Op: proto.EvtDeviceMute, Value: 0x01})
+		close(eventDone)
+	}()
+	select {
+	case <-eventDone:
+		t.Fatal("the 0x21 event was processed while the conditional verb's compound was mid-sweep (opMu does not span premise->...->sweep)")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(inj.release)
+	if got := <-replyCh; got != "ok" {
+		t.Fatalf("conditional reply = %q, want ok", got)
+	}
+	select {
+	case <-eventDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the 0x21 event stayed blocked after the verb released its sweep")
+	}
+	if got := inj.calls.Load(); got != 2 {
+		t.Fatalf("injects = %d, want 2 (one for the matched verb, one for the physical press - each acting path swept exactly once)", got)
+	}
+	if muted, known := d.Track.Status(); !known || !muted {
+		t.Fatalf("tracker = (%v, %v), want (true, true): the serialized event applied after the verb", muted, known)
+	}
+}
+
+// TestConcurrentConditionalsAndEventsSweepCountConsistent is the stress
+// half of R7-F1, meant to run under -race: concurrent conditional-verb
+// goroutines PLUS a stream of injected physical 0x21 events must never
+// produce an unaccounted sweep. With every compound serialized by opMu
+// the sweep count is exactly (#ok conditionals) + (#processed 0x21
+// events) - every "ok" moved the mic once and swept once; every physical
+// press swept once; a refusal swept never. The HID write count likewise
+// tracks only matched conditionals (plus handshake + setup).
+func TestConcurrentConditionalsAndEventsSweepCountConsistent(t *testing.T) {
+	// Registered BEFORE startDaemonInject: t.Cleanup is LIFO, so the
+	// harness's stop-and-join cleanup runs first and Run's goroutines are
+	// gone before the var is restored.
+	old := muteInjectDebounce
+	muteInjectDebounce = 0 // every 0x21 press injects; none are debounce-suppressed
+	t.Cleanup(func() { muteInjectDebounce = old })
+
+	dev := newFakeDevice()
+	inj := &fakeInjector{}
+	_, ask := startDaemonInject(t, func() (Device, error) { return dev, nil }, inj)
+	waitFor(t, "handshake", func() bool { return dev.writeCount() >= 2 })
+
+	// Establish a known state; plain "unmute" never sweeps.
+	if got := ask("unmute"); got != "unmuted" {
+		t.Fatalf("setup unmute = %q, want unmuted", got)
+	}
+
+	const workers = 4
+	const rounds = 30
+	var oks atomic.Int32
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < rounds; i++ {
+				cmd := "mute-if unmuted"
+				if (w+i)%2 == 1 {
+					cmd = "unmute-if muted"
+				}
+				switch reply := ask(cmd); {
+				case reply == "ok":
+					oks.Add(1)
+				case strings.HasPrefix(reply, "flipped "):
+				default:
+					t.Errorf("conditional reply %q, want ok or flipped <state> (the fake device/injector never fail)", reply)
+					return
+				}
+			}
+		}(w)
+	}
+
+	// Concurrent physical presses, alternating directions, known count.
+	const presses = 40
+	for i := 0; i < presses; i++ {
+		val := byte(0x01)
+		if i%2 == 1 {
+			val = 0x00
+		}
+		dev.events <- inputReport(0x21, val)
+	}
+	wg.Wait()
+
+	// Barrier: every press must have been processed (each injects exactly
+	// once post-opMu; the count cannot overshoot: only matched verbs and
+	// processed presses ever inject).
+	wantInjects := int(oks.Load()) + presses
+	waitFor(t, "all presses processed", func() bool { return inj.calls.Load() == int32(wantInjects) })
+	if got := inj.calls.Load(); got != int32(wantInjects) {
+		t.Fatalf("sweeps = %d, want exactly %d (%d matched verbs + %d presses): an unaccounted sweep is the R7-F1 double-sweep", got, wantInjects, oks.Load(), presses)
+	}
+	if got, want := dev.writeCount(), 3+int(oks.Load()); got != want {
+		t.Fatalf("HID writes = %d, want %d (2 handshake + 1 setup + %d matched verbs; a refusal never writes)", got, want, oks.Load())
+	}
+	// Final state consistency: after all compounds the tracker holds a
+	// definitive state (some serialized last op won), and the harassment
+	// above never left it unknown or half-written.
+	if got := ask("status"); got != "muted" && got != "unmuted" {
+		t.Fatalf("final status = %q, want a definitive muted|unmuted", got)
+	}
+}
+
+// --- R7-F3: 128-byte receive buffer vs oversized settings deletes ---
+
+// TestOversizedSettingsDeleteRejectsWholeOnWire pins R7-F3 over a REAL
+// socket pair with the REAL light store handler wired in: the largest
+// legal command is 64 bytes (22-byte "light settings delete " prefix +
+// the 42-byte name cap), so while 63/64-byte deletes act normally, the
+// 65-byte delete of a 43-byte name arrives WHOLE in the 128-byte buffer
+// and the store's own byte cap rejects it with
+// "error: settings name too long (max 42 bytes)" - on every platform.
+// Pre-R7-F3 (64-byte buffer) that datagram TRUNCATED to 64 bytes on Unix
+// and deleted the existing 42-byte prefix-named setting; the test pins
+// that the prefix-named setting SURVIVES the rejected oversized delete.
+func TestOversizedSettingsDeleteRejectsWholeOnWire(t *testing.T) {
+	dir := t.TempDir()
+	name41 := strings.Repeat("a", 41)
+	name42 := strings.Repeat("b", 42)
+	entry := light.SavedSetting{Lights: map[string]light.SavedLightState{
+		"COM4": {On: true, Brightness: 30, TempByte: 0},
+	}}
+	seed := map[string]light.SavedSetting{name41: entry, name42: entry}
+	data, err := json.Marshal(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "light-settings.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	storeHandler := light.NewMultiManager(testLogger(), dir, light.NewRegistry(""), func() ([]string, error) { return nil, nil }, nil)
+	open := func() (Device, error) { return newFakeDevice(), nil }
+	_, ask := startDaemonLight(t, open, storeHandler)
+
+	const deletePrefix = "light settings delete " // 22 bytes
+	if len(deletePrefix) != 22 {
+		t.Fatalf("test premise broken: prefix is %d bytes, want 22", len(deletePrefix))
+	}
+	// 1) The destructive case first, while the 42-byte name still exists:
+	// a 65-byte delete (43-byte name) must be REJECTED, not truncated.
+	cmd65 := deletePrefix + name42 + "c"
+	if len(cmd65) != 65 {
+		t.Fatalf("test premise broken: cmd65 is %d bytes, want 65", len(cmd65))
+	}
+	if got, want := ask(cmd65), "error: settings name too long (max 42 bytes)"; got != want {
+		t.Fatalf("65-byte delete = %q, want %q (it must arrive WHOLE and be rejected by the store's byte cap)", got, want)
+	}
+	// The 42-byte prefix-named setting MUST still exist: pre-R7-F3 the
+	// truncated datagram deleted it. The full store lists both names
+	// sorted ("aaa..." < "bbb...").
+	if got, want := ask("light settings list"), name41+"\n"+name42; got != want {
+		t.Fatalf("list after the rejected oversized delete = %q, want %q (the prefix-named setting must SURVIVE)", got, want)
+	}
+	// 2) 63-byte and 64-byte deletes act normally through the whole pipe.
+	cmd63 := deletePrefix + name41
+	cmd64 := deletePrefix + name42
+	if len(cmd63) != 63 || len(cmd64) != 64 {
+		t.Fatalf("test premise broken: cmd63/cmd64 = %d/%d bytes, want 63/64", len(cmd63), len(cmd64))
+	}
+	if got, want := ask(cmd63), `deleted "`+name41+`"`; got != want {
+		t.Fatalf("63-byte delete = %q, want %q", got, want)
+	}
+	if got, want := ask(cmd64), `deleted "`+name42+`"`; got != want {
+		t.Fatalf("64-byte delete = %q, want %q", got, want)
+	}
+	if got := ask("light settings list"); got != "" {
+		t.Fatalf("list after both legal deletes = %q, want empty (none saved)", got)
 	}
 }
 

@@ -44,7 +44,20 @@ type Daemon struct {
 	// shutdown command replies an error instead.
 	Shutdown func()
 
-	gate injectGate // debounces physical mute-button injections; session goroutine only
+	// opMu serializes every mute-state compound operation across the two
+	// goroutines that can move the mic or the tracked state (R7-F1): the
+	// serveUDP goroutine's verbs (conditional: premise read -> HID write
+	// -> tracker update -> F24 sweep; plain: read/write -> tracker set)
+	// and the session goroutine's event handling (tracker Apply -> F24
+	// sweep) each hold it for the FULL compound, so a physical 0x21 press
+	// can never interleave between a matched conditional verb's premise
+	// read and its tracker update - the pre-R7-F1 straddle, where the
+	// event flipped the tracked state AND swept while the already-matched
+	// verb, past its premise read, swept again: one real transition, two
+	// sweeps (apps end toggled twice = desynced from the mic).
+	opMu sync.Mutex
+
+	gate injectGate // debounces physical mute-button injections; session goroutine only (additionally opMu-covered)
 
 	// lastStatusReply is the reply of the last LOGGED "status" command,
 	// used by logCommand to suppress repeated identical status lines.
@@ -114,12 +127,7 @@ func (d *Daemon) HandleCommand(cmd string) string {
 	case "unmute":
 		return d.setMute(false)
 	case "toggle":
-		muted, known := d.Track.Status()
-		target := true // unknown state: default to mute (safe for a pedal press)
-		if known {
-			target = !muted
-		}
-		return d.setMute(target)
+		return d.toggleMute()
 	case "shutdown":
 		// The reply is all that happens here; serveUDP fires d.Shutdown
 		// itself after the reply has been written, or the cancel could
@@ -141,26 +149,34 @@ func (d *Daemon) HandleCommand(cmd string) string {
 // so a mic-state flip can no longer slip in between a separate status
 // probe datagram and the verb datagram (the old tray probe->verb pair
 // re-created the R3-F2 double-sweep window the probe gate was meant to
-// close). If the tracker's current state does not equal the expected
-// premise - INCLUDING unknown - nothing runs (no HID write, no inject)
-// and the reply is "flipped <current>"; that IS the tray's
-// precision-amendment refusal, daemon-side. On a match the absolute verb
-// is written and one F24 meeting-app sweep is injected in the same step.
+// close). R7-F1 extends that atomicity across goroutines: the full
+// compound (premise read -> HID write -> tracker update -> sweep) runs
+// under d.opMu, and the session goroutine's event compound (tracker Apply
+// -> sweep) holds the same mutex, so a physical 0x21 press can no longer
+// straddle the verb's stretch either (one real transition, one sweep,
+// whichever side serializes first). If the tracker's current state does
+// not equal the expected premise - INCLUDING unknown - nothing runs (no
+// HID write, no inject) and the reply is "flipped <current>"; that IS the
+// tray's precision-amendment refusal, daemon-side. On a match the
+// absolute verb is written and one F24 meeting-app sweep is injected in
+// the same step.
 //
 // The injection deliberately bypasses d.gate: that debounce exists only
 // for physical 0x21-button chatter on the session goroutine, is not safe
 // for concurrent use, and must never swallow a deliberate verb-driven
 // sweep. The residual floor is a physical press the daemon has received
-// at the HID level but not yet processed into the tracker when the
-// check runs - the tracker's last processed event IS the daemon's
-// authoritative best-known state, and every sweeping path keeps the
-// tracker and the sweep in the same step; accepted per the ROUND-7 plan
+// at the HID level but not yet READ into the tracker when the check runs
+// - the tracker's last processed event IS the daemon's authoritative
+// best-known state, and every sweeping path keeps the tracker and the
+// sweep in the same opMu compound; accepted per the ROUND-8 plan
 // amendment. error:-prefixed replies keep the usual shape: a failed HID
 // write runs NO sweep (the mic did not move, so sweeping the apps alone
 // would desync them from the mic), while an injection failure after a
 // successful write is still reported (the mic DID move - the honest
 // reading of "mute-everything failed half-way").
 func (d *Daemon) conditionalMute(targetMuted, expectMuted bool) string {
+	d.opMu.Lock()
+	defer d.opMu.Unlock()
 	muted, known := d.Track.Status()
 	if !known {
 		return "flipped unknown"
@@ -192,7 +208,33 @@ func (d *Daemon) conditionalMute(targetMuted, expectMuted bool) string {
 	return "ok"
 }
 
+// toggleMute flips the tracked state (unknown defaults to mute, safe for
+// a pedal press). The direction pick and the verb are one opMu compound
+// like every other verb (R7-F1): plain verbs never sweep, so a pre-R7-F1
+// event interleave could flap only the tracked value - convergent, never
+// a desync - but one uniform rule (every mute-state move serialized, all
+// sweeping paths pairwise exclusive) is simpler to reason about than two.
+func (d *Daemon) toggleMute() string {
+	d.opMu.Lock()
+	defer d.opMu.Unlock()
+	muted, known := d.Track.Status()
+	target := true // unknown state: default to mute (safe for a pedal press)
+	if known {
+		target = !muted
+	}
+	return d.setMuteLocked(target)
+}
+
 func (d *Daemon) setMute(muted bool) string {
+	d.opMu.Lock()
+	defer d.opMu.Unlock()
+	return d.setMuteLocked(muted)
+}
+
+// setMuteLocked is setMute's body with opMu already held (R7-F1); the
+// replies are byte-identical to the pre-opMu verbs (no behavior change,
+// only the serialization).
+func (d *Daemon) setMuteLocked(muted bool) string {
 	payload := []byte("0")
 	if muted {
 		payload = []byte("1")
@@ -290,29 +332,41 @@ func (d *Daemon) session(ctx context.Context, dev Device) error {
 		if !ok {
 			continue
 		}
-		if d.Track.Apply(ev) {
-			muted, _ := d.Track.Status()
-			d.Logger.Printf("event op=0x%02x value=0x%02x -> muted=%v", ev.Op, ev.Value, muted)
-		} else {
-			d.Logger.Printf("event op=0x%02x value=0x%02x (ignored)", ev.Op, ev.Value)
-		}
-		// Physical mute-button press: fire the AHK meeting-app sweep.
-		// Gated on the op (0x21) alone, NOT on Apply's result — see
-		// injectGate's doc comment. Suppressed presses are logged so the
-		// live double-press test can observe the debounce working.
-		if d.Inject != nil && ev.Op == proto.EvtDeviceMute {
-			if d.gate.shouldInject(ev, time.Now()) {
-				if err := d.Inject.Inject(); err != nil {
-					d.Logger.Printf("mic button -> F24 app sweep: inject failed: %v", err)
-				} else {
-					d.Logger.Printf("mic button -> F24 app sweep")
-				}
-			} else {
-				d.Logger.Printf("mic button ignored (debounce)")
-			}
-		}
+		d.handleEvent(ev)
 	}
 	return ctx.Err()
+}
+
+// handleEvent processes one decoded input report: the tracker Apply and -
+// for a physical mute-button press (0x21) - the debounced F24 meeting-app
+// sweep. The WHOLE stretch is one d.opMu compound (R7-F1) against the
+// serveUDP goroutine's verb compounds, so a press can never land between
+// a matched conditional verb's premise read and its tracker update (the
+// pre-R7-F1 straddle: state flipped + swept while the verb, already past
+// its read, swept again). The injection is gated on the op (0x21) alone,
+// NOT on Apply's result — see injectGate's doc comment. Suppressed
+// presses are logged so the live double-press test can observe the
+// debounce working. Called only on the session goroutine.
+func (d *Daemon) handleEvent(ev proto.Event) {
+	d.opMu.Lock()
+	defer d.opMu.Unlock()
+	if d.Track.Apply(ev) {
+		muted, _ := d.Track.Status()
+		d.Logger.Printf("event op=0x%02x value=0x%02x -> muted=%v", ev.Op, ev.Value, muted)
+	} else {
+		d.Logger.Printf("event op=0x%02x value=0x%02x (ignored)", ev.Op, ev.Value)
+	}
+	if d.Inject != nil && ev.Op == proto.EvtDeviceMute {
+		if d.gate.shouldInject(ev, time.Now()) {
+			if err := d.Inject.Inject(); err != nil {
+				d.Logger.Printf("mic button -> F24 app sweep: inject failed: %v", err)
+			} else {
+				d.Logger.Printf("mic button -> F24 app sweep")
+			}
+		} else {
+			d.Logger.Printf("mic button ignored (debounce)")
+		}
+	}
 }
 
 // serveUDP answers commands until pc is closed. Transient socket errors must
@@ -326,7 +380,20 @@ func (d *Daemon) session(ctx context.Context, dev Device) error {
 // net.ErrClosed (the shutdown path: Run's goroutine closing pc) ends the
 // loop; every other error is logged and survived.
 func (d *Daemon) serveUDP(pc net.PacketConn) {
-	buf := make([]byte, 64)
+	// 128-byte receive buffer (R7-F3): the largest LEGAL command on the
+	// wire is exactly 64 bytes (the 22-byte "light settings delete "
+	// prefix + the store's 42-byte name cap), so an oversize legal-shape
+	// command now arrives WHOLE and parsing rejects it with the documented
+	// too-long error on every platform. Under the old 64-byte buffer a
+	// 65-byte delete TRUNCATED on Unix into the 42-byte prefix name and
+	// deleted it - a destructive mis-delete (R4-F3's class, one layer
+	// down: the wire itself). Beyond 128 bytes: Windows fails the read
+	// (WSAEMSGSIZE - logged, survived; the client sees a timeout), Unix
+	// truncates, and every settings verb's surviving 100+-byte name still
+	// exceeds the cap and draws the same rejection - truncation can never
+	// manufacture a different VALID name anymore (106 bytes of surviving
+	// name > 42 always).
+	buf := make([]byte, 128)
 	for {
 		n, addr, err := pc.ReadFrom(buf)
 		if err != nil {
