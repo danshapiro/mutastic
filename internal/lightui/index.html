@@ -304,6 +304,7 @@
         settingsSignature: null,
         active: new Set(),
         timers: new Map(),
+        pendingSliders: new Map(),
         polling: false,
         micPolling: false,
         settingsPolling: false
@@ -471,7 +472,28 @@
 
       function scheduleSlider(key, endpoint, body) {
         clearTimeout(state.timers.get(key));
-        state.timers.set(key, setTimeout(() => enqueueMutation(key, endpoint, body, true), 100));
+        // The pending mutation is REMEMBERED, not only captured by the
+        // timer closure, so flushPendingSliders can land it ahead of a
+        // settings operation before the 100 ms debounce lapses (R2-F4).
+        state.pendingSliders.set(key, {endpoint, body});
+        state.timers.set(key, setTimeout(() => {
+          state.timers.delete(key);
+          state.pendingSliders.delete(key);
+          enqueueMutation(key, endpoint, body, true);
+        }, 100));
+      }
+
+      // flushPendingSliders lands every pending light-slider debounce
+      // mutation IMMEDIATELY (executing it now and clearing its timer), so a
+      // settings Save/Apply/Delete enqueued right after a slider input
+      // snapshots/applies the user's LATEST look instead of the pre-slider
+      // state: the slider command lands in the queue BEFORE the settings
+      // operation (R2-F4).
+      function flushPendingSliders() {
+        state.timers.forEach((timer) => clearTimeout(timer));
+        state.timers.clear();
+        state.pendingSliders.forEach((pending, key) => enqueueMutation(key, pending.endpoint, pending.body, true));
+        state.pendingSliders.clear();
       }
 
       async function refreshLights(silent) {
@@ -680,6 +702,7 @@
           button.dataset.settingsBound = "true";
           button.addEventListener("click", () => {
             const name = button.dataset.apply;
+            flushPendingSliders();
             enqueueMutation(`settings:apply:${name}`, "/api/settings", {action: "apply", name}, false);
           });
         });
@@ -688,6 +711,7 @@
           button.dataset.settingsBound = "true";
           button.addEventListener("click", () => {
             const name = button.dataset.delete;
+            flushPendingSliders();
             enqueueMutation(`settings:delete:${name}`, "/api/settings", {action: "delete", name}, false);
           });
         });
@@ -697,6 +721,7 @@
         const input = $("settings-name");
         const name = input.value;
         if (name.trim() === "") return; // an empty/whitespace name never issues a mutation (F8)
+        flushPendingSliders();
         enqueueMutation("settings:save", "/api/settings", {action: "save", name}, false);
       }
 

@@ -85,6 +85,21 @@ func NewSettingsStore(path string) *SettingsStore {
 		s.corrupt = true
 		return s
 	}
+	// A parseable file must still be VALID (R2-F5): every name satisfies the
+	// name grammar exactly as the verbs enforce it (trimmed-form-equal -
+	// leading/trailing whitespace is never meaningful - nonempty, no
+	// newline, at most maxSettingsNameLen bytes, no case-insensitive
+	// "error:" prefix) and every entry holds a NON-EMPTY Lights map (an
+	// entryless snapshot restores nothing, and the save path never produces
+	// one). ANY violation classifies the whole file as corrupt: the store
+	// refuses everything with the path-bearing wire string, and the file is
+	// preserved untouched for the documented manual recovery.
+	for name, entry := range m {
+		if name != strings.TrimSpace(name) || validateSettingsName(name) != "" || len(entry.Lights) == 0 {
+			s.corrupt = true
+			return s
+		}
+	}
 	if m != nil {
 		s.byName = m
 	}

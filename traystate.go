@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -243,6 +244,13 @@ type trayActions struct {
 	requestQuit   func()                               // leave the systray message loop
 	signalRefresh func()                               // ask the display loop to repoll
 	logger        *slog.Logger
+	// muteFlight is the single-flight guard around muteClick's whole
+	// probe->verb/sweep->refresh sequence (R2-F2): clicks arrive on their
+	// own goroutines, and an overlapping second click would double-probe
+	// and cancel/duplicate the first click's verb+sweep pair, so a click
+	// that finds one already in flight is DROPPED with one WARN. The zero
+	// value is ready; the guard releases at the end of the sequence.
+	muteFlight sync.Mutex
 }
 
 // newTrayJSONLogger builds the tray's JSONL logger (one JSON object per
@@ -320,42 +328,68 @@ func (a *trayActions) onMicSet(verb string) {
 }
 
 // muteClick is the dynamic Mute/Unmute item's click entry point: the click
-// performs exactly the action the displayed label names. It loads the
-// {title, armed} snapshot EXACTLY ONCE (one read of what the user saw: the
-// menu's title and enabled bit are only the last completed poll's
-// rendering), then revalidates the premise AT ACTION TIME with a fresh
-// status probe. Only when the probe reproduces the snapshot's armed state
-// (and that state is definitive) does the click fire the label's absolute
-// verb - armed unmuted ("Mute") fires "mute", armed muted ("Unmute") fires
-// "unmute" - followed by the sweep and a refresh.
+// performs exactly the action the displayed label names. The whole sequence
+// runs under the muteFlight single-flight guard: a second click arriving
+// while one is still in flight is DROPPED with one WARN (an overlapping
+// click would double-probe and could cancel/duplicate the first click's
+// verb+sweep pair), and the guard releases so a later click works.
 //
-// Everything else DECLINES: a definitive-but-opposite probe (the mic
-// flipped between the last poll and the click), an unknown probe, and a
-// dead daemon all produce one WARN, NO mic verb, NO sweep, and a refresh so
-// the redrawn truthful verb does not wait for the next 2 s poll. Declining
-// is the correct convergence, not a breach of "click performs the displayed
-// action": when the premise has flipped, the label's TARGET state is
+// The click loads the {title, armed} snapshot EXACTLY ONCE (one read of
+// what the user saw: the menu's title and enabled bit are only the last
+// completed poll's rendering), then revalidates the premise AT ACTION TIME
+// with a fresh status probe. Three regimes (R2-F1 corrected ruling):
+//
+//   - Premise reproduced (a definitive probe equal to the armed state): the
+//     click fires the label's ABSOLUTE verb - armed unmuted ("Mute") fires
+//     "mute", armed muted ("Unmute") fires "unmute" - then the sweep and a
+//     refresh, via onMicSet. Spy order: ask:status,ask:<verb>,inject,refresh.
+//   - Flipped-but-definitive probe (the mic already sits in the label's
+//     TARGET state): NO mic verb - the mic half of the item's
+//     mute-everything contract is already satisfied - but the F24 sweep
+//     STILL RUNS, because the meeting apps are never guaranteed to have
+//     followed the flip, then one WARN and a refresh. Spy order:
+//     ask:status,inject,refresh.
+//   - Unknown probe or a dead daemon (no truthful direction exists), or an
+//     unarmed premise: NOTHING runs - no verb, no sweep - only one WARN and
+//     a refresh. Spy order: ask:status,refresh.
+//
+// Declining the mic verb on a flip is the correct convergence, not a breach
+// of "click performs the displayed action": the label's TARGET state is
 // already true (a "Mute" label targets muted; a muted probe means the
-// click's job is done), and the F24 sweep is a blind per-app toggle that
-// must never fire without the matching mic move. The native menu title can
-// go cosmetically stale between polls, but that staleness can never cause
-// a wrong action BECAUSE this probe gates every firing - this is a
-// documented rendering limitation, not a behavioral residual. Desync
-// recovery for the apps stays the documented manual procedure (toggle them
-// once by hand, then every sweeping path keeps them in sync).
+// mic's job is done), while the sweep still serves the app half of the
+// mute-everything contract. The native menu title can go cosmetically stale
+// between polls, but that staleness can never cause a wrong mic action
+// BECAUSE this probe gates every firing - this is a documented rendering
+// limitation, not a behavioral residual. Desync recovery for the apps stays
+// the documented manual procedure (toggle them once by hand, then every
+// sweeping path keeps them in sync).
 func (a *trayActions) muteClick(load func() trayMuteSnapshot) {
+	if !a.muteFlight.TryLock() {
+		a.logger.Warn("mute click dropped: a previous mute click is still in flight")
+		return
+	}
+	defer a.muteFlight.Unlock()
 	snap := load()
 	probe := trayStateFor(a.ask("status"))
-	if !trayMuteEnabled(probe) || probe != snap.Armed {
-		a.logger.Warn("mute click declined: mic state no longer matches the menu premise", "armed", trayStateName(snap.Armed), "probe", trayStateName(probe))
+	if trayMuteEnabled(snap.Armed) && trayMuteEnabled(probe) {
+		if probe == snap.Armed {
+			verb := "mute"
+			if snap.Armed == trayStateMuted {
+				verb = "unmute"
+			}
+			a.onMicSet(verb)
+			return
+		}
+		// Flipped-but-definitive premise: the mic is already at the label's
+		// target, so no mic verb fires - but the meeting apps are never
+		// guaranteed to have followed, so the sweep still runs.
+		sweepErr := a.injectSweep()
+		a.logger.Warn("mute click: premise flipped, the mic is already at the label's target - sweeping the apps without a mic verb", "armed", trayStateName(snap.Armed), "probe", trayStateName(probe), "sweep_err", errString(sweepErr))
 		a.signalRefresh()
 		return
 	}
-	verb := "mute"
-	if snap.Armed == trayStateMuted {
-		verb = "unmute"
-	}
-	a.onMicSet(verb)
+	a.logger.Warn("mute click declined: mic state no longer matches the menu premise", "armed", trayStateName(snap.Armed), "probe", trayStateName(probe))
+	a.signalRefresh()
 }
 
 // onOpenPanel brings up the control panel (the icon's left-click action);

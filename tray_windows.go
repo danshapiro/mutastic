@@ -249,7 +249,7 @@ func trayRefreshLoop(logger *slog.Logger, refreshCh <-chan struct{}, header, mic
 	// order, then the hidden reuse pool) and the spec list the shown prefix
 	// renders. Empty until the first tick reconciles; two nil specs compare
 	// equal, so only a real poll difference triggers a rebuild.
-	var savedChildren []*systray.MenuItem
+	var savedChildren []*savedMenuChild
 	var savedSpecs []trayMenuSpec
 	// lastShown is the icon currently displayed; it starts as the neutral
 	// unknown asset (also set at ready) and changes only on definitive
@@ -329,65 +329,93 @@ func trayRefreshLoop(logger *slog.Logger, refreshCh <-chan struct{}, header, mic
 	}
 }
 
+// savedMenuChild is one retained "Saved settings" submenu child: the native
+// item plus an ATOMIC command slot that its click closure reads at click
+// time. The closure is assigned ONCE at AddSubMenuItem creation and is
+// NEVER rebound (R2-F3): writing the fork's click field while the native
+// message pump can invoke it is a data race (the pump may run the OLD
+// binding while Go assigns the NEW one), so rebuilds never touch the
+// binding - they only SetTitle/Enable/Disable/Show and store the slot. The
+// slot holds the current "light settings apply <name>" command; "" means
+// unbound (a placeholder or a hidden pool orphan - a click is then a no-op,
+// doubly safe because such items are also disabled/hidden).
+type savedMenuChild struct {
+	item *systray.MenuItem
+	slot atomic.Value // string: current apply command; "" = unbound
+}
+
+// newSavedMenuChild creates one submenu child with its STABLE click closure
+// - the only place Click is ever assigned: the closure reads the slot at
+// click time and dispatches whatever command is current then.
+func newSavedMenuChild(parent *systray.MenuItem, title string, lightCmd func(string) func()) *savedMenuChild {
+	child := &savedMenuChild{item: parent.AddSubMenuItem(title, "")}
+	child.slot.Store("")
+	child.item.Click(func() {
+		if cmd, _ := child.slot.Load().(string); cmd != "" {
+			lightCmd(cmd)()
+		}
+	})
+	return child
+}
+
 // syncSavedSettingsMenu rebuilds the "Saved settings" submenu's children to
 // render want (called only when traySameMenuSpecs reported a change). The
 // fork has no remove/insert API, so it recycles: every currently-SHOWN
 // child (the children[:len(cached)] prefix; the tail is already hidden) is
-// hidden back into a reuse pool, then each wanted spec reuses a hidden
-// orphan first and only adds a NEW child when the pool is empty. A reused
-// orphan is acted on in the fixed order rebind Click -> SetTitle ->
-// Enable/Disable -> Show LAST, because in this fork EVERY update()-backed
-// call (SetTitle, Enable, Disable, and Show itself all route through
-// addOrUpdateMenuItem, which inserts any item missing from the visible
-// list) reveals a hidden item on the spot, while Click alone is reveal-free
-// (a plain Go field assignment the native side never sees). The rebind
-// therefore lands while the orphan is still hidden, so no stale click
-// binding is ever rendered, and the first revealing update (SetTitle)
-// already carries the final title AND final binding; the enabled bit
-// follows one in-place native update later, and the trailing Show is an
-// in-place no-op on the by-then-visible item, kept last as the nominal
-// reveal step. Unused orphans stay hidden (never displayed) and are
+// hidden back into a reuse pool and its slot cleared, then each wanted spec
+// reuses a hidden orphan first and only creates a NEW child (stable closure
+// bound at creation, newSavedMenuChild) when the pool is empty. Per item
+// the ordering is slot FIRST, then SetTitle, then Enable/Disable, then Show
+// LAST: the slot store is a plain atomic word with no native side effect,
+// while every update()-backed call (SetTitle, Enable, Disable, and Show
+// itself all route through addOrUpdateMenuItem, which inserts any item
+// missing from the visible list) reveals a hidden item on the spot - so the
+// command is final before the item's first revealing update renders it, and
+// the click binding itself never changes. The display/command split is
+// raw-vs-Title: spec.Title is the menu-ESCAPED display string ("&" -> "&&"),
+// spec.raw the VERBATIM saved name - the command must use raw, because the
+// daemon's store keys names raw and an escaped title would apply nothing.
+// Unused orphans stay hidden (never displayed, slot "" so unbound) and are
 // returned after the shown prefix for the next reconcile: every reconcile
 // is change-gated and orphans are recycled BEFORE any new item is created,
 // so retained items stay bounded by the menu size plus one change-width
 // even with delete churn. The returned spec copy is the new cached render.
-func syncSavedSettingsMenu(parent *systray.MenuItem, children []*systray.MenuItem, cached, want []trayMenuSpec, lightCmd func(string) func()) ([]*systray.MenuItem, []trayMenuSpec) {
+//
+// Recorded residual (R2-F3): a click the native side queued in the SAME
+// event-loop turn as a rebuild's retitle can apply the slot's NEW name
+// (the slot is stored before the native title update lands) - a single-turn,
+// sub-100ms window; beyond that one turn the on-screen title and the slot
+// command agree.
+func syncSavedSettingsMenu(parent *systray.MenuItem, children []*savedMenuChild, cached, want []trayMenuSpec, lightCmd func(string) func()) ([]*savedMenuChild, []trayMenuSpec) {
 	for _, child := range children[:len(cached)] {
-		child.Hide()
+		child.item.Hide()
+		child.slot.Store("") // a pooled orphan is unbound: no stale command can fire from the pool
 	}
 	pool := children
 	reused := min(len(pool), len(want))
-	shown := make([]*systray.MenuItem, 0, len(want))
+	shown := make([]*savedMenuChild, 0, len(want))
 	for i, spec := range want {
-		var item *systray.MenuItem
+		var child *savedMenuChild
 		if i < reused {
-			item = pool[i]
+			child = pool[i]
 		} else {
-			item = parent.AddSubMenuItem(spec.Title, "")
+			child = newSavedMenuChild(parent, spec.Title, lightCmd)
 		}
-		// Rebind the click FIRST: Click is the only mutation that cannot
-		// reveal a hidden orphan (a plain field assignment, no native
-		// update - see the function comment), so the binding is final
-		// before anything can render the item.
-		// The display/command split is raw-vs-Title: spec.Title is the
-		// menu-ESCAPED display string ("&" -> "&&"), spec.raw the VERBATIM
-		// saved name - the command must use raw, because the daemon's
-		// store keys names raw and an escaped title would apply nothing.
 		if spec.Enabled {
-			item.Click(lightCmd("light settings apply " + spec.raw))
+			child.slot.Store("light settings apply " + spec.raw)
 		} else {
-			item.Click(nil) // unbound: a placeholder never fires
+			child.slot.Store("") // unbound: a placeholder never fires
 		}
-		item.SetTitle(spec.Title)
+		child.item.SetTitle(spec.Title)
 		if spec.Enabled {
-			item.Enable()
+			child.item.Enable()
 		} else {
-			item.Disable()
+			child.item.Disable()
 		}
-		item.Show()
-		shown = append(shown, item)
+		child.item.Show()
+		shown = append(shown, child)
 	}
-	// Retain the unused pool orphans (hidden) after the shown prefix.
+	// Retain the unused pool orphans (hidden, unbound) after the shown prefix.
 	retained := append(shown, pool[reused:]...)
 	newCached := make([]trayMenuSpec, len(want))
 	copy(newCached, want)

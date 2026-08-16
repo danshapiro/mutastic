@@ -1546,10 +1546,17 @@ func TestEmbeddedLightUIHasSavedSettingsSection(t *testing.T) {
 		"enqueueMutation(`settings:apply:${name}`, \"/api/settings\", {action: \"apply\", name}, false);",
 		"enqueueMutation(`settings:delete:${name}`, \"/api/settings\", {action: \"delete\", name}, false);",
 		"refreshLights(true);\n            showApplyDetail(result.detail);",
+		`function flushPendingSliders() {`,
 	} {
 		if !strings.Contains(source, fragment) {
 			t.Fatalf("embedded UI is missing saved-settings queue fragment %q", fragment)
 		}
+	}
+	// R2-F4: every settings mutation entry point (Save, Apply, Delete)
+	// flushes the pending slider debounces BEFORE enqueueing, so the queued
+	// settings operation preserves the user's latest slider input.
+	if got := strings.Count(source, "flushPendingSliders();"); got != 3 {
+		t.Fatalf("flushPendingSliders(); call sites = %d, want exactly 3 (save, apply, delete)", got)
 	}
 	if directPost := regexp.MustCompile(`fetch\(\s*"/api/settings"\s*,\s*\{\s*method:\s*"POST"`).FindStringSubmatch(source); directPost != nil {
 		t.Fatalf("settings mutations must go through the mutation queue, never a direct fetch POST (matched %q)", directPost[0])
@@ -1820,6 +1827,72 @@ assert.equal(countGets("/api/settings"), 2, "after completion the next /api/sett
 `)
 }
 
+// TestEmbeddedLightUISettingsFlushSliderDebounceNodeDOMStub EXECUTES the
+// embedded page script under Node against the shared DOM stub and pins the
+// R2-F4 ordering: a settings Apply or Save enqueued while a light-slider
+// debounce is still pending (inside its 100 ms window) lands the user's
+// LATEST slider input FIRST - the pending slider mutation executes
+// immediately, its timer cleared - THEN the settings operation:
+// [slider command, apply] and [slider command, save], in that order, with
+// no duplicate slider mutation once the debounce window lapses.
+func TestEmbeddedLightUISettingsFlushSliderDebounceNodeDOMStub(t *testing.T) {
+	runPageScriptWithDOMStub(t, `
+stubFetchScript({
+	"/api/lights": {status: 200, body: {lights: []}},
+	"/api/mic": {status: 200, body: {state: "unmuted"}},
+	"/api/settings": {status: 200, body: {names: ["alpha"]}},
+	"POST /api/settings": {status: 200, body: {names: ["alpha"]}},
+	"POST /api/group": {status: 200, body: {}},
+});
+intervalCallback();
+await flush();
+
+const posts = () => fetchCalls
+	.filter((call) => call.options.method === "POST")
+	.map((call) => ({url: call.url, body: JSON.parse(call.options.body)}));
+
+// Slider change, then Apply INSIDE the debounce window: the pending slider
+// mutation must land BEFORE the apply.
+const groupBrightness = document.getElementById("group-brightness");
+groupBrightness.value = "40";
+groupBrightness.dispatch("input");
+fetchCalls.length = 0;
+settingsApplyAlpha.click();
+await flush();
+assert.deepEqual(posts(), [
+	{url: "/api/group", body: {action: "set-brightness", value: 40}},
+	{url: "/api/settings", body: {action: "apply", name: "alpha"}},
+], "a settings Apply right after a slider input must land the LATEST slider value FIRST, then the apply");
+
+// The flushed timer was cleared: once the 100 ms debounce window lapses, no
+// duplicate slider mutation may follow.
+await new Promise((resolve) => setTimeout(resolve, 150));
+assert.deepEqual(posts(), [
+	{url: "/api/group", body: {action: "set-brightness", value: 40}},
+	{url: "/api/settings", body: {action: "apply", name: "alpha"}},
+], "the flushed slider debounce must not fire a duplicate once its window lapses");
+
+// Same ordering for Save (with the temp slider this time).
+const groupTemp = document.getElementById("group-temp");
+groupTemp.value = "3";
+groupTemp.dispatch("input");
+fetchCalls.length = 0;
+const saveInput = document.getElementById("settings-name");
+saveInput.value = "evening";
+document.getElementById("settings-form").submit();
+await flush();
+assert.deepEqual(posts(), [
+	{url: "/api/group", body: {action: "set-temp", value: 3583}},
+	{url: "/api/settings", body: {action: "save", name: "evening"}},
+], "a settings Save right after a slider input must land the LATEST slider value FIRST, then the save");
+await new Promise((resolve) => setTimeout(resolve, 150));
+assert.deepEqual(posts(), [
+	{url: "/api/group", body: {action: "set-temp", value: 3583}},
+	{url: "/api/settings", body: {action: "save", name: "evening"}},
+], "the flushed temp-slider debounce must not fire a duplicate once its window lapses");
+`)
+}
+
 // TestEmbeddedLightUIMicCardUsesTheMicEndpoints pins the mic card's wiring
 // contract: badge/status-line ids, the three verb buttons, the queued
 // mutation string, the shared 750 ms poll - and the ABSENCE of any direct
@@ -2000,6 +2073,9 @@ function makeElement(id) {
 		},
 		submit() {
 			(element.listeners.submit || []).forEach((listener) => listener({preventDefault() {}}));
+		},
+		dispatch(type) {
+			(element.listeners[type] || []).forEach((listener) => listener({preventDefault() {}}));
 		},
 		setAttribute(name, value) {
 			element.attributes[name] = String(value);

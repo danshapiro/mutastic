@@ -26,9 +26,12 @@ action, and `mutastic light ...` commands. The active mute paths remain:
    displays the exact verb its click performs (**Mute** while live,
    **Unmute** while muted), sends that absolute verb through the daemon
    with the same `F24` meeting-app sweep, and only after re-checking that
-   the premise the label names still holds (it declines — no mic verb, no
-   sweep, immediate redraw — at `unknown` state or when the mic flipped
-   since the last poll).
+   the premise the label names still holds. If the mic flipped to the
+   label's target since the last poll, the click fires no mic verb — the
+   mic is already there — but still sweeps the apps (the item is
+   mute-everything, and the apps are never guaranteed to have followed),
+   warns, and redraws; at `unknown` state or with the daemon down the
+   click runs nothing at all — no verb, no sweep, immediate redraw.
 
 Pressing the **mute button on the Yeti X itself** keeps the meeting apps
 in sync: the daemon sees the mic's `0x21` DeviceMute event (emitted only for
@@ -124,10 +127,13 @@ hardware state. The active paths are loop-free:
   **Mute**/**Unmute** action item (mute-everything — the absolute verb the
   label displays plus the F24 meeting-app sweep, the same in-process flow
   as the Stream Deck mute key; the label always names the exact action a
-  click performs, the click re-checks the premise the label names before
-  firing and declines — one WARN, no verb, no sweep, immediate redraw —
-  when the mic state is unknown or no longer matches it; both halves are
-  attempted on every fired click and any failure is logged),
+  click performs, and the click re-checks the premise the label names
+  before firing: if the mic already flipped to the label's target since
+  the last poll it sweeps the apps WITHOUT a mic verb — the mic is
+  already there — plus one WARN and an immediate redraw, and if the mic
+  state is unknown or the daemon is down it runs nothing at all — one
+  WARN, no verb, no sweep, immediate redraw; both halves are attempted on
+  every fired click and any failure is logged),
   **Toggle lights**, **Brightness** (applied in click order),
   **Light preset**, **Saved settings** (the daemon's saved named light
   settings — the same names the web UI saves — polled every 2 s; click a

@@ -3,6 +3,7 @@ package light
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -144,6 +145,93 @@ func TestSavedSettingsStorePersistedAcrossReload(t *testing.T) {
 	}
 	if data, err := os.ReadFile(cpath); err != nil || !bytes.Equal(data, garbage) {
 		t.Fatalf("corrupt file = %q (err %v); it must survive untouched", data, err)
+	}
+}
+
+// TestSavedSettingsStoreLoadValidation pins R2-F5: a parseable file is not
+// enough. Every stored name must satisfy the name grammar exactly as the
+// verbs enforce it (trimmed-form-equal - leading/trailing whitespace is
+// never meaningful - nonempty, no newline, within the byte cap, no
+// case-insensitive "error:" prefix) and every entry must hold a NON-EMPTY
+// Lights map. ANY violation classifies the whole load as corrupt: the store
+// refuses everything with the path-bearing wire string AND the file is
+// preserved untouched - while a valid store still loads.
+func TestSavedSettingsStoreLoadValidation(t *testing.T) {
+	entry := SavedSetting{Lights: map[string]SavedLightState{
+		"COM4": {On: true, Brightness: 50, TempByte: 9},
+	}}
+	mustJSON := func(t *testing.T, m map[string]SavedSetting) []byte {
+		t.Helper()
+		data, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	cases := []struct {
+		name string
+		json []byte
+	}{
+		{"newline-bearing name", mustJSON(t, map[string]SavedSetting{"a\nb": entry})},
+		{"carriage-return name", mustJSON(t, map[string]SavedSetting{"a\rb": entry})},
+		{"untrimmed name", mustJSON(t, map[string]SavedSetting{" look": entry})},
+		{"trailing-space name", mustJSON(t, map[string]SavedSetting{"look ": entry})},
+		{"empty name", mustJSON(t, map[string]SavedSetting{"": entry})},
+		{"error:-prefixed name", mustJSON(t, map[string]SavedSetting{"error: x": entry})},
+		{"ERROR:-prefixed name (case-insensitive)", mustJSON(t, map[string]SavedSetting{"ERROR: x": entry})},
+		{"over-long name (43 bytes)", mustJSON(t, map[string]SavedSetting{strings.Repeat("a", 43): entry})},
+		{"empty Lights map", mustJSON(t, map[string]SavedSetting{"look": {Lights: map[string]SavedLightState{}}})},
+		{"missing lights key", []byte(`{"look":{}}`)},
+		{"null lights", []byte(`{"look":{"lights":null}}`)},
+	}
+	for _, c := range cases {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "light-settings.json")
+		if err := os.WriteFile(path, c.json, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		s := NewSettingsStore(path)
+		if s.Enabled() {
+			t.Errorf("%s: the store must load as disabled-corrupt, not enabled", c.name)
+		}
+		if got := s.List(); len(got) != 0 {
+			t.Errorf("%s: in-memory List = %v, want empty on a refused store", c.name, got)
+		}
+		if err := s.Save("new", entry); err == nil || !strings.Contains(err.Error(), path) {
+			t.Errorf("%s: Save error = %v, want the path-bearing corrupt refusal", c.name, err)
+		}
+		if data, err := os.ReadFile(path); err != nil || !bytes.Equal(data, c.json) {
+			t.Errorf("%s: file = %q (err %v) after a refused save; it must survive untouched", c.name, data, err)
+		}
+		// The refusal reaches every wire verb with the same path-bearing string.
+		mm, ctx := newTestMulti(t, newFakeFleet(), dir)
+		mm.rescan(ctx)
+		wantRefusal := "error: settings store corrupt or unreadable: " + path
+		for _, cmd := range []string{"settings save x", "settings apply x", "settings delete x", "settings list"} {
+			if got := mm.HandleCommand(cmd); got != wantRefusal {
+				t.Errorf("%s: %q = %q, want %q", c.name, cmd, got, wantRefusal)
+			}
+		}
+	}
+
+	// A valid store still loads: trimmed-form names at or under the byte cap
+	// with non-empty Lights maps (one name exactly AT the 42-byte cap).
+	validDir := t.TempDir()
+	validPath := filepath.Join(validDir, "light-settings.json")
+	capName := strings.Repeat("b", 42)
+	valid := map[string]SavedSetting{"look": entry, capName: entry}
+	if err := os.WriteFile(validPath, mustJSON(t, valid), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := NewSettingsStore(validPath)
+	if !s.Enabled() {
+		t.Fatal("a valid store must load enabled")
+	}
+	if got := s.List(); !reflect.DeepEqual(got, []string{capName, "look"}) {
+		t.Fatalf("valid store List = %v, want both names (sorted)", got)
+	}
+	if got, ok := s.Get("look"); !ok || !reflect.DeepEqual(got, entry) {
+		t.Fatalf("valid store Get(look) = %+v, %v; want the persisted snapshot", got, ok)
 	}
 }
 

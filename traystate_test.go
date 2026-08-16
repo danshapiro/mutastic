@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -224,12 +225,16 @@ func TestTrayMicToggleIsMuteEverything(t *testing.T) {
 // dynamic Mute/Unmute item. The item's title and enabled bit are only the
 // last completed poll's snapshot, and a click fires the ABSOLUTE verb the
 // displayed label names - so before asking for anything, the click re-probes
-// the daemon and fires ONLY when the probe reproduces the snapshot's armed
-// premise (the state the label's verb targets). A definitive-OPPOSITE
-// probe means the label's target is already true (flipped premise), and an
-// unknown or dead-daemon probe means no premise at all: each declines with
-// exactly one WARN, no mic verb, no blind F24 sweep, and an immediate
-// refresh so the redrawn truthful verb does not wait for the next poll.
+// the daemon and fires the verb ONLY when the probe reproduces the
+// snapshot's armed premise (the state the label's verb targets). The R2-F1
+// corrected ruling splits the mismatch cases: a definitive-OPPOSITE probe
+// means the label's target is already true (flipped premise) - the mic half
+// of mute-everything is satisfied, so NO mic verb fires, but the F24 sweep
+// STILL RUNS (the meeting apps are never guaranteed to have followed the
+// flip) plus one WARN and a refresh; an unknown or dead-daemon probe means
+// no truthful direction exists, so NOTHING runs (no verb, no sweep) plus
+// one WARN and an immediate refresh so the redrawn truthful verb does not
+// wait for the next poll.
 func TestMuteClickRevalidates(t *testing.T) {
 	armedMute := trayMuteSnapshot{Title: "Mute", Armed: trayStateUnmuted}
 	armedUnmute := trayMuteSnapshot{Title: "Unmute", Armed: trayStateMuted}
@@ -258,17 +263,41 @@ func TestMuteClickRevalidates(t *testing.T) {
 		t.Fatalf("muteClick armed Unmute with a matching probe = %q, want %q", got, "ask:status,ask:unmute,inject,refresh")
 	}
 
-	// Declined clicks: probe + refresh only, plus exactly one WARN. The
-	// flipped-premise case is pinned in BOTH flip directions: a click must
-	// never fire its verb when the mic already sits in the label's target
-	// state, whichever direction the label named.
-	declines := []struct {
+	// Flipped-but-definitive probe (R2-F1): the mic already sits in the
+	// label's TARGET state, so NO mic verb fires - but the item is
+	// mute-everything and the apps are never guaranteed to have followed, so
+	// the sweep still runs: spy order ask:status,inject,refresh plus exactly
+	// one WARN. Pinned in BOTH flip directions.
+	flips := []struct {
 		name    string
 		snap    trayMuteSnapshot
 		outcome scriptOutcome
 	}{
 		{"flipped premise: armed Mute, probe already muted (label's target already true)", armedMute, scriptOutcome{reply: "muted"}},
 		{"flipped premise: armed Unmute, probe already unmuted (label's target already true)", armedUnmute, scriptOutcome{reply: "unmuted"}},
+	}
+	for _, c := range flips {
+		levels := &levelRecorder{}
+		spy := &traySpy{script: map[string]scriptOutcome{"status": c.outcome}}
+		a := spy.actions()
+		a.logger = slog.New(levels)
+		a.muteClick(load(c.snap))
+		if got := spy.order(); got != "ask:status,inject,refresh" {
+			t.Fatalf("muteClick with %s = %q, want %q (no mic verb - the mic is already at the label's target - but the sweep runs: the apps are never guaranteed)", c.name, got, "ask:status,inject,refresh")
+		}
+		if len(levels.levels) != 1 || levels.levels[0] != slog.LevelWarn {
+			t.Fatalf("muteClick with %s levels = %v, want [WARN] (a flipped premise-check is not an error)", c.name, levels.levels)
+		}
+	}
+
+	// Declined clicks - an unknown probe or a dead daemon has no truthful
+	// direction: probe + refresh only (NOTHING runs: no verb, no sweep),
+	// plus exactly one WARN.
+	declines := []struct {
+		name    string
+		snap    trayMuteSnapshot
+		outcome scriptOutcome
+	}{
 		{"unknown probe", armedMute, scriptOutcome{reply: "unknown"}},
 		{"daemon down", armedMute, scriptOutcome{err: fmt.Errorf("%w: %w", errNoReply, syscall.ECONNREFUSED)}},
 	}
@@ -284,6 +313,64 @@ func TestMuteClickRevalidates(t *testing.T) {
 		if len(levels.levels) != 1 || levels.levels[0] != slog.LevelWarn {
 			t.Fatalf("muteClick with %s levels = %v, want [WARN] (a declined premise-check is not an error)", c.name, levels.levels)
 		}
+	}
+}
+
+// TestMuteClickSingleFlight pins the R2-F2 guard: clicks run on their own
+// goroutines, and a second click arriving while one is still in flight -
+// here, parked inside its status probe - is DROPPED with exactly one WARN,
+// yielding ONE full spy sequence, not a doubled probe/verb/sweep; and the
+// guard releases at the end, so a later click runs the full sequence again.
+func TestMuteClickSingleFlight(t *testing.T) {
+	armedMute := trayMuteSnapshot{Title: "Mute", Armed: trayStateUnmuted}
+	load := func() trayMuteSnapshot { return armedMute }
+	spy := &traySpy{script: map[string]scriptOutcome{
+		"status": {reply: "unmuted"},
+		"mute":   {reply: "muted"},
+	}}
+	levels := &levelRecorder{}
+	a := spy.actions()
+	a.logger = slog.New(levels)
+
+	// The first status probe parks until released, so the second click
+	// below provably enters muteClick while the first still holds the guard.
+	baseAsk := a.ask
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	a.ask = func(cmd string) (string, error) {
+		if cmd == "status" {
+			once.Do(func() { close(entered); <-release })
+		}
+		return baseAsk(cmd)
+	}
+
+	first := make(chan struct{})
+	go func() { a.muteClick(load); close(first) }()
+	<-entered // the first click now holds the flight guard inside its probe
+	second := make(chan struct{})
+	go func() { a.muteClick(load); close(second) }()
+	<-second // dropped with one WARN; it must never reach the spy
+	if got := spy.order(); got != "" {
+		t.Fatalf("while the first click is in flight the spy = %q, want no recorded calls yet", got)
+	}
+	close(release)
+	<-first
+	want := "ask:status,ask:mute,inject,refresh"
+	if got := spy.order(); got != want {
+		t.Fatalf("two overlapping clicks = %q, want exactly ONE full sequence %q", got, want)
+	}
+	// Exactly one record is the dropped click's WARN (it is logged while the
+	// first click is parked, so it lands FIRST); the second is the first
+	// click's own success INFO - no second probe, no doubled verb/sweep.
+	if len(levels.levels) != 2 || levels.levels[0] != slog.LevelWarn || levels.levels[1] != slog.LevelInfo {
+		t.Fatalf("levels = %v, want [WARN INFO] (the dropped click, then the in-flight click's success)", levels.levels)
+	}
+
+	// The guard releases: a later click runs the full sequence again.
+	a.muteClick(load)
+	if got := spy.order(); got != want+","+want {
+		t.Fatalf("after the in-flight click released, a later click = %q, want the full sequence twice", got)
 	}
 }
 
