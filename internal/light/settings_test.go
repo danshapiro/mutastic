@@ -148,15 +148,19 @@ func TestSavedSettingsStorePersistedAcrossReload(t *testing.T) {
 	}
 }
 
-// TestSavedSettingsStoreLoadValidation pins R2-F5 + R4-F4: a parseable file
-// is not enough. Every stored name must satisfy the name grammar exactly as
-// the verbs enforce it (trimmed-form-equal - leading/trailing whitespace is
-// never meaningful - nonempty, no newline, within the byte cap, no
-// case-insensitive "error:" prefix), every entry must hold a NON-EMPTY
-// Lights map, and the file as a whole must stay at or under maxSettingsCount
-// entries. ANY violation classifies the whole load as corrupt: the store
-// refuses everything with the path-bearing wire string AND the file is
-// preserved untouched - while a valid store still loads.
+// TestSavedSettingsStoreLoadValidation pins R2-F5 + R4-F4 + R5-F3: a
+// parseable file is not enough. Every stored name must satisfy the name
+// grammar exactly as the verbs enforce it (trimmed-form-equal -
+// leading/trailing whitespace is never meaningful - nonempty, no newline,
+// within the byte cap, no case-insensitive "error:" prefix), every entry
+// must hold a NON-EMPTY Lights map, every light entry must be in range
+// (R5-F3: 0 <= Brightness <= 100, TempByte inside the firmware's
+// 0x00..maxTempByte Kelvin step table, a plausible COM-port key in the
+// codebase's own COM<n> form), and the file as a whole must stay at or
+// under maxSettingsCount entries. ANY violation classifies the whole load
+// as corrupt: the store refuses everything with the path-bearing wire
+// string AND the file is preserved untouched - while a valid store still
+// loads.
 func TestSavedSettingsStoreLoadValidation(t *testing.T) {
 	entry := SavedSetting{Lights: map[string]SavedLightState{
 		"COM4": {On: true, Brightness: 50, TempByte: 9},
@@ -196,6 +200,19 @@ func TestSavedSettingsStoreLoadValidation(t *testing.T) {
 		// R4-F4: 101 fully-valid entries exceed the load cap; the whole file
 		// classifies as corrupt exactly like a parse failure.
 		{"over-cap store (101 entries)", mustJSON(t, many(101))},
+		// R5-F3: per-entry invariants, one violation class per row. The
+		// save path can never emit these (it snapshots validated live
+		// state), so only a hand-edited or foreign file trips them.
+		{"negative brightness", mustJSON(t, map[string]SavedSetting{"look": {Lights: map[string]SavedLightState{
+			"COM4": {On: true, Brightness: -1, TempByte: 9}}}})},
+		{"brightness above 100", mustJSON(t, map[string]SavedSetting{"look": {Lights: map[string]SavedLightState{
+			"COM4": {On: true, Brightness: 101, TempByte: 9}}}})},
+		{"temp byte past the firmware step table", mustJSON(t, map[string]SavedSetting{"look": {Lights: map[string]SavedLightState{
+			"COM4": {On: true, Brightness: 50, TempByte: maxTempByte + 1}}}})},
+		{"empty snapshot key", mustJSON(t, map[string]SavedSetting{"look": {Lights: map[string]SavedLightState{
+			"": {On: true, Brightness: 50, TempByte: 9}}}})},
+		{"non-COM snapshot key", mustJSON(t, map[string]SavedSetting{"look": {Lights: map[string]SavedLightState{
+			"desk": {On: true, Brightness: 50, TempByte: 9}}}})},
 	}
 	for _, c := range cases {
 		dir := t.TempDir()
@@ -228,11 +245,18 @@ func TestSavedSettingsStoreLoadValidation(t *testing.T) {
 	}
 
 	// A valid store still loads: trimmed-form names at or under the byte cap
-	// with non-empty Lights maps (one name exactly AT the 42-byte cap).
+	// with non-empty Lights maps (one name exactly AT the 42-byte cap). The
+	// "edge" entry rides every R5-F3 boundary INCLUSIVELY - brightness 0 and
+	// 100, temp bytes 0x00 and maxTempByte, a multi-digit COM key - so an
+	// off-by-one in the range checks fails here, not quietly.
 	validDir := t.TempDir()
 	validPath := filepath.Join(validDir, "light-settings.json")
 	capName := strings.Repeat("b", 42)
-	valid := map[string]SavedSetting{"look": entry, capName: entry}
+	edge := SavedSetting{Lights: map[string]SavedLightState{
+		"COM4":  {On: false, Brightness: 0, TempByte: 0},
+		"COM12": {On: true, Brightness: 100, TempByte: maxTempByte},
+	}}
+	valid := map[string]SavedSetting{"look": entry, capName: entry, "edge": edge}
 	if err := os.WriteFile(validPath, mustJSON(t, valid), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -240,11 +264,14 @@ func TestSavedSettingsStoreLoadValidation(t *testing.T) {
 	if !s.Enabled() {
 		t.Fatal("a valid store must load enabled")
 	}
-	if got := s.List(); !reflect.DeepEqual(got, []string{capName, "look"}) {
-		t.Fatalf("valid store List = %v, want both names (sorted)", got)
+	if got := s.List(); !reflect.DeepEqual(got, []string{capName, "edge", "look"}) {
+		t.Fatalf("valid store List = %v, want all three names (sorted)", got)
 	}
 	if got, ok := s.Get("look"); !ok || !reflect.DeepEqual(got, entry) {
 		t.Fatalf("valid store Get(look) = %+v, %v; want the persisted snapshot", got, ok)
+	}
+	if got, ok := s.Get("edge"); !ok || !reflect.DeepEqual(got, edge) {
+		t.Fatalf("valid store Get(edge) = %+v, %v; want the boundary-value snapshot", got, ok)
 	}
 
 	// The load cap is INCLUSIVE: exactly maxSettingsCount fully-valid

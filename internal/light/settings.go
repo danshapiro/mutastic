@@ -87,19 +87,24 @@ func NewSettingsStore(path string) *SettingsStore {
 		s.corrupt = true
 		return s
 	}
-	// A parseable file must still be VALID (R2-F5 + R4-F4): the entry count
-	// stays at or under maxSettingsCount (an over-cap file breaks the
-	// cap's headroom proof - 100 names x 43 bytes < the 8192-byte reply
-	// read buffer - so its list could silently truncate), every name
-	// satisfies the name grammar exactly as the verbs enforce it
-	// (trimmed-form-equal - leading/trailing whitespace is never
+	// A parseable file must still be VALID (R2-F5 + R4-F4 + R5-F3): the
+	// entry count stays at or under maxSettingsCount (an over-cap file
+	// breaks the cap's headroom proof - 100 names x 43 bytes < the
+	// 8192-byte reply read buffer - so its list could silently truncate),
+	// every name satisfies the name grammar exactly as the verbs enforce
+	// it (trimmed-form-equal - leading/trailing whitespace is never
 	// meaningful - nonempty, no newline, at most maxSettingsNameLen bytes,
-	// no case-insensitive "error:" prefix) and every entry holds a
-	// NON-EMPTY Lights map (an entryless snapshot restores nothing, and
-	// the save path never produces one). ANY violation classifies the
-	// whole file as corrupt: the store refuses everything with the
-	// path-bearing wire string, and the file is preserved untouched for
-	// the documented manual recovery.
+	// no case-insensitive "error:" prefix), every entry holds a NON-EMPTY
+	// Lights map (an entryless snapshot restores nothing, and the save
+	// path never produces one), and every light entry itself is in range
+	// (R5-F3): 0 <= Brightness <= 100, a TempByte inside the firmware's
+	// 0x00..maxTempByte Kelvin step table (frame.go; see CCT/KelvinToByte),
+	// keyed by a plausible COM-port path in the codebase's own form
+	// (portPattern, the COM<n> shape NormalizePort/enumeration produce -
+	// an invented key could never address hardware on apply). ANY
+	// violation classifies the whole file as corrupt: the store refuses
+	// everything with the path-bearing wire string, and the file is
+	// preserved untouched for the documented manual recovery.
 	if len(m) > maxSettingsCount {
 		s.corrupt = true
 		return s
@@ -108,6 +113,12 @@ func NewSettingsStore(path string) *SettingsStore {
 		if name != strings.TrimSpace(name) || validateSettingsName(name) != "" || len(entry.Lights) == 0 {
 			s.corrupt = true
 			return s
+		}
+		for key, ls := range entry.Lights {
+			if !portPattern.MatchString(key) || ls.Brightness < 0 || ls.Brightness > 100 || ls.TempByte > maxTempByte {
+				s.corrupt = true
+				return s
+			}
 		}
 	}
 	if m != nil {

@@ -597,7 +597,10 @@ func (mm *MultiManager) settingsSave(name string) string {
 // (after a daemon restart, until an echo or knob event) are OMITTED:
 // snapshotting one would record invented defaults instead of the current
 // hardware look. Entries are keyed by COM port path ONLY; an off light
-// saves its restore-target brightness, not 0.
+// saves its restore-target brightness, not 0. Each entry's
+// on/brightness/temp/known comes from ONE locked state.Snapshot read
+// (R5-F4), so a mutation landing mid-snapshot never yields a hybrid entry
+// (power from one look, brightness from another).
 func (mm *MultiManager) settingsSnapshot() SavedSetting {
 	mm.mu.Lock()
 	ports := mm.portsLocked()
@@ -615,15 +618,13 @@ func (mm *MultiManager) settingsSnapshot() SavedSetting {
 		if !m.liveLink() {
 			continue
 		}
-		on, brightness, temp, known := m.state.Status()
+		// ONE locked read (R5-F4): Snapshot already maps an off light's
+		// brightness to its restore target, so no second TargetOn call.
+		on, brightness, temp, known := m.state.Snapshot()
 		if !known {
 			continue
 		}
-		entry := SavedLightState{On: on, Brightness: brightness, TempByte: temp}
-		if !on {
-			entry.Brightness, _ = m.state.TargetOn()
-		}
-		lights[p] = entry
+		lights[p] = SavedLightState{On: on, Brightness: brightness, TempByte: temp}
 	}
 	return SavedSetting{Lights: lights}
 }

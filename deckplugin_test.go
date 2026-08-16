@@ -87,6 +87,65 @@ func TestAskDaemonSettingsListRoundTripsBeyond2048(t *testing.T) {
 	}
 }
 
+// TestAskDaemonSettingsListRoundTripsFullStoreCeiling pins R5-F5: beyond
+// merely exceeding the old 2048-byte buffer, the 2048->8192 raise must
+// protect the DOCUMENTED MAXIMUM exactly - the worst-case realistic list
+// of maxSettingsCount (100) names at the full maxSettingsNameLen (42
+// bytes) plus separators (100 x 42 + 99 newlines = 4299 bytes ~ 4.3 KB).
+// It must round-trip byte-exact through the same shared read path; short
+// of this ceiling a test could pass while a full store still truncated.
+func TestAskDaemonSettingsListRoundTripsFullStoreCeiling(t *testing.T) {
+	// 100 distinct names of EXACTLY 42 bytes (the daemon's save-time name
+	// gate), padded to the cap so the length math is the store's worst
+	// case, not an approximation of it.
+	names := make([]string, 0, 100)
+	for i := 0; i < 100; i++ {
+		base := fmt.Sprintf("saved-settings-name-at-ceiling-%03d", i)
+		if len(base) > 42 {
+			t.Fatalf("name stem %q is %d bytes, exceeds the 42-byte cap before padding", base, len(base))
+		}
+		name := base + strings.Repeat("x", 42-len(base))
+		if len(name) != 42 {
+			t.Fatalf("name %q is %d bytes, want exactly 42", name, len(name))
+		}
+		names = append(names, name)
+	}
+	want := strings.Join(names, "\n")
+	if len(want) != 4299 {
+		t.Fatalf("scripted reply is %d bytes, want exactly 4299 (100 x 42 + 99 newlines - the documented worst case)", len(want))
+	}
+	if len(want) <= 2048 {
+		t.Fatalf("scripted reply is %d bytes, want > 2048 (the test guards truncation past the old buffer)", len(want))
+	}
+	if len(want) >= 8192 {
+		t.Fatalf("scripted reply is %d bytes, want < 8192 (the raised buffer must hold a full store's list)", len(want))
+	}
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	go func() {
+		buf := make([]byte, 64)
+		n, addr, err := pc.ReadFrom(buf)
+		if err != nil {
+			return
+		}
+		if string(buf[:n]) != "light settings list" {
+			pc.WriteTo([]byte("error: unknown command"), addr)
+			return
+		}
+		pc.WriteTo([]byte(want), addr)
+	}()
+	reply, err := askDaemon("light settings list", pc.LocalAddr().String(), 2*time.Second)
+	if err != nil {
+		t.Fatalf("askDaemon: %v", err)
+	}
+	if reply != want {
+		t.Fatalf("reply %d bytes, want byte-exact %d (the full-store ceiling must fit the 8192-byte buffer)", len(reply), len(want))
+	}
+}
+
 func TestAskDaemonUnreachable(t *testing.T) {
 	// Bind then close: guarantees nothing listens on the port.
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")

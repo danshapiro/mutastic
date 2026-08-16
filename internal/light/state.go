@@ -116,6 +116,25 @@ func (s *State) TargetOn() (brightness int, temp byte) {
 	return s.lastOn, s.temp
 }
 
+// Snapshot returns the save-facing view of the whole state under ONE lock
+// (R5-F4): power, the brightness a save records (the live brightness when
+// on, the restore target when off - never 0), the temp byte, and
+// known-ness. settingsSave reads each light through this single accessor
+// instead of separate Status()/TargetOn() calls, so a mutation landing
+// mid-snapshot changes the whole entry or none of it - never a hybrid of
+// two looks (say, the off flag of the old state with the restore target of
+// the new).
+func (s *State) Snapshot() (on bool, brightness int, temp byte, known bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	on = s.brightness > 0
+	brightness = s.brightness
+	if !on {
+		brightness = s.lastOn
+	}
+	return on, brightness, s.temp, s.known
+}
+
 // StatusString renders the UDP status reply: "unknown", "off", or
 // "on <brightness>% <kelvin>K" (Kelvin is the quantized hardware step).
 func (s *State) StatusString() string {
