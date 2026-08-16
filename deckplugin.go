@@ -36,7 +36,23 @@ var errNoReply = errors.New("no reply from daemon")
 
 // askDaemon sends one UDP command to the daemon and returns the trimmed
 // reply. It is the reply-returning core of runClient (which prints);
-// both share the daemon's plain-text protocol on udpAddr.
+// both share the daemon's plain-text protocol on udpAddr. The mic verb
+// surface handled here (see internal/daemon/HandleCommand and
+// internal/proto for the conditional-verb grammar):
+//
+//   - "status"                    -> "muted" | "unmuted" | "unknown"
+//   - "mute" | "unmute"           -> the new state ("muted"/"unmuted")
+//   - "toggle"                    -> the new state (unknown resolves to mute)
+//   - "shutdown"                  -> "shutting down" (the daemon then exits)
+//   - "mute-if <expected>" / "unmute-if <expected>"  (expected ∈
+//     muted|unmuted; R6-F2 atomic conditional verbs, used by the tray) ->
+//     "ok" (premise matched: the absolute verb AND one F24 meeting-app
+//     sweep ran in the same serveUDP step), "flipped muted|unmuted" or
+//     "flipped unknown" (premise failed: NO verb, NO inject), or
+//     "error: <reason>"
+//
+// plus the "light ..." pass-through family documented in README. Anything
+// unrecognized replies "error: unknown command".
 func askDaemon(cmd, addr string, timeout time.Duration) (string, error) {
 	conn, err := net.Dial("udp", addr)
 	if err != nil {

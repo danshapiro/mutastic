@@ -4,7 +4,6 @@ package main
 
 import (
 	_ "embed"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -47,21 +46,22 @@ const (
 	trayIconReapplyEvery = 300
 )
 
-// --- click-time native title verification (ROUND-6: kills R4-F2/R5-F2) ---
+// --- click-time/paint-time native verification (ROUND-6/ROUND-7) ---
 //
 // The fork dispatches a menu click by command ID ALONE (WM_COMMAND's
 // wParam -> menuItems[id].click): the native row's title text is
-// display-only metadata. And because the fork offers no remove/insert
-// API, the "Saved settings" submenu recycles rows IN PLACE
-// (syncSavedSettingsMenu re-stores the command slot, then repaints the
-// native title), so a WM_COMMAND queued from a stale native row - one the
-// user read as the OLD name - can otherwise execute the row's NEW slot
-// command. The verification below reads the row's LIVE native title back
-// from Windows at click time and executes the slotted command only when
-// the native title still names that setting (traySettingsCmdMatchesTitle,
-// the pure comparator in traystate.go). Refusal degrades to a no-op with
-// one WARN (traySetSettingsClick logs it); the just-finished rebuild has
-// already painted the truthful row for the next click.
+// display-only metadata. ROUND-7 eliminates the R4-F2/R5-F2/R6-F1
+// residual structurally: a "Saved settings" row is NEVER re-bound to a
+// DIFFERENT name in place (syncSavedSettingsMenu retires it into a
+// trayRetireAge quarantine instead), so a WM_COMMAND queued from a stale
+// native row - one the user read as the OLD name - hits a cleared slot
+// and no-ops. The read-back below remains as the belt to retirement's
+// suspenders (R6-F1's "keep the existing native title verification"), and
+// additionally covers the mic item (R6-F3): it reads the row's LIVE
+// native title AND disabled bit back from Windows, so the refresh loop
+// stores the mic armed premise only when the paint actually landed and a
+// click executes only when the row it fired on still shows exactly the
+// loaded snapshot. Refusal degrades to a no-op with one WARN.
 //
 // The fork exports neither the item's command ID nor its containing
 // HMENU, so both are read from the fork's own bookkeeping via go:linkname:
@@ -101,8 +101,9 @@ var trayWinTray trayWinTrayPrefix
 
 var trayProcGetMenuItemInfoW = syscall.NewLazyDLL("user32.dll").NewProc("GetMenuItemInfoW")
 
-// trayMenuItemInfoW is the full MENUITEMINFOW layout for MIIM_STRING
-// reads (same shape the fork uses for its SetMenuItemInfoW writes).
+// trayMenuItemInfoW is the full MENUITEMINFOW layout for MIIM_STRING |
+// MIIM_STATE reads (same shape the fork uses for its SetMenuItemInfoW
+// writes).
 type trayMenuItemInfoW struct {
 	Size, Mask, Type, State     uint32
 	ID                          uint32
@@ -113,12 +114,16 @@ type trayMenuItemInfoW struct {
 	BMPItem                     uintptr
 }
 
-// trayMenuItemNativeTitle reads the item's CURRENT native menu string via
-// GetMenuItemInfoW with MIIM_STRING: the identifier form (fByPosition=0)
-// keyed by the item's fork command ID, against the HMENU the fork
-// recorded for that ID. Any lookup failure (unknown item, missing HMENU,
-// API refusal) reports not-ok so the caller refuses: the safe direction.
-func trayMenuItemNativeTitle(item *systray.MenuItem) (string, bool) {
+// trayMenuItemNativeState is the SHARED winapi reader behind every
+// click-time/paint-time native verification (R6-F1 settings rows and
+// R6-F3 mic item): one GetMenuItemInfoW call returns the item's CURRENT
+// native menu string (MIIM_STRING) AND its native disabled bit
+// (MIIM_STATE, the fork writes MFS_DISABLED=0x3 when disabled). The
+// identifier form (fByPosition=0) is keyed by the item's fork command
+// ID, against the HMENU the fork recorded for that ID. Any lookup
+// failure (unknown item, missing HMENU, API refusal) reports not-ok so
+// the caller refuses: the safe direction.
+func trayMenuItemNativeState(item *systray.MenuItem) (title string, disabled, ok bool) {
 	traySystrayMenuItemsLock.RLock()
 	id, found := uint32(0), false
 	for itemID, menuItem := range traySystrayMenuItems {
@@ -129,23 +134,27 @@ func trayMenuItemNativeTitle(item *systray.MenuItem) (string, bool) {
 	}
 	traySystrayMenuItemsLock.RUnlock()
 	if !found {
-		return "", false
+		return "", false, false
 	}
 	trayWinTray.muMenuOf.RLock()
-	hMenu, ok := trayWinTray.menuOf[id]
+	hMenu, menuOK := trayWinTray.menuOf[id]
 	trayWinTray.muMenuOf.RUnlock()
-	if !ok || hMenu == 0 {
-		return "", false
+	if !menuOK || hMenu == 0 {
+		return "", false, false
 	}
-	const miimString = 0x00000040
+	const (
+		miimState   = 0x00000001
+		miimString  = 0x00000040
+		mfsDisabled = 0x00000003 // mirrors the fork's disabled-state bits
+	)
 	// The native title is always one of OUR OWN strings: an escaped
 	// settings name (the name grammar caps raw names at 42 bytes, and
-	// escaping at most doubles the "&"s) or a short placeholder, so a
-	// 512-unit UTF-16 buffer can never truncate a real one - and if it
+	// escaping at most doubles the "&"s) or a short placeholder/verb, so
+	// a 512-unit UTF-16 buffer can never truncate a real one - and if it
 	// ever did, the truncated read would fail the exact comparison and
 	// refuse, still the safe direction.
 	var buf [512]uint16
-	mi := trayMenuItemInfoW{Mask: miimString, TypeData: &buf[0], Cch: uint32(len(buf))}
+	mi := trayMenuItemInfoW{Mask: miimString | miimState, TypeData: &buf[0], Cch: uint32(len(buf))}
 	mi.Size = uint32(unsafe.Sizeof(mi))
 	res, _, _ := trayProcGetMenuItemInfoW.Call(
 		hMenu,
@@ -154,25 +163,45 @@ func trayMenuItemNativeTitle(item *systray.MenuItem) (string, bool) {
 		uintptr(unsafe.Pointer(&mi)),
 	)
 	if res == 0 || mi.Cch > uint32(len(buf)) {
-		return "", false
+		return "", false, false
 	}
-	return string(utf16.Decode(buf[:mi.Cch])), true
+	return string(utf16.Decode(buf[:mi.Cch])), mi.State&mfsDisabled == mfsDisabled, true
 }
 
-// trayVerifySettingsItemTitle is the Windows arm of the ROUND-6
-// click-time check wired into traySetSettingsClick: the row's live native
-// title must still name the setting the slot command applies. It compares
-// the ESCAPED form of the command's raw name against the native title
-// (the native title is our escaped display string; Windows stores the
-// literal text we SetTitle'ed, "&&" included). Mismatch, an unreadable
-// title, or any lookup error all return false - the click no-ops and the
-// next rebuild/poll paints the truthful row.
+// trayVerifySettingsItemTitle is the Windows arm of the click-time check
+// wired into traySetSettingsClick: the row's live native title must
+// still name the setting the slot command applies. It compares the
+// ESCAPED form of the command's raw name against the native title (the
+// native title is our escaped display string; Windows stores the literal
+// text we SetTitle'ed, "&&" included). Mismatch, an unreadable title, or
+// any lookup error all return false - the click no-ops and the next
+// rebuild/poll paints the truthful row.
 func trayVerifySettingsItemTitle(item *systray.MenuItem, cmd string) bool {
-	title, ok := trayMenuItemNativeTitle(item)
+	title, _, ok := trayMenuItemNativeState(item)
 	if !ok {
 		return false
 	}
 	return traySettingsCmdMatchesTitle(cmd, title)
+}
+
+// trayVerifyArmed is the Windows arm of the R6-F3 armed verification for
+// the mic item, used BOTH after painting (the refresh loop stores the
+// armed premise ONLY when the live native row reads back the painted
+// title AND enablement - the fork reports SetMenuItemInfoW failures only
+// through its own log, so without this read-back a failed SetTitle or
+// Enable would leave the visible verb diverging from the armed snap) and
+// at click time (muteClick refuses when the live row no longer matches
+// the loaded snapshot - a mid-paint click can then never perform the
+// opposite of the displayed label). The portable stub is true. The
+// winapi paths here are covered by the Windows build plus the runbook's
+// tray steps; only the pure comparator (trayArmedMatchesNative) is
+// unit-tested on Linux.
+func trayVerifyArmed(item *systray.MenuItem, snap trayMuteSnapshot) bool {
+	title, disabled, ok := trayMenuItemNativeState(item)
+	if !ok {
+		return false
+	}
+	return trayArmedMatchesNative(snap, title, disabled)
 }
 
 // runTray puts the mutastic icon in the notification area and blocks in the
@@ -242,18 +271,21 @@ func trayOnReady(logger *slog.Logger) {
 	// The mic item is an ACTION item (never checkable) that always displays
 	// the verb its click performs: "Mute" when live, "Unmute" when muted,
 	// the neutral "Mute/Unmute" while indefinite. Its displayed title and
-	// the click's armed premise are ONE atomic pair (F7), computed once per
-	// tick: the refresh loop paints the native title/enabled bit FIRST and
-	// stores the pair LAST (see trayRefreshLoop - store-last keeps a racing
-	// click on a stale-or-current premise, degrading to the probe-gated
-	// no-op instead of executing the opposite of the just-painted verb).
-	// The click handler loads the pair back exactly once. The initial
-	// neutral snapshot matches the item's startup title + disabled state,
-	// so a click before the first tick reads a premise that cannot fire.
+	// the click's armed premise are ONE atomic pair (F7), computed once
+	// per tick: the refresh loop paints the native title/enabled bit
+	// FIRST, stores the pair LAST, and - ROUND-7, R6-F3 - stores it ONLY
+	// when trayVerifyArmed reads the exact painted title AND enablement
+	// back from the live native row (a failed native SetTitle/Enable can
+	// then never arm the click to the opposite of what is on screen; the
+	// next 2 s poll retries the paint). The click handler loads the pair
+	// back exactly once and re-VERIFIES the live row against it before
+	// asking the daemon. The initial neutral snapshot matches the item's
+	// startup title + disabled state, so a click before the first tick
+	// reads a premise that cannot fire.
 	var muteSnap atomic.Value
 	muteSnap.Store(trayMuteSnapshot{Title: trayMuteTitle(trayStateUnknown), Armed: trayStateUnknown})
 	loadMuteSnap := func() trayMuteSnapshot { return muteSnap.Load().(trayMuteSnapshot) }
-	mic := systray.AddMenuItem(trayMuteTitle(trayStateUnknown), "mute-everything: the displayed mic verb + F24 meeting-app sweep (same flow as the Stream Deck mute key)")
+	mic := systray.AddMenuItem(trayMuteTitle(trayStateUnknown), "mute-everything: the displayed mic verb + F24 meeting-app sweep, atomically premised daemon-side (same flow as the Stream Deck mute key)")
 	systray.AddSeparator()
 
 	lights := systray.AddMenuItem("Toggle lights", "if any light is on, turn all off; otherwise turn all on")
@@ -299,6 +331,10 @@ func trayOnReady(logger *slog.Logger) {
 	// serveUDP is serial, so any command can queue behind a wedged light
 	// call (~light.CallTimeout); a 1s budget would intermittently mask the
 	// daemon as unreachable while it is alive.
+	// The tray needs no key injector of its own: R6-F2 moved the mic
+	// click's F24 meeting-app sweep DAEMON-side (the atomic conditional
+	// verbs mute-if/unmute-if perform the absolute verb AND the sweep in
+	// one step), and physical-button sweeps were always daemon-side.
 	actions := &trayActions{
 		ask:           func(cmd string) (string, error) { return askDaemon(cmd, udpAddr, lightClientTimeout) },
 		openPanel:     func() error { return openBrowser(trayPanelURL) },
@@ -306,11 +342,6 @@ func trayOnReady(logger *slog.Logger) {
 		requestQuit:   systray.Quit,
 		signalRefresh: signalRefresh,
 		logger:        logger,
-	}
-	if inj := newKeyInjector(); inj != nil {
-		actions.injectSweep = inj.Inject
-	} else {
-		actions.injectSweep = func() error { return errors.New("key injection unavailable") }
 	}
 
 	// Light menu commands are serialized through one drained channel. The
@@ -340,7 +371,12 @@ func trayOnReady(logger *slog.Logger) {
 		}
 	})
 
-	mic.Click(func() { go actions.muteClick(loadMuteSnap) })
+	// The mic click verifies the LIVE native row against the loaded
+	// snapshot (R6-F3) before its one conditional-verb daemon call; the
+	// verify function closes over the mic item.
+	mic.Click(func() {
+		go actions.muteClick(loadMuteSnap, func(snap trayMuteSnapshot) bool { return trayVerifyArmed(mic, snap) })
+	})
 	lightCmd := func(command string) func() {
 		return func() { lightCmdCh <- command }
 	}
@@ -377,11 +413,13 @@ func trayRefreshLoop(logger *slog.Logger, refreshCh <-chan struct{}, header, mic
 	first := true
 	last := trayStateUnknown
 	tick := 0
-	// The Saved settings submenu's retained children (shown first, in menu
-	// order, then the hidden reuse pool) and the spec list the shown prefix
-	// renders. Empty until the first tick reconciles; two nil specs compare
-	// equal, so only a real poll difference triggers a rebuild.
-	var savedChildren []*savedMenuChild
+	// The Saved settings submenu's SHOWN rows (rendering savedSpecs), the
+	// quarantined RETIRED pool (R6-F1: hidden, disabled, unbound rows
+	// stamped with their retirement time, reusable for a NEW name only
+	// after trayRetireAge), and the spec list the shown rows render.
+	// Empty until the first tick reconciles; two nil specs compare equal,
+	// so only a real poll difference triggers a rebuild.
+	var savedShown, savedRetired []*savedMenuChild
 	var savedSpecs []trayMenuSpec
 	// lastShown is the icon currently displayed; it starts as the neutral
 	// unknown asset (also set at ready) and changes only on definitive
@@ -421,33 +459,32 @@ func trayRefreshLoop(logger *slog.Logger, refreshCh <-chan struct{}, header, mic
 		// its own goroutine, and store-first could arm the click to the NEW
 		// pair while the menu still shows the OLD verb. Stored last, the
 		// premise is never FRESHER than the painted title; and with flip =>
-		// NO-OP (R3-F2: a definitive-OPPOSITE probe runs no verb and no
-		// sweep), ANY paint/premise race degrades to the probe-gated no-op
-		// and NEVER an opposite action (R3-F3): a click holding a stale
-		// premise meets a fresh probe that mismatches it (a flip or a
-		// decline), and a mismatching probe runs nothing by rule. The
-		// residual sub-poll window - the PAINTED title itself lagging the
-		// daemon - is structurally unkillable without a read-back of what
-		// the user saw; the probe gate bounds it (any state change after
-		// premise capture mismatches the probe and the click no-ops).
-		// Delta round 4 re-litigated this exact point (R4-F1: a click in
-		// the paint/store gap no-ops) and the submenu slot rebuild race
-		// (R4-F2, see syncSavedSettingsMenu), and REJECTED both as blocking
-		// with recorded analysis: after the R3-F2 flip => strict no-op
-		// reversion the divergence can only produce a probe-gated no-op,
-		// NEVER a wrong action, and the next 2 s poll repaints the premise
-		// from fresh truth so the retried click performs the displayed
-		// action; driving the click from the probe instead was evaluated
-		// and rejected because it reintroduces the R3-F2 physical-press
-		// double-sweep hazard (reviews/delta/review-log.md, round 4).
-		// ROUND-6 then pinned the probe-gated mute rule in the plan's
+		// NO-OP (R3-F2: a definitive-OPPOSITE premise runs no verb and no
+		// sweep), ANY paint/premise race degrades to the premised no-op
+		// and NEVER an opposite action (R3-F3). History: delta round 4's
+		// re-litigation of the paint/store gap (R4-F1) was REJECTED as
+		// blocking with recorded analysis (reviews/delta/review-log.md,
+		// round 4); ROUND-6 pinned the premised mute rule in the plan's
 		// explicit constraints ("Precision amendment (review convergence,
-		// ROUND-6)") and eliminated the submenu half outright: the
-		// settings closure now re-reads the row's live native title
-		// (trayVerifySettingsItemTitle) and refuses unless it still names
-		// the slot's setting.
-		// Linux can't drive the native menu, so this paint/store ordering
-		// is review-verified only - no automated test can observe it.
+		// ROUND-6)"); ROUND-7 carries it onto the daemon-side ATOMIC
+		// conditional verb (R6-F2, see muteClick), so the premise check
+		// and the action are one step.
+		// ROUND-7, R6-F3: the paint is then READ BACK from the live native
+		// row (trayVerifyArmed - title AND disabled bit), and the snapshot
+		// is stored ONLY when the read-back matches the paint exactly.
+		// The fork reports SetMenuItemInfoW failures only through its own
+		// log; without the read-back a failed SetTitle or Enable would
+		// leave the visible verb diverging from the armed premise, and a
+		// click whose premise matched the daemon would execute the
+		// OPPOSITE of the displayed label. On a mismatch the previous
+		// verified snapshot stays (the display still matches it - the
+		// failed paint never landed), one WARN is logged, and the next 2 s
+		// poll retries the paint, so a transient native refusal
+		// self-heals. muteClick re-verifies the same pair at click time,
+		// so a mid-paint click can only refuse, never act wrong.
+		// Linux can't drive the native menu, so this paint/verify/store
+		// ordering is review-verified only - no automated test can observe
+		// it (the pure comparator trayArmedMatchesNative IS unit-tested).
 		snap := trayMuteSnapshot{Title: trayMuteTitle(state), Armed: state}
 		mic.SetTitle(snap.Title)
 		if trayMuteEnabled(snap.Armed) {
@@ -455,7 +492,11 @@ func trayRefreshLoop(logger *slog.Logger, refreshCh <-chan struct{}, header, mic
 		} else {
 			mic.Disable()
 		}
-		muteSnap.Store(snap)
+		if trayVerifyArmed(mic, snap) {
+			muteSnap.Store(snap)
+		} else {
+			logger.Warn("mute item paint did not verify against the live native row (title/enabled mismatch); the armed premise stays at the last verified paint so the display and the click gate never diverge (the next poll retries)", "title", snap.Title, "armed", trayStateName(snap.Armed))
+		}
 		// Mic vs. lights get different gates: the mic acts only on definitive
 		// answers (see trayMuteEnabled), light actions only need a reachable
 		// daemon (unknown is a mic-state concept). The savedSettings submenu
@@ -474,7 +515,7 @@ func trayRefreshLoop(logger *slog.Logger, refreshCh <-chan struct{}, header, mic
 		listReply, listErr := askDaemon(traySavedSettingsListCmd, udpAddr, lightClientTimeout)
 		want := traySavedSettings(trayParseSettingsList(listReply, listErr))
 		if !traySameMenuSpecs(savedSpecs, want) {
-			savedChildren, savedSpecs = syncSavedSettingsMenu(savedSettings, savedChildren, savedSpecs, want, lightCmd, logger)
+			savedShown, savedRetired, savedSpecs = syncSavedSettingsMenu(savedSettings, savedShown, savedRetired, savedSpecs, want, lightCmd, logger)
 		}
 	}
 }
@@ -485,20 +526,25 @@ func trayRefreshLoop(logger *slog.Logger, refreshCh <-chan struct{}, header, mic
 // NEVER rebound (R2-F3): writing the fork's click field while the native
 // message pump can invoke it is a data race (the pump may run the OLD
 // binding while Go assigns the NEW one), so rebuilds never touch the
-// binding - they only SetTitle/Enable/Disable/Show and store the slot. The
-// slot holds the current "light settings apply <name>" command; "" means
-// unbound (a placeholder or a hidden pool orphan - a click is then a no-op,
-// doubly safe because such items are also disabled/hidden).
+// binding. The slot holds the current "light settings apply <name>"
+// command; "" means unbound (a placeholder or a RETIRED row - a click is
+// then a no-op, doubly safe because such rows are also disabled/hidden).
+// retiredAt is the retirement timestamp while the row sits in the
+// quarantine pool (zero while shown): R6-F1's generation-retirement
+// discipline NEVER re-binds a live pooled row to a DIFFERENT name in
+// place - a row whose spec leaves the rendered list is retired and may be
+// re-bound to a new name only after trayRetireAge has lapsed.
 type savedMenuChild struct {
-	item *systray.MenuItem
-	slot atomic.Value // string: current apply command; "" = unbound
+	item      *systray.MenuItem
+	slot      atomic.Value // string: current apply command; "" = unbound
+	retiredAt time.Time    // zero while shown; stamped at retirement
 }
 
 // newSavedMenuChild creates one submenu child with its STABLE click closure
 // - the only place Click is ever assigned: the closure
 // (traySetSettingsClick, traystate.go) reads the slot at click time,
 // verifies the row's LIVE native title still names the slotted setting
-// (trayVerifySettingsItemTitle, ROUND-6), and only then dispatches.
+// (trayVerifySettingsItemTitle), and only then dispatches.
 //
 // R3-F4 ordering discipline: BOTH click-time inputs are assigned around the
 // fork's create call, on this same refresh goroutine, with no channel
@@ -512,20 +558,25 @@ type savedMenuChild struct {
 // the statement IMMEDIATELY following the create call. A click dispatched
 // in that one-statement window finds click == nil and no-ops (the fork's
 // dispatcher skips a nil binding) - never a wrong apply. From then on the
-// closure is NEVER rebound; rebuilds only re-store the slot (before each
-// revealing update, see syncSavedSettingsMenu).
+// closure is NEVER rebound; REBINDS happen only to quarantine-retired rows
+// (slot re-stored before each revealing update, see syncSavedSettingsMenu).
 //
-// ROUND-6 closes the recorded R3-F4/R4-F2/R5-F2 residual ("a click queued
-// in the same Win32 message turn as a name-set rebuild applies the slot's
-// new name"): the closure's native-title verification reads the row's
-// ESCAPED title back out of Windows and compares it against the slot's
-// name, so a WM_COMMAND dispatched from a stale native row can now only
-// REFUSE (one WARN, traySetSettingsClick) - never execute the row's new
-// command. The remaining residual is inertness only: a refusal on a
-// legitimate click when its dispatch raced the rebuild by one turn. No
-// automated test can observe any of this on Linux (no native menu, no
-// message turn), so the ordering and the native read-back are
-// review-verified; the pure comparator is unit-tested in traystate_test.go.
+// ROUND-7 (R6-F1) eliminates the recorded R3-F4/R4-F2/R5-F2 residual ("a
+// click queued in the same Win32 message turn as a name-set rebuild applies
+// the slot's new name") structurally: a live pooled row is NEVER re-bound
+// to a different name in place; it is RETIRED instead (slot cleared,
+// placeholder title, disabled, hidden, timestamped) and only re-bound after
+// a full trayRetireAge quarantine - far longer than any queued WM_COMMAND
+// can survive (the native menu's modal loop dispatches clicks in the same
+// message-era). The stable closure's native-title verification
+// (trayVerifySettingsItemTitle) remains as the belt to retirement's
+// suspenders: even a hypothetical stale dispatch against a re-bound row
+// can now only REFUSE (one WARN, traySetSettingsClick) - never execute the
+// row's new command. What remains is at most a refused click in the
+// sub-poll window (inert, never wrong). No automated test can observe any
+// of this on Linux (no native menu, no message turn), so the ordering and
+// the native read-back are review-verified; the pure planner and
+// comparators are unit-tested in traystate_test.go.
 func newSavedMenuChild(parent *systray.MenuItem, title, command string, lightCmd func(string) func(), logger *slog.Logger) *savedMenuChild {
 	child := &savedMenuChild{}
 	child.slot.Store(command) // bound BEFORE the create call: never an uninitialized slot behind a revealed item
@@ -534,93 +585,165 @@ func newSavedMenuChild(parent *systray.MenuItem, title, command string, lightCmd
 	return child
 }
 
-// syncSavedSettingsMenu rebuilds the "Saved settings" submenu's children to
-// render want (called only when traySameMenuSpecs reported a change). The
-// fork has no remove/insert API, so it recycles: every currently-SHOWN
-// child (the children[:len(cached)] prefix; the tail is already hidden) is
-// hidden back into a reuse pool and its slot cleared, then each wanted spec
-// reuses a hidden orphan first and only creates a NEW child (stable closure
-// bound at creation, newSavedMenuChild) when the pool is empty. Per item
-// the ordering is slot FIRST (a recycled orphan re-stores it; a NEW child
-// arrives from newSavedMenuChild with slot AND closure already assigned),
-// then SetTitle, then Enable/Disable, then Show LAST - the slot store is a
-// plain atomic word with no native side effect, while every
-// update()-backed call (SetTitle, Enable, Disable, and Show itself all
-// route through addOrUpdateMenuItem, which inserts any item missing from
-// the visible list) reveals the item on the spot; both assignments happen
-// in this same goroutine with no yield between them and the item's first
-// revealing update, so the command and the binding are final before the
-// item's reveal renders it (R3-F4). The display/command split is
-// raw-vs-Title: spec.Title is the menu-ESCAPED display string ("&" -> "&&"),
-// spec.raw the VERBATIM saved name - the command must use raw, because the
-// daemon's store keys names raw and an escaped title would apply nothing.
-// Unused orphans stay hidden (never displayed, slot "" so unbound) and are
-// returned after the shown prefix for the next reconcile: every reconcile
-// is change-gated and orphans are recycled BEFORE any new item is created,
-// so retained items stay bounded by the menu size plus one change-width
-// even with delete churn. The returned spec copy is the new cached render.
+// syncSavedSettingsMenu rebuilds the "Saved settings" submenu's rows to
+// render want (called only when traySameMenuSpecs reported a change),
+// under R6-F1's GENERATION-RETIREMENT discipline: it NEVER reassigns a
+// live pooled row to a different name in place. The pure decision lives in
+// trayPlanSettingsSync (traystate.go); this function is the mechanical
+// executor over three phases, on the refresh loop's goroutine:
 //
-// Historical residual (R3-F4/R4-F2/R5-F2, verbatim): "a click queued in
-// the same Win32 message turn as a name-set rebuild applies the slot's new
-// name". ROUND-6 eliminates the wrong-apply outcome outright: the stable
-// closure (traySetSettingsClick) re-reads the row's LIVE native title via
-// GetMenuItemInfoW and compares it to the slot's name
-// (trayVerifySettingsItemTitle/traySettingsCmdMatchesTitle), so a WM_COMMAND
-// dispatched from a stale native row can NEVER execute the row's new
-// command - it refuses with one WARN, and this very rebuild has already
-// painted the truthful row for the retried click. What remains is at most
-// a refused click in that single-turn window (inert, never wrong). The
-// slot-first / title-second ordering is retained deliberately: combined
-// with verification, slot-first means the window's native title is always
-// the STALE one, so the check refuses; reversing the order would instead
-// arm a click on the row's OLD name against a title already repainted -
-// again refused, but with a window where title and slot point at the new
-// name while the displayed-menu-a-repaint-ago said otherwise. No automated
-// test can observe the ordering on Linux (no native menu, no message
-// turn), so it remains review-verified; only the pure comparator is
-// unit-tested.
-func syncSavedSettingsMenu(parent *systray.MenuItem, children []*savedMenuChild, cached, want []trayMenuSpec, lightCmd func(string) func(), logger *slog.Logger) ([]*savedMenuChild, []trayMenuSpec) {
-	for _, child := range children[:len(cached)] {
-		child.item.Hide()
-		child.slot.Store("") // a pooled orphan is unbound: no stale command can fire from the pool
+// Phase A - RETIRE: every shown row whose spec has no identical match in
+// want (a RENAMED row, or a row removed beyond the new list length) is
+// retired: its command slot is cleared FIRST (a racing click then no-ops
+// on ""), its native title is repainted to the "(no saved settings)"
+// placeholder (a click still holding the pre-retire slot then ALSO fails
+// the native-title check), it is disabled, hidden (systray.Hide), stamped
+// with the retirement time, and appended to the quarantine pool - or, with
+// the pool full (trayRetiredCap), simply left permanently hidden, disabled
+// and unbound (a leaked native row; name-set churn is gated by
+// traySameMenuSpecs to genuine changes, and the 100-name store cap bounds
+// the live rows, so this bounds the pool while leaked orphans track real
+// rename churn over the process's lifetime).
+//
+// Phase B - hide keepers FOR ORDERING ONLY: the fork's Show appends a row
+// at the END of the parent's visible list, so keeping the rendered order
+// exactly == want order requires hiding every shown row and re-showing in
+// want order. A keeper's binding (slot/title/enabled) is NOT touched:
+// hiding+re-showing an UNCHANGED row is visibility churn, never the
+// rebinding hazard.
+//
+// Phase C - render in want order: an identical cached row (bind.cached) is
+// simply re-shown; a NEW name (bind.retired) draws the OLDEST quarantine-
+// eligible retired row (retirement age >= trayRetireAge) with its slot
+// re-stored BEFORE the first revealing update and the stable closure in
+// place since creation (R3-F4 ordering, no yield between), then SetTitle,
+// Enable/Disable, Show; with no eligible retired row (pool empty or all
+// still inside quarantine) a FRESH child is created (newSavedMenuChild,
+// slot AND closure already assigned before any reveal). The
+// display/command split is raw-vs-Title: spec.Title is the menu-ESCAPED
+// display string ("&" -> "&&"), spec.raw the VERBATIM saved name - the
+// command must use raw, because the daemon's store keys names raw and an
+// escaped title would apply nothing. The returned spec copy is the new
+// cached render.
+//
+// Why the quarantine eliminates the R4-F2/R5-F2/R6-F1 race rather than
+// shrinking it: the fork dispatches clicks by command ID alone; with
+// in-place rebinding, a WM_COMMAND queued while the row displayed name A
+// could dispatch AFTER the rebuild re-bound the row to name B - slot and
+// native title BOTH already B, so even the ROUND-6 title verification
+// passed and B was applied though the user clicked A. Under retirement,
+// the row the user saw keeps its identity forever: after the rebuild its
+// slot is "" and its title is the placeholder, so the stale dispatch
+// no-ops or refuses; and a re-bound row can only carry a name whose
+// binding began >= trayRetireAge after the old name disappeared - no
+// queued WM_COMMAND can bridge that gap. No automated test can observe
+// the native ordering on Linux (no native menu, no message turn), so this
+// discipline is review-verified; the pure planner (trayPlanSettingsSync)
+// is unit-tested, including same-second renames and quarantine reuse.
+func syncSavedSettingsMenu(parent *systray.MenuItem, shown, retired []*savedMenuChild, cached, want []trayMenuSpec, lightCmd func(string) func(), logger *slog.Logger) (newShown, newRetired []*savedMenuChild, newCached []trayMenuSpec) {
+	now := time.Now()
+	ages := make([]time.Duration, len(retired))
+	for i, child := range retired {
+		ages[i] = now.Sub(child.retiredAt)
 	}
-	pool := children
-	reused := min(len(pool), len(want))
-	shown := make([]*savedMenuChild, 0, len(want))
-	for i, spec := range want {
-		// command is the child's new slot content: an ENABLED real entry's
-		// apply verb on the VERBATIM raw name; "" for placeholders (an
-		// unbound, disabled row can never fire).
+	plan := trayPlanSettingsSync(cached, want, ages)
+
+	// Phase A - RETIRE the vanished rows (slot cleared FIRST). The rows
+	// phase C will consume from the quarantine pool are marked up front so
+	// the pool room computation knows they are leaving.
+	consumed := make([]bool, len(retired))
+	consumedCount := 0
+	for _, bind := range plan.binds {
+		if bind.retired >= 0 {
+			consumed[bind.retired] = true
+			consumedCount++
+		}
+	}
+	poolRoom := trayRetiredCap - (len(retired) - consumedCount)
+	newRetired = make([]*savedMenuChild, 0, trayRetiredCap)
+	newRetired = append(newRetired, retired...) // dropped below if consumed
+	newlyRetired := 0
+	for _, i := range plan.retires {
+		child := shown[i]
+		child.slot.Store("") // a retired row is unbound: no stale command can fire from it
+		child.item.SetTitle(trayNoSavedSettingsTitle)
+		child.item.Disable()
+		child.item.Hide()
+		child.retiredAt = now
+		if poolRoom > 0 {
+			poolRoom--
+			newlyRetired++
+			newRetired = append(newRetired, child)
+		} else {
+			// Pool full: the row stays permanently hidden/disabled/unbound
+			// (a leaked native row; see the header comment).
+			logger.Warn("settings row retired but the quarantine pool is full; dropping it from the pool (permanently hidden, never re-bound)", "cap", trayRetiredCap)
+		}
+	}
+
+	// Phase B - hide the keepers for ordering re-insertion (binding untouched).
+	for _, kp := range plan.keeps {
+		shown[kp[0]].item.Hide()
+	}
+
+	// Phase C - render want order (Show appends at the visible end).
+	newShown = make([]*savedMenuChild, 0, len(want))
+	for j, bind := range plan.binds {
+		// command is the row's slot content: an ENABLED real entry's apply
+		// verb on the VERBATIM raw name; "" for placeholders (an unbound,
+		// disabled row can never fire).
+		spec := want[j]
 		command := ""
 		if spec.Enabled {
-			command = "light settings apply " + spec.raw
+			command = traySettingsApplyPrefix + spec.raw
 		}
 		var child *savedMenuChild
-		if i < reused {
-			child = pool[i]
-			// R3-F4: the slot is re-stored BEFORE this item's first
-			// revealing update of the reconcile (the SetTitle below) -
-			// same goroutine, no yield between; the stable closure has
-			// been bound since creation.
+		switch {
+		case bind.cached >= 0:
+			// Identical spec continues: the binding was never touched
+			// (only hidden for ordering in phase B).
+			child = shown[bind.cached]
+		case bind.retired >= 0:
+			// Quarantine-eligible retired row re-bound to a NEW name
+			// (R3-F4 ordering: the slot is re-stored BEFORE this row's
+			// first revealing update - same goroutine, no yield between;
+			// the stable closure has been bound since creation).
+			child = retired[bind.retired]
+			child.retiredAt = time.Time{}
 			child.slot.Store(command)
-		} else {
-			// A NEW child arrives with its slot AND its stable closure
+			child.item.SetTitle(spec.Title)
+			if spec.Enabled {
+				child.item.Enable()
+			} else {
+				child.item.Disable()
+			}
+		default:
+			// A FRESH child arrives with its slot AND its stable closure
 			// already assigned (see newSavedMenuChild) before any
 			// SetTitle/Enable/Show below.
 			child = newSavedMenuChild(parent, spec.Title, command, lightCmd, logger)
-		}
-		child.item.SetTitle(spec.Title)
-		if spec.Enabled {
-			child.item.Enable()
-		} else {
-			child.item.Disable()
+			child.item.SetTitle(spec.Title)
+			if spec.Enabled {
+				child.item.Enable()
+			} else {
+				child.item.Disable()
+			}
 		}
 		child.item.Show()
-		shown = append(shown, child)
+		newShown = append(newShown, child)
 	}
-	// Retain the unused pool orphans (hidden, unbound) after the shown prefix.
-	retained := append(shown, pool[reused:]...)
-	newCached := make([]trayMenuSpec, len(want))
+
+	// Drop the quarantined rows phase C consumed from the pool; keep the
+	// remaining pool entries followed by this reconcile's newly retired
+	// rows (cap already enforced in phase A).
+	finalRetired := make([]*savedMenuChild, 0, trayRetiredCap)
+	for i, child := range retired {
+		if !consumed[i] {
+			finalRetired = append(finalRetired, child)
+		}
+	}
+	finalRetired = append(finalRetired, newRetired[len(retired):]...)
+	newCached = make([]trayMenuSpec, len(want))
 	copy(newCached, want)
-	return retained, newCached
+	return newShown, finalRetired, newCached
 }

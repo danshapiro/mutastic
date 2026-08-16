@@ -84,9 +84,14 @@ func (d *Daemon) WriteReport(report []byte) error {
 
 // HandleCommand executes one UDP text command and returns the reply.
 // Mic replies are exactly: "muted", "unmuted", "unknown", or
-// "error: <reason>". Commands starting with "light" are delegated to
-// d.Light, whose replies are the light's status strings ("on 64% 4950K",
-// "off", "unknown") or "error: <reason>".
+// "error: <reason>"; the atomic conditional mic verbs "mute-if
+// <expected>" / "unmute-if <expected>" (expected ∈ muted|unmuted, R6-F2)
+// reply "ok" (premise matched: the absolute verb AND one F24 meeting-app
+// sweep ran in this same step), "flipped muted|unmuted" or "flipped
+// unknown" (premise failed: NO verb, NO inject), or "error: <reason>".
+// Commands starting with "light" are delegated to d.Light, whose replies
+// are the light's status strings ("on 64% 4950K", "off", "unknown") or
+// "error: <reason>".
 func (d *Daemon) HandleCommand(cmd string) string {
 	if rest, ok := strings.CutPrefix(cmd, "light"); ok && (rest == "" || rest[0] == ' ' || rest[0] == '@') {
 		if d.Light == nil {
@@ -124,8 +129,67 @@ func (d *Daemon) HandleCommand(cmd string) string {
 		}
 		return "shutting down"
 	default:
+		if targetMuted, expectMuted, ok := proto.ParseConditionalMute(cmd); ok {
+			return d.conditionalMute(targetMuted, expectMuted)
+		}
 		return "error: unknown command"
 	}
+}
+
+// conditionalMute performs one ATOMIC conditional mic verb (R6-F2): the
+// premise check AND the action happen inside this single serveUDP step,
+// so a mic-state flip can no longer slip in between a separate status
+// probe datagram and the verb datagram (the old tray probe->verb pair
+// re-created the R3-F2 double-sweep window the probe gate was meant to
+// close). If the tracker's current state does not equal the expected
+// premise - INCLUDING unknown - nothing runs (no HID write, no inject)
+// and the reply is "flipped <current>"; that IS the tray's
+// precision-amendment refusal, daemon-side. On a match the absolute verb
+// is written and one F24 meeting-app sweep is injected in the same step.
+//
+// The injection deliberately bypasses d.gate: that debounce exists only
+// for physical 0x21-button chatter on the session goroutine, is not safe
+// for concurrent use, and must never swallow a deliberate verb-driven
+// sweep. The residual floor is a physical press the daemon has received
+// at the HID level but not yet processed into the tracker when the
+// check runs - the tracker's last processed event IS the daemon's
+// authoritative best-known state, and every sweeping path keeps the
+// tracker and the sweep in the same step; accepted per the ROUND-7 plan
+// amendment. error:-prefixed replies keep the usual shape: a failed HID
+// write runs NO sweep (the mic did not move, so sweeping the apps alone
+// would desync them from the mic), while an injection failure after a
+// successful write is still reported (the mic DID move - the honest
+// reading of "mute-everything failed half-way").
+func (d *Daemon) conditionalMute(targetMuted, expectMuted bool) string {
+	muted, known := d.Track.Status()
+	if !known {
+		return "flipped unknown"
+	}
+	if muted != expectMuted {
+		if muted {
+			return "flipped muted"
+		}
+		return "flipped unmuted"
+	}
+	payload := []byte("0")
+	if targetMuted {
+		payload = []byte("1")
+	}
+	if err := d.WriteReport(proto.EncodeCommand(proto.OpMute, payload)); err != nil {
+		return "error: " + err.Error()
+	}
+	// The mic moved; record the optimistic state exactly like setMute,
+	// then run the meeting-app half. Both halves are reported as one
+	// result: the reply is "ok" only when the full mute-everything flow
+	// succeeded.
+	d.Track.Set(targetMuted)
+	if d.Inject == nil {
+		return "error: key injection unavailable"
+	}
+	if err := d.Inject.Inject(); err != nil {
+		return "error: " + err.Error()
+	}
+	return "ok"
 }
 
 func (d *Daemon) setMute(muted bool) string {

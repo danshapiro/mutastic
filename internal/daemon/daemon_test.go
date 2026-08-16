@@ -127,6 +127,177 @@ func TestHandleCommandUnknown(t *testing.T) {
 	}
 }
 
+// TestConditionalMuteVerbs pins the ATOMIC conditional mic verbs
+// (R6-F2): premise check and action in one step. Match runs the absolute
+// verb (one HID write with the right payload byte) AND one F24 sweep
+// (inject-count via the fake injector) and replies "ok"; a no-match
+// (definitive opposite) or an unknown premise replies "flipped <state>"
+// with NOTHING run; malformed forms fall to "error: unknown command".
+func TestConditionalMuteVerbs(t *testing.T) {
+	// Known-unmuted premise matched by "mute-if unmuted": verb + sweep.
+	d := New(testLogger())
+	dev := newFakeDevice()
+	inj := &fakeInjector{}
+	d.SetDevice(dev)
+	d.Inject = inj
+	d.Track.Set(false) // known unmuted
+	if got := d.HandleCommand("mute-if unmuted"); got != "ok" {
+		t.Fatalf("mute-if unmuted at known-unmuted = %q, want ok", got)
+	}
+	if got := dev.writeCount(); got != 1 {
+		t.Fatalf("HID writes after matched mute-if = %d, want 1 (the absolute verb)", got)
+	}
+	if w := dev.write(0); w[4] != 0x20 || w[9] != '1' {
+		t.Fatalf("mute-if wrote % x; want op 0x20 payload '1'", w[:12])
+	}
+	if muted, known := d.Track.Status(); !known || !muted {
+		t.Fatalf("tracker after matched mute-if = (%v, %v), want (true, true)", muted, known)
+	}
+	if got := inj.calls.Load(); got != 1 {
+		t.Fatalf("injector calls after matched mute-if = %d, want 1 (one F24 sweep)", got)
+	}
+
+	// The state is now muted: the same premise must refuse with NO new
+	// write and NO new sweep.
+	if got := d.HandleCommand("mute-if unmuted"); got != "flipped muted" {
+		t.Fatalf("mute-if unmuted at muted = %q, want %q", got, "flipped muted")
+	}
+	if got := dev.writeCount(); got != 1 {
+		t.Fatalf("HID writes after flipped mute-if = %d, want 1 (a refusal writes nothing)", got)
+	}
+	if got := inj.calls.Load(); got != 1 {
+		t.Fatalf("injector calls after flipped mute-if = %d, want 1 (a refusal never injects)", got)
+	}
+
+	// Known-muted premise matched by "unmute-if muted": verb('0') + sweep.
+	if got := d.HandleCommand("unmute-if muted"); got != "ok" {
+		t.Fatalf("unmute-if muted at muted = %q, want ok", got)
+	}
+	if w := dev.write(1); w[4] != 0x20 || w[9] != '0' {
+		t.Fatalf("unmute-if wrote % x; want op 0x20 payload '0'", w[:12])
+	}
+	if muted, known := d.Track.Status(); !known || muted {
+		t.Fatalf("tracker after matched unmute-if = (%v, %v), want (false, true)", muted, known)
+	}
+	if got := inj.calls.Load(); got != 2 {
+		t.Fatalf("injector calls after matched unmute-if = %d, want 2", got)
+	}
+
+	// Definitive-opposite refusals carry the CURRENT state verbatim.
+	if got := d.HandleCommand("unmute-if muted"); got != "flipped unmuted" {
+		t.Fatalf("unmute-if muted at unmuted = %q, want %q", got, "flipped unmuted")
+	}
+	if got := dev.writeCount(); got != 2 || inj.calls.Load() != 2 {
+		t.Fatalf("a flipped refusal ran something: writes=%d injects=%d, want both frozen", dev.writeCount(), inj.calls.Load())
+	}
+
+	// Unknown premise (no state ever seen): refuse, nothing runs.
+	d2 := New(testLogger())
+	dev2 := newFakeDevice()
+	inj2 := &fakeInjector{}
+	d2.SetDevice(dev2)
+	d2.Inject = inj2
+	if got := d2.HandleCommand("mute-if unmuted"); got != "flipped unknown" {
+		t.Fatalf("mute-if unmuted at unknown = %q, want %q", got, "flipped unknown")
+	}
+	if got := d2.HandleCommand("unmute-if muted"); got != "flipped unknown" {
+		t.Fatalf("unmute-if muted at unknown = %q, want %q", got, "flipped unknown")
+	}
+	if got := dev2.writeCount(); got != 0 || inj2.calls.Load() != 0 {
+		t.Fatalf("unknown-premise conditional ran something: writes=%d injects=%d, want 0/0", got, inj2.calls.Load())
+	}
+
+	// Malformed forms are NOT conditional verbs at all.
+	for _, bad := range []string{"mute-if sideways", "mute-if", "unmute-if MUTED", "mute-ify muted", "mute-if muted extra"} {
+		if got := d2.HandleCommand(bad); got != "error: unknown command" {
+			t.Fatalf("HandleCommand(%q) = %q, want %q (malformed conditional forms fail loudly)", bad, got, "error: unknown command")
+		}
+	}
+}
+
+// TestConditionalMuteFailureModes pins the error:-prefixed shapes
+// (R6-F2): a failed HID write runs NO sweep (the mic never moved, so
+// sweeping the apps alone would desync them), while an injection failure
+// AFTER a successful write is still an error reply (the mic DID move -
+// the honest reading of a half-failed mute-everything), with the tracker
+// left at the new state either way the write landed.
+func TestConditionalMuteFailureModes(t *testing.T) {
+	// No device: the premise matches but the write fails -> error, NO sweep.
+	d := New(testLogger())
+	inj := &fakeInjector{}
+	d.Inject = inj
+	d.Track.Set(false)
+	if got := d.HandleCommand("mute-if unmuted"); got != "error: no device" {
+		t.Fatalf("mute-if with no device = %q, want %q", got, "error: no device")
+	}
+	if got := inj.calls.Load(); got != 0 {
+		t.Fatalf("injector calls after a failed write = %d, want 0 (a mic that never moved must not sweep apps)", got)
+	}
+
+	// Injector wired but failing: write succeeds, sweep fails -> error,
+	// tracker still moved (the verb half committed).
+	d2 := New(testLogger())
+	dev2 := newFakeDevice()
+	inj2 := &fakeInjector{err: errors.New("sendinput exploded")}
+	d2.SetDevice(dev2)
+	d2.Inject = inj2
+	d2.Track.Set(false)
+	if got := d2.HandleCommand("mute-if unmuted"); got != "error: sendinput exploded" {
+		t.Fatalf("mute-if with a failing injector = %q, want the error reply", got)
+	}
+	if muted, known := d2.Track.Status(); !known || !muted {
+		t.Fatalf("tracker after write-ok/inject-failed mute-if = (%v, %v), want (true, true)", muted, known)
+	}
+	if got := inj2.calls.Load(); got != 1 {
+		t.Fatalf("injector calls = %d, want 1 (the sweep was attempted)", got)
+	}
+
+	// No injector at all (a platform without SendInput): the write still
+	// commits and the reply honestly says the sweep half was unavailable.
+	d3 := New(testLogger())
+	dev3 := newFakeDevice()
+	d3.SetDevice(dev3)
+	d3.Track.Set(false)
+	if got := d3.HandleCommand("mute-if unmuted"); got != "error: key injection unavailable" {
+		t.Fatalf("mute-if with no injector = %q, want %q", got, "error: key injection unavailable")
+	}
+	if muted, known := d3.Track.Status(); !known || !muted {
+		t.Fatalf("tracker after no-injector mute-if = (%v, %v), want (true, true)", muted, known)
+	}
+}
+
+// TestConditionalMuteVerbsOverUDP pins the wire traversal (R6-F2): the
+// conditional verbs and all three reply shapes round-trip over real UDP,
+// as one atomic step per datagram.
+func TestConditionalMuteVerbsOverUDP(t *testing.T) {
+	dev := newFakeDevice()
+	inj := &fakeInjector{}
+	_, ask := startDaemonInject(t, func() (Device, error) { return dev, nil }, inj)
+	waitFor(t, "handshake", func() bool { return dev.writeCount() >= 2 })
+
+	if got := ask("mute-if unmuted"); got != "flipped unknown" {
+		t.Fatalf("mute-if unmuted at unknown over UDP = %q, want %q", got, "flipped unknown")
+	}
+	// Establish known-unmuted via an absolute verb (no sweep on the plain
+	// verbs - only the conditional ones and physical presses inject).
+	if got := ask("unmute"); got != "unmuted" {
+		t.Fatalf("unmute = %q, want unmuted", got)
+	}
+	if got := ask("mute-if unmuted"); got != "ok" {
+		t.Fatalf("mute-if unmuted at unmuted over UDP = %q, want ok", got)
+	}
+	waitFor(t, "one sweep injected", func() bool { return inj.calls.Load() == 1 })
+	if got := ask("mute-if unmuted"); got != "flipped muted" {
+		t.Fatalf("mute-if unmuted at muted over UDP = %q, want %q", got, "flipped muted")
+	}
+	if got := inj.calls.Load(); got != 1 {
+		t.Fatalf("injector calls after the flipped refusal = %d, want 1", got)
+	}
+	if got := ask("mute-if sideways"); got != "error: unknown command" {
+		t.Fatalf("malformed conditional over UDP = %q, want %q", got, "error: unknown command")
+	}
+}
+
 func TestHandleCommandShutdownWithoutHook(t *testing.T) {
 	d := New(testLogger())
 	if got := d.HandleCommand("shutdown"); got != "error: shutdown not supported" {

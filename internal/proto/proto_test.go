@@ -92,3 +92,42 @@ func TestMutedFromValue(t *testing.T) {
 		}
 	}
 }
+
+// TestParseConditionalMute pins the wire grammar of the atomic
+// conditional mic verbs (R6-F2): exactly "<verb> <expected>" with verb ∈
+// {mute-if, unmute-if} and expected ∈ {muted, unmuted}, so a premising
+// client (the tray) and the daemon read the same forms. Malformed shapes
+// are rejected wholesale - the daemon's generic "error: unknown command"
+// is the refusal, so a buggy client fails loudly instead of silently
+// matching a looser grammar.
+func TestParseConditionalMute(t *testing.T) {
+	cases := []struct {
+		cmd                          string
+		targetMuted, expectMuted, ok bool
+	}{
+		{"mute-if muted", true, true, true},
+		{"mute-if unmuted", true, false, true},
+		{"unmute-if muted", false, true, true},
+		{"unmute-if unmuted", false, false, true},
+		// Everything below must NOT parse.
+		{"mute", false, false, false},                // the plain absolute verb is not conditional
+		{"unmute", false, false, false},              // ditto
+		{"toggle", false, false, false},              // ditto
+		{"mute-if", false, false, false},             // missing argument
+		{"mute-if ", false, false, false},            // trailing space, empty expectation
+		{"mute-if sideways", false, false, false},    // expectation outside {muted, unmuted}
+		{"mute-if  muted", false, false, false},      // double space: the arg would carry a leading space
+		{"mute-if muted extra", false, false, false}, // extra token
+		{"mute-if MUTED", false, false, false},       // case-sensitive grammar
+		{"Mute-if muted", false, false, false},
+		{"mute-If muted", false, false, false},
+		{"", false, false, false},
+	}
+	for _, c := range cases {
+		target, expect, ok := ParseConditionalMute(c.cmd)
+		if target != c.targetMuted || expect != c.expectMuted || ok != c.ok {
+			t.Errorf("ParseConditionalMute(%q) = %v, %v, %v; want %v, %v, %v",
+				c.cmd, target, expect, ok, c.targetMuted, c.expectMuted, c.ok)
+		}
+	}
+}

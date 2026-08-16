@@ -169,6 +169,15 @@ type trayMenuSpec struct {
 // daemon.log).
 const traySavedSettingsListCmd = "light settings list"
 
+// The two placeholder row titles. Both are tray-side UI text, NEVER sent
+// by the daemon - and neither contains "&", so they need no escaping. The
+// retired-row repaint (R6-F1) reuses trayNoSavedSettingsTitle so a row
+// whose name was just retired no longer displays the old name anywhere.
+const (
+	traySettingsUnavailableTitle = "(settings unavailable)"
+	trayNoSavedSettingsTitle     = "(no saved settings)"
+)
+
 // traySavedSettings renders one poll result as submenu specs in three
 // regimes: daemon not-ok (transport down OR store broken) -> one DISABLED
 // "(settings unavailable)" placeholder (one wording covers both honestly);
@@ -182,10 +191,10 @@ const traySavedSettingsListCmd = "light settings list"
 // title<->name pairing by index, so the glue never re-derives it.
 func traySavedSettings(names []string, daemonOK bool) []trayMenuSpec {
 	if !daemonOK {
-		return []trayMenuSpec{{Title: "(settings unavailable)"}}
+		return []trayMenuSpec{{Title: traySettingsUnavailableTitle}}
 	}
 	if len(names) == 0 {
-		return []trayMenuSpec{{Title: "(no saved settings)"}}
+		return []trayMenuSpec{{Title: trayNoSavedSettingsTitle}}
 	}
 	specs := make([]trayMenuSpec, 0, len(names))
 	for _, name := range names {
@@ -233,27 +242,157 @@ func traySameMenuSpecs(a, b []trayMenuSpec) bool {
 	return true
 }
 
+// --- generation-retirement submenu pool (R6-F1, ROUND-7) ---
+//
+// The R4-F2/R5-F2 standing residual ("a WM_COMMAND dispatched from a
+// stale native row can execute the row's NEW slot command" - the fork
+// dispatches clicks by command ID alone, and rows were recycled IN
+// PLACE) is eliminated structurally: a pooled row is NEVER re-bound to a
+// DIFFERENT name in place. A row whose name leaves the rendered list is
+// RETIRED (slot cleared, placeholder title, disabled, hidden, stamped
+// with its retirement time) and only becomes eligible for re-binding to
+// a NEW name after a full trayRetireAge quarantine, so no WM_COMMAND
+// queued while the row displayed its old name can still be in flight
+// when the row shows a new one (the menu's modal loop dispatches clicks
+// in the same message-era - a genuinely queued click is long processed
+// or discarded within milliseconds, and 60 s is an absurdly generous
+// bound). The click-time native-title verification
+// (trayVerifySettingsItemTitle) stays as the belt to these suspenders.
+//
+// Steady-state ticks reuse NOTHING: traySameMenuSpecs gates the whole
+// rebuild, so planning runs only on a genuine name-set change.
+
+// trayRetireAge is the quarantine a retired "Saved settings" row serves
+// before it may be re-bound to a NEW name.
+const trayRetireAge = 60 * time.Second
+
+// trayRetiredCap bounds the retired pool. Retirement past the cap drops
+// the row from the pool entirely (it stays permanently hidden, unbound,
+// and disabled - a leaked native row that is never displayed or bound
+// again): name-set churn is gated to genuine changes, and the 100-name
+// store cap bounds the live rows, so the cap bounds the reusable pool
+// while leaked orphans grow only with real rename churn over the
+// process's lifetime.
+const trayRetiredCap = 32
+
+// traySyncBind is the planning decision for ONE wanted row in the
+// submenu rebuild: exactly one source.
+type traySyncBind struct {
+	// cached >= 0: the currently-shown row rendering cached[cached]
+	// CONTINUES - its spec is identical, so nothing is re-bound (keeping
+	// an identical row is not the R6-F1 hazard; only rebinding to a
+	// DIFFERENT name is).
+	cached int
+	// retired >= 0: re-bind the quarantined row retired[retired], whose
+	// retirement age is >= trayRetireAge, to the new name (slot
+	// re-stored, title repainted, re-enabled, re-shown).
+	retired int
+	// Both -1: no eligible source exists - create a FRESH native row
+	// (every retired row is still inside its quarantine, or the pool is
+	// empty).
+}
+
+// traySettingsSyncPlan is the complete pure reconcile decision for one
+// submenu rebuild.
+type traySettingsSyncPlan struct {
+	// keeps are {cachedIndex, wantIndex} pairs: identical rows that
+	// continue untouched (the glue may still hide/re-show them purely
+	// for ordering - visibility alone is never a rebinding).
+	keeps [][2]int
+	// retires are cached indexes whose rows are removed from want (a
+	// name change at that identity, or a row beyond the new list
+	// length): the glue retires them.
+	retires []int
+	// binds has one entry per wanted row, in want order.
+	binds []traySyncBind
+}
+
+// trayPlanSettingsSync decides one "Saved settings" submenu rebuild from
+// the cached (currently-rendered) specs, the wanted specs, and the
+// retired pool's retirement ages. Matching is by WHOLE-SPEC IDENTITY
+// (Title+raw+Enabled): a row keeps its binding only while it renders the
+// identical spec, so a placeholder->real transition with an identical
+// title (the name grammar permits the placeholder strings as literal
+// saved names) is a retire+bind, never a silent re-flavoring of a live
+// row. Retired rows are consumed oldest-first among the quarantine-
+// eligible (age >= trayRetireAge); everything else gets a fresh row.
+func trayPlanSettingsSync(cached, want []trayMenuSpec, retiredAges []time.Duration) traySettingsSyncPlan {
+	plan := traySettingsSyncPlan{binds: make([]traySyncBind, len(want))}
+	for j := range plan.binds {
+		plan.binds[j] = traySyncBind{cached: -1, retired: -1}
+	}
+	// Identity matching, first-in-want-order wins: each cached row
+	// continues at most one wanted row and vice versa.
+	wantTaken := make([]bool, len(want))
+	for i, cs := range cached {
+		matched := false
+		for j, ws := range want {
+			if wantTaken[j] || cs != ws {
+				continue
+			}
+			wantTaken[j] = true
+			plan.binds[j].cached = i
+			plan.keeps = append(plan.keeps, [2]int{i, j})
+			matched = true
+			break
+		}
+		if !matched {
+			plan.retires = append(plan.retires, i)
+		}
+	}
+	// New names (no identical cached row) draw from the quarantine-
+	// eligible retired rows, oldest first; otherwise a fresh row.
+	retiredTaken := make([]bool, len(retiredAges))
+	for j := range want {
+		if plan.binds[j].cached >= 0 {
+			continue
+		}
+		for k, age := range retiredAges {
+			if retiredTaken[k] || age < trayRetireAge {
+				continue
+			}
+			retiredTaken[k] = true
+			plan.binds[j].retired = k
+			break
+		}
+	}
+	return plan
+}
+
+// trayArmedMatchesNative is the pure comparison behind trayVerifyArmed
+// (R6-F3): the mic item's live NATIVE row must read back exactly the
+// painted title AND enablement of the computed snapshot before the armed
+// premise may be stored (refresh) or the click may fire (dispatch).
+// nativeDisabled is the native row's disabled bit; the expected
+// enablement is trayMuteEnabled(snap.Armed) - an ARMED snap requires a
+// natively ENABLED row, a disarmed one a natively DISABLED row. Any
+// mismatch means the visible row diverges from the premise, and the only
+// safe move is to stay disarmed / refuse the click.
+func trayArmedMatchesNative(snap trayMuteSnapshot, nativeTitle string, nativeDisabled bool) bool {
+	return nativeTitle == snap.Title && nativeDisabled == !trayMuteEnabled(snap.Armed)
+}
+
 // traySettingsApplyPrefix is the daemon verb prefix a "Saved settings"
 // row's command slot carries: the apply verb plus the VERBATIM raw saved
 // name (never the escaped display title).
 const traySettingsApplyPrefix = "light settings apply "
 
 // traySettingsCmdMatchesTitle is the pure half of the click-time native
-// title check (ROUND-6 convergence fix killing the R4-F2/R5-F2 standing
-// residual). On Windows the fork dispatches a menu click by command ID
-// alone (WM_COMMAND -> menuItems[id].click): the native row's title is
-// display-only, and because the fork offers no remove/insert API the
-// "Saved settings" submenu recycles rows IN PLACE (slot re-stored, then
-// native SetTitle), so a WM_COMMAND queued from a stale native row can
-// otherwise reach the closure AFTER a rebuild reassigned that row's
-// command slot. The row's live native title is the text the menu shows
-// for that command ID right now, and the click executes only when it
-// still names the slot's setting. The comparison is exact and escaping-
-// aware: the slot command carries the VERBATIM raw name ("light settings
-// apply <name>") while the native title carries the menu-ESCAPED display
-// form ("&" -> "&&", see traySavedSettings), so the raw name is
-// re-escaped before comparing. A malformed command (missing prefix or
-// empty name) never matches - refusal is always the safe direction.
+// title check (the ROUND-6 belt; ROUND-7's generation-retirement pool is
+// the suspenders - see trayPlanSettingsSync). On Windows the fork
+// dispatches a menu click by command ID alone (WM_COMMAND ->
+// menuItems[id].click): the native row's title is display-only, and a
+// row re-bound to a NEW name (permitted only after its trayRetireAge
+// quarantine) means an old WM_COMMAND - if one could still exist - must
+// never be able to execute the row's new command. The row's live native
+// title is the text the menu shows for that command ID right now, and
+// the click executes only when it still names the slot's setting. The
+// comparison is exact and escaping-aware: the slot command carries the
+// VERBATIM raw name ("light settings apply <name>") while the native
+// title carries the menu-ESCAPED display form ("&" -> "&&", see
+// traySavedSettings), so the raw name is re-escaped before comparing. A
+// malformed command (missing prefix or empty name) never matches -
+// refusal is always the safe direction.
 func traySettingsCmdMatchesTitle(cmd, nativeTitle string) bool {
 	name, ok := strings.CutPrefix(cmd, traySettingsApplyPrefix)
 	if !ok || name == "" {
@@ -265,15 +404,18 @@ func traySettingsCmdMatchesTitle(cmd, nativeTitle string) bool {
 // traySetSettingsClick is the single click-closure constructor for every
 // "Saved settings" submenu row (tray_windows.go's newSavedMenuChild).
 // The closure is STABLE for the item's lifetime (R2-F3: it is assigned
-// once at creation and never rebound); rebuilds only re-store the command
-// slot. After loading the slot it re-verifies that the row's live NATIVE
-// title still names the slotted setting (trayVerifySettingsItemTitle;
-// portable default true, real read-back on Windows): without the check a
-// click queued from a stale native row during a pooled rebuild executes
-// the row's NEW command (R4-F2/R5-F2). An unbound slot ("" - a
-// placeholder or hidden pool orphan) or a failed check is a no-op; the
-// failed check also logs one WARN, and the just-finished rebuild has
-// already painted the truthful row for the next click.
+// once at creation and never rebound); rebuilds never re-bind a live row
+// to a different name in place at all (R6-F1: the row is RETIRED -
+// slot cleared, placeholder title, disabled, hidden - and only a
+// row whose retirement is at least trayRetireAge old may be re-bound to
+// a new name). After loading the slot it ALSO re-verifies that the row's
+// live NATIVE title still names the slotted setting
+// (trayVerifySettingsItemTitle; portable default true, real read-back on
+// Windows) - the remaining belt to retirement's suspenders for the
+// re-bind path. An unbound slot ("" - a placeholder, a retired row, or
+// hidden pool orphan) or a failed check is a no-op; the failed check
+// also logs one WARN, and the just-finished rebuild has already painted
+// the truthful row for the next click.
 func traySetSettingsClick(item *systray.MenuItem, slot *atomic.Value, lightCmd func(string) func(), logger *slog.Logger) func() {
 	return func() {
 		cmd, _ := slot.Load().(string)
@@ -281,7 +423,7 @@ func traySetSettingsClick(item *systray.MenuItem, slot *atomic.Value, lightCmd f
 			return
 		}
 		if !trayVerifySettingsItemTitle(item, cmd) {
-			logger.Warn("settings click declined: the row's live native title no longer names the slotted setting (stale native row); refusing so a reassigned row can never execute its new command", "cmd", cmd)
+			logger.Warn("settings click declined: the row's live native title no longer names the slotted setting (stale native row); refusing so a re-bound row can never execute its new command", "cmd", cmd)
 			return
 		}
 		lightCmd(cmd)()
@@ -297,17 +439,16 @@ func traySetSettingsClick(item *systray.MenuItem, slot *atomic.Value, lightCmd f
 type trayActions struct {
 	ask           func(command string) (string, error) // one daemon round trip (production budget: lightClientTimeout)
 	openPanel     func() error                         // open/focus the browser control panel (mic + lights + settings)
-	injectSweep   func() error                         // one synthetic F24 (meeting-app sweep)
 	stopPanel     func() error                         // POST the light panel's /api/shutdown (Task 4 endpoint)
 	requestQuit   func()                               // leave the systray message loop
 	signalRefresh func()                               // ask the display loop to repoll
 	logger        *slog.Logger
 	// muteFlight is the single-flight guard around muteClick's whole
-	// probe->verb/sweep->refresh sequence (R2-F2): clicks arrive on their
-	// own goroutines, and an overlapping second click would double-probe
-	// and cancel/duplicate the first click's verb+sweep pair, so a click
-	// that finds one already in flight is DROPPED with one WARN. The zero
-	// value is ready; the guard releases at the end of the sequence.
+	// conditional-verb->refresh sequence (R2-F2): clicks arrive on their
+	// own goroutines, and an overlapping second click would duplicate the
+	// first click's verb+sweep, so a click that finds one already in
+	// flight is DROPPED with one WARN. The zero value is ready; the
+	// guard releases at the end of the sequence.
 	muteFlight sync.Mutex
 }
 
@@ -364,111 +505,132 @@ type trayMuteSnapshot struct {
 	Armed trayState
 }
 
-// onMicSet is the tray's mute-everything path for one ABSOLUTE direction,
-// mirroring the Stream Deck mute key (README): the daemon verb AND one F24
-// meeting-app sweep, both attempted even when the other fails, then a
-// refresh. (The daemon injects F24 only for physical button presses, so a
-// verb-only tray item would move the mic while leaving meeting apps live.)
-// Loop-free for the documented reasons: the AHK sweep never calls a mic
-// verb, and the mic's host-command echo (0x20) is ignored by the daemon's
-// injector gate.
-func (a *trayActions) onMicSet(verb string) {
-	reply, askErr := a.ask(verb)
-	sweepErr := a.injectSweep()
-	if askErr != nil || sweepErr != nil || strings.HasPrefix(reply, "error:") {
-		a.logger.Error("mic set failed", "verb", verb, "daemon_reply", reply, "ask_err", errString(askErr), "sweep_err", errString(sweepErr))
-	} else {
-		a.logger.Info("mic set", "verb", verb, "daemon_reply", reply)
+// trayMuteConditionalVerb maps one ARMED snapshot premise to the daemon's
+// ATOMIC conditional mic verb (R6-F2): the premise is the state the
+// displayed label's verb targets FROM - armed unmuted (label "Mute")
+// asks "mute-if unmuted", armed muted (label "Unmute") asks "unmute-if
+// muted". Inline literals mirror the existing inline "mute"/"unmute"
+// strings; the daemon-side grammar is pinned in
+// proto.ParseConditionalMute.
+func trayMuteConditionalVerb(armed trayState) string {
+	if armed == trayStateMuted {
+		return "unmute-if muted"
 	}
-	// The daemon applied its state change before replying; on failure the
-	// refresh restores the truthful display within one poll.
-	a.signalRefresh()
+	return "mute-if unmuted"
 }
 
 // muteClick is the dynamic Mute/Unmute item's click entry point: the click
 // performs exactly the action the displayed label names. The whole sequence
 // runs under the muteFlight single-flight guard: a second click arriving
 // while one is still in flight is DROPPED with one WARN (an overlapping
-// click would double-probe and could cancel/duplicate the first click's
-// verb+sweep pair), and the guard releases so a later click works.
+// click would duplicate the first click's verb+sweep), and the guard
+// releases so a later click works.
 //
 // The click loads the {title, armed} snapshot EXACTLY ONCE (one read of
 // what the user saw: the menu's title and enabled bit are only the last
-// completed poll's rendering), then revalidates the premise AT ACTION TIME
-// with a fresh status probe. Three regimes (R3-F2 FINAL RULE, superseding
-// r2's sweep-on-flip):
+// verified poll's rendering), then - when the premise is armed - checks
+// that the live NATIVE row still displays the snapshot's title with the
+// matching enablement (verify: trayVerifyArmed arm; portable stub true -
+// R6-F3; a native paint failure or a mid-paint click can never execute
+// the opposite of what is on screen). It then makes ONE daemon call: the
+// ATOMIC conditional verb the label names (trayMuteConditionalVerb); the
+// daemon checks the premise against its tracked state and, in the SAME
+// serveUDP step, either runs the absolute verb plus the F24 meeting-app
+// sweep or refuses - the R6-F2 fix for the probe->verb hardware-event
+// double-sweep window. Reply regimes (R3-F2 FINAL RULE carried over,
+// superseding r2's sweep-on-flip):
 //
-//   - Premise reproduced (a definitive probe equal to the armed state): the
-//     click fires the label's ABSOLUTE verb - armed unmuted ("Mute") fires
-//     "mute", armed muted ("Unmute") fires "unmute" - then the sweep and a
-//     refresh, via onMicSet. Spy order: ask:status,ask:<verb>,inject,refresh.
-//   - Flipped-but-definitive probe (the mic already sits in the label's
-//     TARGET state - it flipped between the last poll and the click): NO
-//     mic verb AND NO sweep - one WARN and a refresh only. The flip's cause
-//     is unknowable per click: (a) a SWEEPING path made the flip (physical
-//     button, tray item, Stream Deck key - the frequent real-world case,
-//     e.g. a post-meeting physical press inside the 2 s poll window), in
-//     which case the apps were already carried along and sweeping again
-//     would UNDO them (apps toggle back while the mic stays put); (b) a
-//     mic-only path made the flip (panel card, CLI), in which case the apps
-//     were never moved. Choosing no-sweep keeps case (a) correct; case
-//     (b)'s app desync is the deliberate, documented limitation whose
-//     recovery is the manual resync procedure (toggle the apps once by
-//     hand, then every sweeping path keeps them in sync). Spy order:
-//     ask:status,refresh.
-//   - Unknown probe or a dead daemon (no truthful direction exists), or an
-//     unarmed premise: NOTHING runs - no verb, no sweep - only one WARN and
-//     a refresh. Spy order: ask:status,refresh.
+//   - ok: the premise matched; the daemon already fired the absolute mic
+//     verb AND the sweep. One INFO and a refresh. Spy order:
+//     ask:<conditional>,refresh. (The tray no longer injects anything
+//     itself - the daemon-side inject covers it, so the old tray-side
+//     inject request is REMOVED from this path.)
+//   - flipped <state> (the mic already sits in the label's TARGET state
+//     or is unknown - it flipped between the last poll and the click):
+//     NO mic verb AND NO sweep ran daemon-side - one WARN and a refresh
+//     only; this refusal IS the precision-amendment semantics. The
+//     flip's cause remains unknowable per click: (a) a SWEEPING path
+//     made the flip (physical button, tray item, Stream Deck key - the
+//     frequent real-world case, e.g. a post-meeting physical press
+//     inside the 2 s poll window), in which case the apps were already
+//     carried along and sweeping again would UNDO them (apps toggle back
+//     while the mic stays put); (b) a mic-only path made the flip (panel
+//     card, CLI), in which case the apps were never moved. Choosing
+//     no-sweep keeps case (a) correct; case (b)'s app desync is the
+//     deliberate, documented limitation whose recovery is the manual
+//     resync procedure (toggle the apps once by hand, then every
+//     sweeping path keeps them in sync). Spy order:
+//     ask:<conditional>,refresh.
+//   - An error:-prefixed reply (a dead daemon or a failed verb/inject):
+//     one ERROR and a refresh; the 2 s poll restores the truthful
+//     display. Spy order: ask:<conditional>,refresh.
+//   - An unarmed premise (unknown/down - the item displays the neutral
+//     gray label) or a failed armed-verify (the native row diverges from
+//     the snapshot): NOTHING is asked - one WARN and a refresh. Spy
+//     order: refresh.
 //
 // Declining every half-action on a flip is the correct convergence, not a
 // breach of "click performs the displayed action": the label's TARGET
-// state is already true (a "Mute" label targets muted; a muted probe means
-// the mic's job is done) and the apps belong to whichever path made the
-// flip. The native menu title can go cosmetically stale between polls, but
-// that staleness can never cause a wrong mic action BECAUSE this probe
-// gates every firing - this is a documented rendering limitation, not a
-// behavioral residual.
+// state is already true (a "Mute" label targets muted; "flipped muted"
+// means the mic's job is done) and the apps belong to whichever path made
+// the flip. The native menu title can go cosmetically stale between
+// polls, but that staleness can never cause a wrong mic action BECAUSE
+// the daemon-side conditional verb gates every firing - this is a
+// documented rendering limitation, not a behavioral residual.
 //
-// Contract alignment (ROUND-6): docs/plans/2026-08-15-saved-settings.md
+// Contract alignment (ROUND-7): docs/plans/2026-08-15-saved-settings.md
 // carries the dated "Precision amendment (review convergence, ROUND-6)"
-// under the User Request's explicit constraints, pinning the mute-label
-// constraint to exactly this rule: the click performs the displayed
-// action when the displayed state still matches the hardware truth at
-// click time (verified by the fresh probe above); on a flip inside the
-// poll window it refuses with one WARN and a status refresh - never a
-// wrong action - and the label redraws from fresh truth within one poll
-// interval. The amendment also records the F24 physics rationale: the
-// app sweep is a blind toggle (meeting-app mute state is unobservable),
-// so when the premise flipped every ACTING alternative has a catastrophic
-// case and this probe-gated refusal is the unique never-wrong action.
-// README's tray section states the same contract for end users.
-func (a *trayActions) muteClick(load func() trayMuteSnapshot) {
+// pinning the mute-label constraint to the never-wrong rule (perform the
+// displayed action while the premise matches; refuse on any flip), and
+// "Precision amendment (review convergence, ROUND-7)" carrying that rule
+// onto the atomic conditional verbs: the premise check and the action
+// now live in ONE daemon step, so the window the R6-F2 finding re-opened
+// (probe datagram -> hardware event -> verb datagram) is closed. The
+// amendment also records the F24 physics rationale: the app sweep is a
+// blind toggle (meeting-app mute state is unobservable), so when the
+// premise flipped every ACTING alternative has a catastrophic case and
+// this gated refusal is the unique never-wrong action. README's tray
+// section states the same contract for end users.
+func (a *trayActions) muteClick(load func() trayMuteSnapshot, verify func(trayMuteSnapshot) bool) {
 	if !a.muteFlight.TryLock() {
 		a.logger.Warn("mute click dropped: a previous mute click is still in flight")
 		return
 	}
 	defer a.muteFlight.Unlock()
 	snap := load()
-	probe := trayStateFor(a.ask("status"))
-	if trayMuteEnabled(snap.Armed) && trayMuteEnabled(probe) {
-		if probe == snap.Armed {
-			verb := "mute"
-			if snap.Armed == trayStateMuted {
-				verb = "unmute"
-			}
-			a.onMicSet(verb)
-			return
-		}
-		// Flipped-but-definitive premise (R3-F2): the mic is already at the
-		// label's target AND the apps were carried by the sweeping path
-		// that made the flip (physical/tray/deck) - sweeping again here
-		// would undo them. No verb, no sweep.
-		a.logger.Warn("mute click declined: the mic is already at the label's target (flipped premise); the apps were carried by the sweeping path that made the flip, so no verb and no sweep", "armed", trayStateName(snap.Armed), "probe", trayStateName(probe))
+	if !trayMuteEnabled(snap.Armed) {
+		a.logger.Warn("mute click declined: the menu premise is not armed (unknown mic state); no truthful direction exists", "armed", trayStateName(snap.Armed))
 		a.signalRefresh()
 		return
 	}
-	a.logger.Warn("mute click declined: mic state no longer matches the menu premise", "armed", trayStateName(snap.Armed), "probe", trayStateName(probe))
-	a.signalRefresh()
+	if !verify(snap) {
+		// R6-F3: the live native row does not show the snapshot's title
+		// with the matching enablement (a failed native paint, or a click
+		// that landed mid-paint): never execute against a diverging
+		// display - the next poll re-paints and re-arms.
+		a.logger.Warn("mute click declined: the live native row does not match the armed premise (title or enablement diverged); refusing so the click can never perform the opposite of the displayed label", "title", snap.Title, "armed", trayStateName(snap.Armed))
+		a.signalRefresh()
+		return
+	}
+	reply, err := a.ask(trayMuteConditionalVerb(snap.Armed))
+	switch {
+	case err != nil || strings.HasPrefix(reply, "error:"):
+		a.logger.Error("mute click failed", "daemon_reply", reply, "ask_err", errString(err))
+		a.signalRefresh()
+	case reply == "ok":
+		a.logger.Info("mic set (conditional verb matched premise; daemon ran the verb + F24 app sweep in one step)", "armed", trayStateName(snap.Armed))
+		a.signalRefresh()
+	case strings.HasPrefix(reply, "flipped "):
+		// Flipped premise (R3-F2): the mic is already at the label's
+		// target (or unknown) AND the apps were carried by the sweeping
+		// path that made the flip (physical/tray/deck) - the daemon ran
+		// no verb and no sweep, and neither may we.
+		a.logger.Warn("mute click declined: the daemon's state no longer matches the label's premise (flipped); no verb and no sweep ran", "armed", trayStateName(snap.Armed), "daemon_reply", reply)
+		a.signalRefresh()
+	default:
+		a.logger.Warn("mute click declined: unrecognized daemon reply (not firing an unconfirmed action)", "daemon_reply", reply)
+		a.signalRefresh()
+	}
 }
 
 // onOpenPanel brings up the control panel (the icon's left-click action);

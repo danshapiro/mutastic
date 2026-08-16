@@ -26,3 +26,16 @@ func runTray() int {
 func trayVerifySettingsItemTitle(item *systray.MenuItem, cmd string) bool {
 	return true
 }
+
+// trayVerifyArmed portable default (see the Windows arm in
+// tray_windows.go): the R6-F3 hazard it closes is a NATIVE paint failure
+// or a mid-paint click on Windows (the systray fork's SetTitle/
+// Enable/Disable report failure only through its own log; the visible
+// row would then diverge from the armed premise). On other platforms the
+// title/enabled writes and the premise snapshot are plain Go state
+// updated on the same refresh goroutine, so the painted row cannot
+// diverge from the snapshot. Always true here; the library is trusted to
+// log native failures (the documented portable residual).
+func trayVerifyArmed(item *systray.MenuItem, snap trayMuteSnapshot) bool {
+	return true
+}

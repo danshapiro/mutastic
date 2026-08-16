@@ -26,9 +26,11 @@ action, and `mutastic light ...` commands. The active mute paths remain:
    displays the exact verb its click performs (**Mute** while live,
    **Unmute** while muted): the click performs that displayed action when
    the displayed state still matches the hardware truth at click time,
-   which it verifies with a fresh status probe against the premise the
-   label names before firing. Only then does it send that absolute verb
-   through the daemon with the same `F24` meeting-app sweep. If the mic
+   which it commits with ONE atomic conditional daemon verb
+   (`mute-if unmuted` / `unmute-if muted`): the daemon checks the premise
+   against its tracked state and — in the same step — either fires the
+   absolute verb plus the `F24` meeting-app sweep or refuses, so no
+   hardware event can slip between a probe and the action. If the mic
    flipped to the label's target since the last poll (state stale inside
    the poll window), the click refuses — it runs nothing at all, no mic
    verb, no sweep, never a wrong action: the mic is already there, and the
@@ -62,7 +64,18 @@ hardware state. The active paths are loop-free:
 - **`mutastic daemon`** — owns the Yeti X HID connection (VID 046D, vendor
   collection with `Usage == 1`), performs the init handshake, tracks mute
   state from the mic's events, and serves plain-text commands on UDP
-  `127.0.0.1:42814`. Reconnects automatically if the mic disappears.
+  `127.0.0.1:42814`. The mic verb wire surface: `status` →
+  `muted`/`unmuted`/`unknown`; `mute`/`unmute`/`toggle` → the new state;
+  `mute-if <expected>` and `unmute-if <expected>` (expected ∈
+  `muted`/`unmuted`) are the ATOMIC conditional verbs — in ONE step the
+  daemon compares its tracked state to `<expected>` and either runs the
+  absolute verb plus one `F24` meeting-app sweep (reply `ok`) or runs
+  nothing at all (reply `flipped muted`/`flipped unmuted`/`flipped
+  unknown`); a write or injection failure replies `error: <reason>` as
+  usual (a failed mic write runs NO sweep, so the apps never desync from
+  an unmoved mic). The tray's mute item is their only client; grammar is
+  pinned in `internal/proto`. Reconnects automatically if the mic
+  disappears.
   On a physical mute-button press (`0x21` DeviceMute event), it injects a
   synthetic `F24` keystroke via `SendInput` so the AHK script sweeps the
   meeting apps; injections are debounced (400 ms) and logged as
@@ -141,22 +154,26 @@ hardware state. The active paths are loop-free:
   keep-last-icon convention as the Stream Deck plugin). Left-click
   opens/focuses the light panel; right-click shows the menu: a dynamic
   **Mute**/**Unmute** action item (mute-everything — the absolute verb the
-  label displays plus the F24 meeting-app sweep, the same in-process flow
-  as the Stream Deck mute key; the label always names the exact action a
-  click performs while the displayed state still matches the hardware
-  truth at click time — verified by a fresh probe against the premise the
-  label names before firing: if the mic already flipped to the label's
-  target since the last poll (state stale inside the poll window), the
-  click REFUSES — no mic verb, no sweep, never a wrong action — because
-  the mic is already there and the apps were carried by the sweeping path
-  that made the flip (physical button, tray, or deck), so sweeping again
-  would undo them; a mic-only flip from the panel card or the CLI leaves
-  the apps untouched, and the documented manual resync fixes that — one
-  WARN and an immediate redraw, with the label converged back to fresh
-  truth within one poll, and if the mic state is unknown or the daemon
-  is down it likewise runs nothing at all — one WARN, no verb, no sweep,
-  immediate redraw; both halves are attempted on every fired click and any
-  failure is logged),
+  label displays plus the F24 meeting-app sweep; the label always names
+  the exact action a click performs while the displayed state still
+  matches the hardware truth at click time — committed by ONE atomic
+  conditional daemon verb (`mute-if`/`unmute-if <expected>`) whose premise
+  check and action are a single daemon step, so no hardware event can slip
+  between a probe and the firing: if the mic already flipped to the
+  label's target since the last poll (state stale inside the poll window),
+  the click REFUSES — the daemon ran no mic verb and no sweep, never a
+  wrong action — because the mic is already there and the apps were
+  carried by the sweeping path that made the flip (physical button, tray,
+  or deck), so sweeping again would undo them; a mic-only flip from the
+  panel card or the CLI leaves the apps untouched, and the documented
+  manual resync fixes that — one WARN and an immediate redraw, with the
+  label converged back to fresh truth within one poll, and if the mic
+  state is unknown or the daemon is down it likewise runs nothing at all —
+  one WARN, no verb, no sweep, immediate redraw; the item's title/enabled
+  paint is also read back from the native menu before the click premise
+  arms, and the click re-verifies the live row against its premise before
+  calling the daemon, so a native paint failure or a mid-paint click can
+  never perform the opposite of the displayed label),
   **Toggle lights**, **Brightness** (applied in click order),
   **Light preset**, **Saved settings** (the daemon's saved named light
   settings — the same names the web UI saves — polled every 2 s; click a
@@ -164,7 +181,11 @@ hardware state. The active paths are loop-free:
   `(no saved settings)` for an empty store, `(settings unavailable)`
   covering both an unreachable daemon and a broken store; a `&` in a name
   renders correctly in the tray (menu titles escape `&` as `&&` for
-  display) and the click applies the verbatim name), **Panel…**,
+  display) and the click applies the verbatim name; renamed or removed
+  rows are never recycled in place — a vanished row is retired invisible/
+  disabled/unbound and only re-used for a new name after a 60 s
+  quarantine, so a click on a stale row can never apply the wrong
+  setting), **Panel…**,
   and **Quit** — Quit stops everything
   mutastic runs in one click: it sends the daemon's `shutdown` command,
   posts the light-panel server's `/api/shutdown`, and exits the tray.
