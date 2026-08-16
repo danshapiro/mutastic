@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -76,7 +77,7 @@ type SettingsStore struct {
 	mu      sync.Mutex
 	path    string // "" disables the store entirely
 	byName  map[string]SavedSetting
-	corrupt bool // load saw an unreadable/unparseable file: refuse everything
+	corrupt bool // load saw an unreadable/unparseable/invalid-UTF-8 file: refuse everything
 }
 
 // NewSettingsStore loads the store at path: "" path -> disabled store;
@@ -96,6 +97,18 @@ func NewSettingsStore(path string) *SettingsStore {
 		}
 		return s
 	}
+	// R10-F1: validate the RAW file bytes as UTF-8 BEFORE the decoder sees
+	// them - encoding/json coerces invalid UTF-8 inside JSON strings to
+	// U+FFFD, silently RENAMING a key, so a corrupted file (a hand-edited
+	// or damaged light-settings.json carrying e.g. a raw 0x80 inside a
+	// name) must be caught HERE: it classifies disabled-corrupt exactly
+	// like a parse failure, preserved untouched for the manual recovery.
+	// Past this gate every decoded name is well-formed UTF-8 for the
+	// shared validStoreName predicate below.
+	if !utf8.Valid(data) {
+		s.corrupt = true
+		return s
+	}
 	var m map[string]SavedSetting
 	if json.Unmarshal(data, &m) != nil {
 		s.corrupt = true
@@ -107,7 +120,8 @@ func NewSettingsStore(path string) *SettingsStore {
 	// 8192-byte reply read buffer - so its list could silently truncate),
 	// every name satisfies the name grammar exactly as the verbs enforce
 	// it (validStoreName: trimmed-form-equal - leading/trailing whitespace
-	// is never meaningful - nonempty, no control bytes, at most
+	// is never meaningful - nonempty, every rune unicode.IsPrint-printable
+	// with at least one non-mark rune (R10-F2), at most
 	// maxSettingsNameLen bytes, no case-insensitive "error:" prefix),
 	// every entry holds a NON-EMPTY Lights map (an entryless snapshot
 	// restores nothing, and the save path never produces one), and every
@@ -278,29 +292,33 @@ func (s *SettingsStore) writeLocked(byName map[string]SavedSetting) error {
 // save, apply, and delete, returning ""/no error text when valid. Names
 // arrive already OUTER-trimmed (serveUDP and HandleCommand TrimSpace the
 // whole command, and the settings handler trims the raw suffix after the
-// sub-verb): internal whitespace (spaces - every OTHER control byte is
-// rejected below) is preserved, leading/trailing whitespace is never
-// meaningful, and "foo " IS "foo". Control bytes are rejected outright
-// (R8-F3): newline would corrupt the newline-joined list reply, NUL would
-// break the tray's Windows UTF16 menu conversion
-// (syscall.UTF16PtrFromString returns EINVAL on an embedded NUL, so a
-// NUL-bearing name could never be painted), and the rest of the C0/C1-adjacent
-// set has no business crossing every surface the name traverses (wire,
-// JSON, log, menu). Multi-byte UTF-8 printable runes remain allowed: a
-// BYTE-level scan never touches them - continuation bytes are >= 0x80.
-// The byte scan alone is not the whole grammar (R9-F2): the name must
-// ALSO be well-formed UTF-8. A raw stray continuation byte (lone 0x80) or
-// a truncated multi-byte sequence passes the scan, but every
-// JSON/UTF16-carrying surface then renders a DIFFERENT string - Go's
-// encoding/json coerces invalid UTF-8 to U+FFFD on marshal AND unmarshal
-// (the persisted file's decoded name would differ from the in-memory key
-// and from what list replies), and the tray's Windows UTF-16 conversion
-// coerces a third rendering, so one stored name would mean one thing to
-// the click and another to the file. Rejecting at the grammar keeps a
-// name the same string across wire, file, and menu. Because JSON decode
-// itself coerces, this clause can only ever fire pre-persistence (the
-// wire/save path); load classification via the shared predicate sees only
-// already-coerced names and is unchanged.
+// sub-verb): internal ASCII spaces are preserved, leading/trailing
+// whitespace is never meaningful, and "foo " IS "foo". The charset rule
+// is RUNE-level printability (R10-F2, superseding R8-F3's byte scan):
+// every rune r of the name must satisfy unicode.IsPrint(r) - Go's
+// printable set is letters, marks, numbers, punctuation, symbols, and
+// ONLY the ASCII space from the separator category. That rejects every
+// byte the byte scan rejected (each < 0x20 byte and 0x7F decodes to a
+// non-print control rune: newline still can never forge a line of the
+// newline-joined list reply, NUL still can never reach the tray's Windows
+// UTF16 menu conversion - syscall.UTF16PtrFromString returns EINVAL on an
+// embedded NUL, so a NUL-bearing name could never be painted) AND the
+// multi-byte invisibles a byte scan could never see: every Unicode
+// control/format character (U+0085 NEL, U+200B zero-width space, U+200D
+// ZWJ, U+202E bidi override, the U+2066-2069 directional isolates) plus
+// the non-ASCII spacing separators (U+3000 ideographic space, NBSP).
+// Well-formed UTF-8 is required FIRST and the order is load-bearing
+// (R9-F2): range decoding of malformed bytes yields U+FFFD, which IsPrint
+// ADMITS (category So), so the rune loop alone would wrongly ACCEPT a raw
+// stray continuation byte (lone 0x80) or a truncated sequence - with the
+// validity check first, the rune loop sees exactly the encoded runes and
+// an accepted name is one consistent string across wire, file, and menu
+// (json.Unmarshal coerces invalid UTF-8 to U+FFFD on marshal/unmarshal,
+// and the tray's Windows UTF-16 conversion coerces a third rendering).
+// One guard beyond IsPrint per rune: IsPrint classes combining and
+// variation selectors (U+0301, U+FE0F, ...) as printable MARKS, and a
+// name of ONLY marks renders as nothing (a variation selector decorating
+// a glyph that is not there), so at least one non-mark rune is required.
 // Names case-insensitively starting with "error:" are likewise rejected
 // (clients parse error:-prefixed replies as failures). The two guarantees
 // the grammar buys: every accepted name is exactly ONE wire-list line
@@ -310,13 +328,22 @@ func validateSettingsName(name string) string {
 	if name == "" || strings.HasPrefix(strings.ToLower(name), "error:") {
 		return "error: invalid settings name"
 	}
-	// Any byte < 0x20 (NUL, newline, tab, CR, ESC, ...) or 0x7F (DEL).
-	for i := 0; i < len(name); i++ {
-		if name[i] < 0x20 || name[i] == 0x7F {
+	if !utf8.ValidString(name) {
+		return "error: invalid settings name"
+	}
+	// Every rune printable; at least one NON-MARK rune. ASCII space,
+	// letters, CJK, and plain (single-rune) emoji all qualify - verified:
+	// U+2615/U+1F680/U+1F600 are category So, which IsPrint admits.
+	hasNonMark := false
+	for _, r := range name {
+		if !unicode.IsPrint(r) {
 			return "error: invalid settings name"
 		}
+		if !unicode.Is(unicode.M, r) {
+			hasNonMark = true
+		}
 	}
-	if !utf8.ValidString(name) {
+	if !hasNonMark {
 		return "error: invalid settings name"
 	}
 	if len(name) > maxSettingsNameLen {

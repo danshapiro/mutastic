@@ -274,17 +274,25 @@ hardware state. The active paths are loop-free:
   boundary: leading/trailing whitespace is never meaningful, so
   `settings save foo ` and `settings save foo` are the same setting; quote
   multi-word names (`mutastic.exe light settings save "movie mode"`).
-  Empty names, names containing ANY control byte (NUL, newline, tab, CR,
-  and the rest of the <0x20 band, plus DEL 0x7F — every saved name is
-  printable: a single list line, and representable as a Windows menu
-  string), names that are not well-formed UTF-8 (a raw stray byte like
-  0x80 or a truncated multi-byte sequence — a name must be the same
-  string across the wire, the JSON file, and the menu, and JSON/UTF-16
-  conversion would otherwise render each differently), and names starting
-  with
-  `error:` (case-insensitive) answer `error: invalid settings name`;
-  printable multi-byte UTF-8 names (CJK, emoji, accented text) are
-  allowed and list byte-exactly. Names
+  Names are printable Unicode (no invisible/format/control characters),
+  max 42 bytes, cannot start with `error:` — precisely: the name must
+  be well-formed UTF-8 (a raw stray byte like 0x80 or a truncated
+  multi-byte sequence is refused: a name must be the same string across
+  the wire, the JSON file, and the menu, and JSON/UTF-16 conversion
+  would otherwise render each differently), every rune must satisfy
+  Unicode printability (letters, marks, numbers, punctuation, symbols,
+  and ASCII space — so every control byte from NUL/newline/tab/CR
+  through DEL is refused, and so are the invisible Unicode
+  control/format characters — U+0085, zero-width space/joiner, bidi
+  overrides, directional isolates — and spacing separators other than
+  ASCII space such as ideographic space or NBSP), the name must contain
+  at least one non-mark rune (a name of only combining/variation marks
+  renders as nothing), and an empty name or an `error:` (case-insensitive)
+  prefix answers `error: invalid settings name` — every saved name is
+  a single list line and representable as a Windows menu string.
+  Printable names (spaces, CJK, accented text, plain single-codepoint
+  emoji; ZWJ-joined emoji sequences contain an invisible format rune and
+  are refused) are allowed and list byte-exactly. Names
   over 42 bytes answer `error: settings name too long (max 42 bytes)` —
   with the 22-byte `light settings delete ` prefix the largest legal
   command is exactly 64 bytes, and the daemon's UDP receive buffer is 128

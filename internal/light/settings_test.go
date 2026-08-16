@@ -149,11 +149,15 @@ func TestSavedSettingsStorePersistedAcrossReload(t *testing.T) {
 	}
 }
 
-// TestSavedSettingsStoreLoadValidation pins R2-F5 + R4-F4 + R5-F3: a
-// parseable file is not enough. Every stored name must satisfy the name
-// grammar exactly as the verbs enforce it (trimmed-form-equal -
-// leading/trailing whitespace is never meaningful - nonempty, no newline,
-// within the byte cap, no case-insensitive "error:" prefix), every entry
+// TestSavedSettingsStoreLoadValidation pins R2-F5 + R4-F4 + R5-F3 +
+// R10-F1 + R10-F2: a parseable file is not enough. The RAW file bytes
+// must be well-formed UTF-8 BEFORE decode (R10-F1: json.Unmarshal coerces
+// invalid UTF-8 inside JSON strings to U+FFFD, silently renaming a key),
+// every decoded name must satisfy the rune-level printable name grammar
+// exactly as the verbs enforce it (trimmed-form-equal - leading/trailing
+// whitespace is never meaningful - nonempty, every rune
+// unicode.IsPrint-printable with at least one non-mark rune, within the
+// byte cap, no case-insensitive "error:" prefix), every entry
 // must hold a NON-EMPTY Lights map, every light entry must be in range
 // (R5-F3: 0 <= Brightness <= 100, TempByte inside the firmware's
 // 0x00..maxTempByte Kelvin step table, a plausible COM-port key in the
@@ -194,6 +198,16 @@ func TestSavedSettingsStoreLoadValidation(t *testing.T) {
 		{"NUL-bearing name", mustJSON(t, map[string]SavedSetting{"a\x00b": entry})},
 		{"tab-bearing name", mustJSON(t, map[string]SavedSetting{"a\tb": entry})},
 		{"DEL-bearing name", mustJSON(t, map[string]SavedSetting{"a\x7fb": entry})},
+		// R10-F2: invisible Unicode control/format runes and the non-ASCII
+		// spacing separators must fail the shared rune-level grammar at
+		// load identically to the save side - the old byte scan could never
+		// see them (every byte >= 0x80, all valid UTF-8). A marks-only name
+		// (U+FE0F is a MARK, so IsPrint alone admits it) renders as nothing
+		// and is refused by the at-least-one-non-mark guard.
+		{"zero-width space (U+200B) in name", mustJSON(t, map[string]SavedSetting{"a\u200bb": entry})},
+		{"bidi override (U+202E) in name", mustJSON(t, map[string]SavedSetting{"movie\u202emode": entry})},
+		{"ideographic space (U+3000) in name", mustJSON(t, map[string]SavedSetting{"fullwidth\u3000space": entry})},
+		{"marks-only name (variation selector U+FE0F)", mustJSON(t, map[string]SavedSetting{"\ufe0f": entry})},
 		{"untrimmed name", mustJSON(t, map[string]SavedSetting{" look": entry})},
 		{"trailing-space name", mustJSON(t, map[string]SavedSetting{"look ": entry})},
 		{"empty name", mustJSON(t, map[string]SavedSetting{"": entry})},
@@ -295,15 +309,16 @@ func TestSavedSettingsStoreLoadValidation(t *testing.T) {
 		t.Fatalf("%d-entry List = %d names, want %d", maxSettingsCount, len(got), maxSettingsCount)
 	}
 
-	// R9-F2: a HANDCRAFTED store file (raw bytes - NOT the coercing
-	// marshaler - carrying a multi-byte UTF-8 name) whose decoded names are
-	// valid stays loadable and lists byte-exactly: the utf8.ValidString
-	// clause changes NOTHING on load, because JSON decode itself can only
-	// ever hand the shared predicate valid strings (invalid bytes would
-	// already have been coerced to U+FFFD by the decoder, and the coerced
-	// name is grammar-valid). Load classification is a function of the
-	// decoded names, exactly as before - the clause fires pre-persistence
-	// (wire/save), never on a decodable file.
+	// R10-F1: the RAW store file must be valid UTF-8 BEFORE json.Unmarshal
+	// runs. The R9-F2-era comment here claimed decode could only hand the
+	// shared predicate valid strings and load classification was therefore
+	// unchanged; that was true only of the decoder's OUTPUT and it ACCEPTED
+	// the coercion at the INPUT - a corrupted file carrying an
+	// invalid-UTF-8 name decoded silently to a DIFFERENT (grammar-valid,
+	// U+FFFD-renamed) key and loaded healthy. Load now refuses such a file
+	// outright (pinned below). Still unchanged: a handcrafted file (raw
+	// bytes - NOT the coercing marshaler) carrying a VALID multi-byte UTF-8
+	// name loads enabled and lists byte-exactly.
 	craftedDir := t.TempDir()
 	craftedPath := filepath.Join(craftedDir, "light-settings.json")
 	craftedName := "映画 夜"
@@ -320,6 +335,40 @@ func TestSavedSettingsStoreLoadValidation(t *testing.T) {
 	}
 	if got, ok := craftedStore.Get(craftedName); !ok || got.Lights["COM4"].Brightness != 50 {
 		t.Fatalf("handcrafted store Get(%q) = %+v, %v; want the persisted snapshot", craftedName, got, ok)
+	}
+
+	// R10-F1 refusal half: the SAME handcrafted shape with a raw stray 0x80
+	// byte inside the JSON name string parses cleanly (the decoder coerces
+	// the name to "a\uFFFDb") but must classify disabled-CORRUPT: the store
+	// loads disabled, every verb refuses with the path-bearing error: wire
+	// string, list reads the same error string, and the raw bytes are
+	// preserved untouched for the documented manual recovery.
+	badDir := t.TempDir()
+	badPath := filepath.Join(badDir, "light-settings.json")
+	bad := []byte("{\"a\x80b\":{\"lights\":{\"COM4\":{\"on\":true,\"brightness\":50,\"temp_byte\":9}}}}")
+	if err := os.WriteFile(badPath, bad, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	badStore := NewSettingsStore(badPath)
+	if badStore.Enabled() {
+		t.Fatal("a store file with invalid raw UTF-8 inside a name must load disabled-corrupt, not enabled")
+	}
+	if got := badStore.List(); len(got) != 0 {
+		t.Fatalf("in-memory List on the refused store = %v, want empty", got)
+	}
+	if err := badStore.Save("new", entry); err == nil || !strings.Contains(err.Error(), badPath) {
+		t.Fatalf("Save error = %v, want the path-bearing corrupt refusal", err)
+	}
+	badMM, badCtx := newTestMulti(t, newFakeFleet(), badDir)
+	badMM.rescan(badCtx)
+	wantBadRefusal := "error: settings store corrupt or unreadable: " + badPath
+	for _, cmd := range []string{"settings save x", "settings apply x", "settings delete x", "settings list"} {
+		if got := badMM.HandleCommand(cmd); got != wantBadRefusal {
+			t.Errorf("%q = %q, want %q", cmd, got, wantBadRefusal)
+		}
+	}
+	if data, err := os.ReadFile(badPath); err != nil || !bytes.Equal(data, bad) {
+		t.Fatalf("file = %q (err %v) after the refusals; the invalid-UTF-8 store must survive untouched", data, err)
 	}
 }
 
@@ -910,7 +959,9 @@ func TestSavedSettingsNameValidation(t *testing.T) {
 	}
 	// R8-F3: EVERY control byte is rejected with the grammar error -
 	// NUL, tab, newline, CR, ESC, DEL, and a lone NUL at a name position
-	// (never "just the newline checks"). Byte-level is what matters: no
+	// (never "just the newline checks"). Post R10-F2 these are caught by
+	// the rune-level printability rule (each such byte decodes to a
+	// non-print control rune), and the guarantees are unchanged: no
 	// accepted name may forge list lines (NUL/\n/\r), break the tray's
 	// Windows UTF16 conversion (NUL EINVAL), or smuggle invisibles
 	// (\t/0x1B/0x7F) - while real internal spaces and printable unicode
@@ -947,6 +998,29 @@ func TestSavedSettingsNameValidation(t *testing.T) {
 	}
 	if got := mm.HandleCommand("settings list"); got != "" {
 		t.Fatalf("list after invalid-UTF-8 rejects = %q, want empty", got)
+	}
+	// R10-F2: RUNE-level printability - every rune must satisfy
+	// unicode.IsPrint. Beyond the control bytes above this refuses every
+	// Unicode control/format rune - U+0085 (NEL), U+200B (zero-width
+	// space), U+202E (bidi override), U+200D (ZWJ), U+2066 (directional
+	// isolate) - and every spacing separator except ASCII space
+	// (U+3000 ideographic space, NBSP); the old byte scan could never see
+	// any of these (all bytes >= 0x80, all valid UTF-8, so the raw-file
+	// UTF-8 gate lets them through - only the rune check catches them). A
+	// name of ONLY combining/variation marks is refused too: IsPrint
+	// classes U+FE0F (variation selector) as a printable MARK, but a
+	// marks-only name renders as nothing, so the grammar requires at
+	// least one non-mark rune. Save, apply, AND delete enforce all of it
+	// identically.
+	for _, name := range []string{"a\u0085b", "a\u200bb", "\u200b", "a\u202eb", "a\u200db", "a\u2066b", "fullwidth\u3000space", "a\u00a0b", "\ufe0f", "\u0301\ufe0f"} {
+		for _, verb := range []string{"save", "apply", "delete"} {
+			if got := mm.HandleCommand("settings " + verb + " " + name); got != invalid {
+				t.Errorf("settings %s <invisible/format-rune name %q> = %q, want %q", verb, name, got, invalid)
+			}
+		}
+	}
+	if got := mm.HandleCommand("settings list"); got != "" {
+		t.Fatalf("list after invisible/format-rune rejects = %q, want empty", got)
 	}
 	// 43 bytes is over; 42 (the inclusive cap) is accepted by all verbs.
 	tooLong := strings.Repeat("a", 43)
@@ -990,11 +1064,16 @@ func TestSavedSettingsNameValidation(t *testing.T) {
 	}
 }
 
-// TestSavedSettingsUnicodeNamesRoundTripByteExactly pins R8-F3's
+// TestSavedSettingsUnicodeNamesRoundTripByteExactly pins the grammar's
 // allowance half: printable multi-byte UTF-8 names are legal, save/list
-// byte-exactly, and survive a store reload unchanged - the control-byte
-// rejection is a BYTE-level scan (< 0x20, == 0x7F) that can never touch
-// UTF-8 continuation bytes (>= 0x80).
+// byte-exactly, and survive a store reload unchanged. Post R10-F2 the
+// accepted charset is exactly unicode.IsPrint's - letters, marks,
+// numbers, punctuation, symbols, and ONLY the ASCII space from the
+// separator category: CJK (with ASCII spaces), accented latin, and plain
+// single-rune emoji stay legal, while the non-ASCII spacing separators the
+// old byte scan admitted (U+3000 ideographic space, NBSP) and the
+// invisible control/format runes are refused (those cases are pinned in
+// the REJECTION half, TestSavedSettingsNameValidation).
 func TestSavedSettingsUnicodeNamesRoundTripByteExactly(t *testing.T) {
 	fastTimings(t)
 	dir := t.TempDir()
@@ -1004,9 +1083,10 @@ func TestSavedSettingsUnicodeNamesRoundTripByteExactly(t *testing.T) {
 	waitConnected(t, mm, "COM4")
 	sessionManager(t, mm, "COM4").state.Set(50, 0)
 
-	// CJK, accented latin + emoji, and a full-width space: each under the
-	// 42-BYTE cap, each a single wire-list line.
-	names := []string{"映画 夜", "café ☕ night", "fullwidth　space"}
+	// CJK with ASCII spaces, accented latin + emoji, and a mixed emoji
+	// name: every rune unicode.IsPrint-printable, each under the 42-BYTE
+	// cap, each a single wire-list line.
+	names := []string{"映画 夜", "café ☕ night", "emoji 🚀🎧 mix"}
 	for _, name := range names {
 		if len(name) > maxSettingsNameLen {
 			t.Fatalf("test premise broken: %q is %d bytes, want <= %d", name, len(name), maxSettingsNameLen)
@@ -1067,6 +1147,8 @@ func TestSettingsStoreSaveValidatesEntryInvariants(t *testing.T) {
 		{"empty Lights map", "look", SavedSetting{Lights: map[string]SavedLightState{}}},
 		{"control byte in the name", "a\nb", base},
 		{"invalid UTF-8 in the name (R9-F2)", "a\x80b", base},
+		{"invisible format rune in the name (R10-F2)", "a\u200bb", base},
+		{"marks-only name (R10-F2)", "\ufe0f", base},
 		{"over-long name", strings.Repeat("c", 43), base},
 	}
 	for _, c := range cases {
