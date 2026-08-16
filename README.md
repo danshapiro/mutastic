@@ -113,8 +113,11 @@ hardware state. The active paths are loop-free:
   datagram without a reply, so letting one reach the wire would surface as
   a mute timeout instead); the byte count is UTF-8, so the name input's
   `maxlength` — which counts characters (plain ASCII: up to 42; CJK/emoji
-  names fit fewer) — remains only a UX hint, and the daemon still
-  validates authoritatively for every other client. The
+  names fit fewer) — remains only a UX hint; the panel API enforces the
+  same 42-byte cap server-side too (any `/api/settings` POST with an
+  over-long name, any action, is refused HTTP 400 before any daemon call,
+  closing the direct-caller path), and the daemon still validates
+  authoritatively for every other client. The
   daemon owns and persists the
   store (`%LOCALAPPDATA%\mutastic\light-settings.json`), so the panel and
   the tray always see the same set. A partially successful apply replies

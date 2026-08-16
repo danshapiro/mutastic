@@ -148,12 +148,13 @@ func TestSavedSettingsStorePersistedAcrossReload(t *testing.T) {
 	}
 }
 
-// TestSavedSettingsStoreLoadValidation pins R2-F5: a parseable file is not
-// enough. Every stored name must satisfy the name grammar exactly as the
-// verbs enforce it (trimmed-form-equal - leading/trailing whitespace is
+// TestSavedSettingsStoreLoadValidation pins R2-F5 + R4-F4: a parseable file
+// is not enough. Every stored name must satisfy the name grammar exactly as
+// the verbs enforce it (trimmed-form-equal - leading/trailing whitespace is
 // never meaningful - nonempty, no newline, within the byte cap, no
-// case-insensitive "error:" prefix) and every entry must hold a NON-EMPTY
-// Lights map. ANY violation classifies the whole load as corrupt: the store
+// case-insensitive "error:" prefix), every entry must hold a NON-EMPTY
+// Lights map, and the file as a whole must stay at or under maxSettingsCount
+// entries. ANY violation classifies the whole load as corrupt: the store
 // refuses everything with the path-bearing wire string AND the file is
 // preserved untouched - while a valid store still loads.
 func TestSavedSettingsStoreLoadValidation(t *testing.T) {
@@ -167,6 +168,15 @@ func TestSavedSettingsStoreLoadValidation(t *testing.T) {
 			t.Fatal(err)
 		}
 		return data
+	}
+	// many builds an n-entry store with fully valid names and entries, so
+	// ONLY the count can violate the load contract.
+	many := func(n int) map[string]SavedSetting {
+		m := make(map[string]SavedSetting, n)
+		for i := 0; i < n; i++ {
+			m[fmt.Sprintf("n%03d", i)] = entry
+		}
+		return m
 	}
 	cases := []struct {
 		name string
@@ -183,6 +193,9 @@ func TestSavedSettingsStoreLoadValidation(t *testing.T) {
 		{"empty Lights map", mustJSON(t, map[string]SavedSetting{"look": {Lights: map[string]SavedLightState{}}})},
 		{"missing lights key", []byte(`{"look":{}}`)},
 		{"null lights", []byte(`{"look":{"lights":null}}`)},
+		// R4-F4: 101 fully-valid entries exceed the load cap; the whole file
+		// classifies as corrupt exactly like a parse failure.
+		{"over-cap store (101 entries)", mustJSON(t, many(101))},
 	}
 	for _, c := range cases {
 		dir := t.TempDir()
@@ -232,6 +245,21 @@ func TestSavedSettingsStoreLoadValidation(t *testing.T) {
 	}
 	if got, ok := s.Get("look"); !ok || !reflect.DeepEqual(got, entry) {
 		t.Fatalf("valid store Get(look) = %+v, %v; want the persisted snapshot", got, ok)
+	}
+
+	// The load cap is INCLUSIVE: exactly maxSettingsCount fully-valid
+	// entries load enabled (R4-F4); one more is the over-cap case above.
+	fullDir := t.TempDir()
+	fullPath := filepath.Join(fullDir, "light-settings.json")
+	if err := os.WriteFile(fullPath, mustJSON(t, many(maxSettingsCount)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fullStore := NewSettingsStore(fullPath)
+	if !fullStore.Enabled() {
+		t.Fatalf("a %d-entry store must load enabled", maxSettingsCount)
+	}
+	if got := fullStore.List(); len(got) != maxSettingsCount {
+		t.Fatalf("%d-entry List = %d names, want %d", maxSettingsCount, len(got), maxSettingsCount)
 	}
 }
 

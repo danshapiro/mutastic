@@ -298,6 +298,16 @@ func trayRefreshLoop(logger *slog.Logger, refreshCh <-chan struct{}, header, mic
 		// daemon - is structurally unkillable without a read-back of what
 		// the user saw; the probe gate bounds it (any state change after
 		// premise capture mismatches the probe and the click no-ops).
+		// Delta round 4 re-litigated this exact point (R4-F1: a click in
+		// the paint/store gap no-ops) and the submenu slot rebuild race
+		// (R4-F2, see syncSavedSettingsMenu), and REJECTED both as blocking
+		// with recorded analysis: after the R3-F2 flip => strict no-op
+		// reversion the divergence can only produce a probe-gated no-op,
+		// NEVER a wrong action, and the next 2 s poll repaints the premise
+		// from fresh truth so the retried click performs the displayed
+		// action; driving the click from the probe instead was evaluated
+		// and rejected because it reintroduces the R3-F2 physical-press
+		// double-sweep hazard (reviews/delta/review-log.md, round 4).
 		// Linux can't drive the native menu, so this paint/store ordering
 		// is review-verified only - no automated test can observe it.
 		snap := trayMuteSnapshot{Title: trayMuteTitle(state), Armed: state}

@@ -28,8 +28,10 @@ type SavedSetting struct {
 
 const (
 	// maxSettingsCount caps the store: a NEW name past the cap is refused
-	// (overwriting an existing name always fits). The cap exists together
-	// with the delete verb - without delete it would fill permanently.
+	// (overwriting an existing name always fits), and LOAD enforces the
+	// cap identically - an over-cap file is classified corrupt (R4-F4).
+	// The cap exists together with the delete verb - without delete it
+	// would fill permanently.
 	// Headroom: 100 names x 43 bytes <= 4.3 KB < the 8192-byte client reply
 	// read buffer, so a full store's list can never silently truncate.
 	maxSettingsCount = 100
@@ -85,15 +87,23 @@ func NewSettingsStore(path string) *SettingsStore {
 		s.corrupt = true
 		return s
 	}
-	// A parseable file must still be VALID (R2-F5): every name satisfies the
-	// name grammar exactly as the verbs enforce it (trimmed-form-equal -
-	// leading/trailing whitespace is never meaningful - nonempty, no
-	// newline, at most maxSettingsNameLen bytes, no case-insensitive
-	// "error:" prefix) and every entry holds a NON-EMPTY Lights map (an
-	// entryless snapshot restores nothing, and the save path never produces
-	// one). ANY violation classifies the whole file as corrupt: the store
-	// refuses everything with the path-bearing wire string, and the file is
-	// preserved untouched for the documented manual recovery.
+	// A parseable file must still be VALID (R2-F5 + R4-F4): the entry count
+	// stays at or under maxSettingsCount (an over-cap file breaks the
+	// cap's headroom proof - 100 names x 43 bytes < the 8192-byte reply
+	// read buffer - so its list could silently truncate), every name
+	// satisfies the name grammar exactly as the verbs enforce it
+	// (trimmed-form-equal - leading/trailing whitespace is never
+	// meaningful - nonempty, no newline, at most maxSettingsNameLen bytes,
+	// no case-insensitive "error:" prefix) and every entry holds a
+	// NON-EMPTY Lights map (an entryless snapshot restores nothing, and
+	// the save path never produces one). ANY violation classifies the
+	// whole file as corrupt: the store refuses everything with the
+	// path-bearing wire string, and the file is preserved untouched for
+	// the documented manual recovery.
+	if len(m) > maxSettingsCount {
+		s.corrupt = true
+		return s
+	}
 	for name, entry := range m {
 		if name != strings.TrimSpace(name) || validateSettingsName(name) != "" || len(entry.Lights) == 0 {
 			s.corrupt = true

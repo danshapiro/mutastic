@@ -1335,6 +1335,85 @@ func TestUIAPISettingsValidatesAndPassesDaemonErrorsThrough(t *testing.T) {
 	}
 }
 
+// TestUIAPISettingsNameByteCap pins R4-F3: POST /api/settings enforces the
+// daemon store's 42-BYTE name cap server-side for EVERY action, before any
+// daemon call - the page's JS gate (R3-F6) is bypassable by a direct caller,
+// and an over-cap name on the wire either dies unanswered on Windows
+// (WSAEMSGSIZE drops the oversize datagram: a timeout) or TRUNCATES at the
+// daemon's 64-byte receive buffer on Unix, a destructive prefix path (a
+// delete can hit an existing setting sharing the 42-byte prefix). A 42-byte
+// name passes through to the daemon; 43 bytes - plain ASCII, or a
+// 15-character CJK name at 45 UTF-8 bytes - answers HTTP 400 with ZERO
+// daemon calls. The daemon's own identical check stays authoritative.
+func TestUIAPISettingsNameByteCap(t *testing.T) {
+	post := func(server *uiServer, action, name string) *httptest.ResponseRecorder {
+		// The pinned names contain no JSON-significant characters, so the
+		// body can be built inline.
+		body := `{"action":"` + action + `","name":"` + name + `"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/settings", strings.NewReader(body))
+		req.Host = "127.0.0.1:42815"
+		req.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		server.ServeHTTP(recorder, req)
+		return recorder
+	}
+	for _, action := range []string{"save", "apply", "delete"} {
+		t.Run(action+" with a 42-byte name reaches the daemon", func(t *testing.T) {
+			name := strings.Repeat("a", 42)
+			if len(name) != uiMaxSettingsNameBytes {
+				t.Fatalf("pin sanity: %d bytes, want the inclusive cap %d", len(name), uiMaxSettingsNameBytes)
+			}
+			var commands []string
+			server := newUIServer(42815, newTestDaemonDispatcher(func(command string) (string, error) {
+				commands = append(commands, command)
+				if strings.HasPrefix(command, "light settings apply ") {
+					return "COM4: on 47% 2900K", nil
+				}
+				if command == "light settings list" {
+					return name, nil
+				}
+				return `saved "x" (1 lights)`, nil
+			}))
+			recorder := post(server, action, name)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, body %s; a name AT the byte cap must pass to the daemon", recorder.Code, recorder.Body.String())
+			}
+			wantCommands := []string{"light settings " + action + " " + name, "light settings list"}
+			if !reflect.DeepEqual(commands, wantCommands) {
+				t.Fatalf("daemon commands = %v, want %v", commands, wantCommands)
+			}
+		})
+		for _, overCapName := range []struct {
+			label string
+			name  string
+		}{
+			{"43-byte ASCII", strings.Repeat("b", 43)},
+			{"15-char CJK (45 UTF-8 bytes)", strings.Repeat("中", 15)},
+		} {
+			t.Run(action+" with a "+overCapName.label+" name is 400 before any daemon call", func(t *testing.T) {
+				if len(overCapName.name) <= uiMaxSettingsNameBytes {
+					t.Fatalf("pin sanity: %d bytes must exceed the %d-byte cap", len(overCapName.name), uiMaxSettingsNameBytes)
+				}
+				calls := 0
+				server := newUIServer(42815, newTestDaemonDispatcher(func(string) (string, error) {
+					calls++
+					return "", nil
+				}))
+				recorder := post(server, action, overCapName.name)
+				if recorder.Code != http.StatusBadRequest {
+					t.Fatalf("status = %d, body %s; want 400", recorder.Code, recorder.Body.String())
+				}
+				if !strings.Contains(recorder.Body.String(), "settings name too long (max 42 bytes)") {
+					t.Fatalf("body %s, want the byte-cap validation error", recorder.Body.String())
+				}
+				if calls != 0 {
+					t.Fatalf("an over-cap %s reached the daemon %d times; want zero calls", action, calls)
+				}
+			})
+		}
+	}
+}
+
 // TestCountUIApplySuccesses pins the line-wise apply classifier directly:
 // BOTH daemon failure line shapes count as failures (a line-initial "error:"
 // skip/refusal AND the label-prefixed per-light failure like

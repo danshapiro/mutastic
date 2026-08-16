@@ -101,6 +101,18 @@ type uiSettingsRequest struct {
 	Name   string `json:"name"`
 }
 
+// uiMaxSettingsNameBytes mirrors the daemon store's maxSettingsNameLen in
+// internal/light/settings.go (42: the daemon's 64-byte UDP receive buffer
+// minus the 22-byte longest verb prefix, "light settings delete "). R4-F3:
+// the UI enforces the SAME byte cap server-side on every settings action
+// BEFORE any daemon call - the page's JS gate (R3-F6) is bypassable by a
+// direct caller, and an over-cap name on the wire either dies unanswered on
+// Windows (the oversize datagram is dropped: WSAEMSGSIZE, surfacing as a
+// timeout) or TRUNCATES at the receive buffer on Unix, where a delete could
+// target an existing setting sharing the 42-byte prefix. The daemon's own
+// identical check stays authoritative; the two constants must stay equal.
+const uiMaxSettingsNameBytes = 42
+
 // daemonCall is deliberately tiny: tests can provide a scripted fake while
 // production uses the existing askDaemon UDP client.
 type daemonCall func(command string) (string, error)
@@ -497,6 +509,12 @@ func (s *uiServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.ContainsAny(req.Name, "\r\n") {
 		writeUIJSON(w, http.StatusBadRequest, uiResponse{Error: "settings name must not contain a newline"})
+		return
+	}
+	// R4-F3: BYTE length - len on a Go string counts UTF-8 bytes, exactly
+	// the daemon's own measure - and the gate sits before any daemon call.
+	if len(req.Name) > uiMaxSettingsNameBytes {
+		writeUIJSON(w, http.StatusBadRequest, uiResponse{Error: fmt.Sprintf("settings name too long (max %d bytes)", uiMaxSettingsNameBytes)})
 		return
 	}
 	command := buildSettingsCommand(req.Action, req.Name)
