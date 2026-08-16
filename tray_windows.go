@@ -10,8 +10,12 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
+	"unicode/utf16"
+	"unsafe"
 
 	"github.com/energye/systray"
 )
@@ -42,6 +46,134 @@ const (
 	// and enabled states carry no handle cost and converge every tick.
 	trayIconReapplyEvery = 300
 )
+
+// --- click-time native title verification (ROUND-6: kills R4-F2/R5-F2) ---
+//
+// The fork dispatches a menu click by command ID ALONE (WM_COMMAND's
+// wParam -> menuItems[id].click): the native row's title text is
+// display-only metadata. And because the fork offers no remove/insert
+// API, the "Saved settings" submenu recycles rows IN PLACE
+// (syncSavedSettingsMenu re-stores the command slot, then repaints the
+// native title), so a WM_COMMAND queued from a stale native row - one the
+// user read as the OLD name - can otherwise execute the row's NEW slot
+// command. The verification below reads the row's LIVE native title back
+// from Windows at click time and executes the slotted command only when
+// the native title still names that setting (traySettingsCmdMatchesTitle,
+// the pure comparator in traystate.go). Refusal degrades to a no-op with
+// one WARN (traySetSettingsClick logs it); the just-finished rebuild has
+// already painted the truthful row for the next click.
+//
+// The fork exports neither the item's command ID nor its containing
+// HMENU, so both are read from the fork's own bookkeeping via go:linkname:
+// the package-level menuItems map (id <-> item; walked by pointer
+// identity, guarded by its package-level RWMutex) and winTray's menuOf
+// map (item id -> containing HMENU, populated by addOrUpdateMenuItem and
+// guarded by muMenuOf). The fork's go.mod predates Go 1.23, so pull
+// linknames into its unexported symbols remain permitted; a fork update
+// that renames or reshapes these symbols fails at BUILD time (an
+// unresolved linkname is a compile error), never silently at runtime.
+// trayWinTrayPrefix mirrors the fork's winTray field-for-field up through
+// menuOf/muMenuOf so menuOf sits at its true offset (later fields are not
+// needed and are never touched).
+
+//go:linkname traySystrayMenuItems github.com/energye/systray.menuItems
+var traySystrayMenuItems map[uint32]*systray.MenuItem
+
+//go:linkname traySystrayMenuItemsLock github.com/energye/systray.menuItemsLock
+var traySystrayMenuItemsLock sync.RWMutex
+
+// trayWinTrayPrefix mirrors the PREFIX of the fork's unexported winTray
+// struct (systray_windows.go: Handle fields, loadedImages map, then
+// menus/menuOf with their RWMutex guards) exactly, so the linknamed
+// variable exposes menuOf/muMenuOf at their true offsets.
+type trayWinTrayPrefix struct {
+	instance, icon, cursor, window uintptr
+	loadedImages                   map[string]uintptr
+	muLoadedImages                 sync.RWMutex
+	menus                          map[uint32]uintptr
+	muMenus                        sync.RWMutex
+	menuOf                         map[uint32]uintptr
+	muMenuOf                       sync.RWMutex
+}
+
+//go:linkname trayWinTray github.com/energye/systray.wt
+var trayWinTray trayWinTrayPrefix
+
+var trayProcGetMenuItemInfoW = syscall.NewLazyDLL("user32.dll").NewProc("GetMenuItemInfoW")
+
+// trayMenuItemInfoW is the full MENUITEMINFOW layout for MIIM_STRING
+// reads (same shape the fork uses for its SetMenuItemInfoW writes).
+type trayMenuItemInfoW struct {
+	Size, Mask, Type, State     uint32
+	ID                          uint32
+	SubMenu, Checked, Unchecked uintptr
+	ItemData                    uintptr
+	TypeData                    *uint16
+	Cch                         uint32
+	BMPItem                     uintptr
+}
+
+// trayMenuItemNativeTitle reads the item's CURRENT native menu string via
+// GetMenuItemInfoW with MIIM_STRING: the identifier form (fByPosition=0)
+// keyed by the item's fork command ID, against the HMENU the fork
+// recorded for that ID. Any lookup failure (unknown item, missing HMENU,
+// API refusal) reports not-ok so the caller refuses: the safe direction.
+func trayMenuItemNativeTitle(item *systray.MenuItem) (string, bool) {
+	traySystrayMenuItemsLock.RLock()
+	id, found := uint32(0), false
+	for itemID, menuItem := range traySystrayMenuItems {
+		if menuItem == item {
+			id, found = itemID, true
+			break
+		}
+	}
+	traySystrayMenuItemsLock.RUnlock()
+	if !found {
+		return "", false
+	}
+	trayWinTray.muMenuOf.RLock()
+	hMenu, ok := trayWinTray.menuOf[id]
+	trayWinTray.muMenuOf.RUnlock()
+	if !ok || hMenu == 0 {
+		return "", false
+	}
+	const miimString = 0x00000040
+	// The native title is always one of OUR OWN strings: an escaped
+	// settings name (the name grammar caps raw names at 42 bytes, and
+	// escaping at most doubles the "&"s) or a short placeholder, so a
+	// 512-unit UTF-16 buffer can never truncate a real one - and if it
+	// ever did, the truncated read would fail the exact comparison and
+	// refuse, still the safe direction.
+	var buf [512]uint16
+	mi := trayMenuItemInfoW{Mask: miimString, TypeData: &buf[0], Cch: uint32(len(buf))}
+	mi.Size = uint32(unsafe.Sizeof(mi))
+	res, _, _ := trayProcGetMenuItemInfoW.Call(
+		hMenu,
+		uintptr(id),
+		0, // fByPosition=FALSE: uItem is the item identifier, not a position
+		uintptr(unsafe.Pointer(&mi)),
+	)
+	if res == 0 || mi.Cch > uint32(len(buf)) {
+		return "", false
+	}
+	return string(utf16.Decode(buf[:mi.Cch])), true
+}
+
+// trayVerifySettingsItemTitle is the Windows arm of the ROUND-6
+// click-time check wired into traySetSettingsClick: the row's live native
+// title must still name the setting the slot command applies. It compares
+// the ESCAPED form of the command's raw name against the native title
+// (the native title is our escaped display string; Windows stores the
+// literal text we SetTitle'ed, "&&" included). Mismatch, an unreadable
+// title, or any lookup error all return false - the click no-ops and the
+// next rebuild/poll paints the truthful row.
+func trayVerifySettingsItemTitle(item *systray.MenuItem, cmd string) bool {
+	title, ok := trayMenuItemNativeTitle(item)
+	if !ok {
+		return false
+	}
+	return traySettingsCmdMatchesTitle(cmd, title)
+}
 
 // runTray puts the mutastic icon in the notification area and blocks in the
 // systray message loop until Quit. The tray is a pure CLIENT of the daemon
@@ -308,6 +440,12 @@ func trayRefreshLoop(logger *slog.Logger, refreshCh <-chan struct{}, header, mic
 		// action; driving the click from the probe instead was evaluated
 		// and rejected because it reintroduces the R3-F2 physical-press
 		// double-sweep hazard (reviews/delta/review-log.md, round 4).
+		// ROUND-6 then pinned the probe-gated mute rule in the plan's
+		// explicit constraints ("Precision amendment (review convergence,
+		// ROUND-6)") and eliminated the submenu half outright: the
+		// settings closure now re-reads the row's live native title
+		// (trayVerifySettingsItemTitle) and refuses unless it still names
+		// the slot's setting.
 		// Linux can't drive the native menu, so this paint/store ordering
 		// is review-verified only - no automated test can observe it.
 		snap := trayMuteSnapshot{Title: trayMuteTitle(state), Armed: state}
@@ -336,7 +474,7 @@ func trayRefreshLoop(logger *slog.Logger, refreshCh <-chan struct{}, header, mic
 		listReply, listErr := askDaemon(traySavedSettingsListCmd, udpAddr, lightClientTimeout)
 		want := traySavedSettings(trayParseSettingsList(listReply, listErr))
 		if !traySameMenuSpecs(savedSpecs, want) {
-			savedChildren, savedSpecs = syncSavedSettingsMenu(savedSettings, savedChildren, savedSpecs, want, lightCmd)
+			savedChildren, savedSpecs = syncSavedSettingsMenu(savedSettings, savedChildren, savedSpecs, want, lightCmd, logger)
 		}
 	}
 }
@@ -357,8 +495,10 @@ type savedMenuChild struct {
 }
 
 // newSavedMenuChild creates one submenu child with its STABLE click closure
-// - the only place Click is ever assigned: the closure reads the slot at
-// click time and dispatches whatever command is current then.
+// - the only place Click is ever assigned: the closure
+// (traySetSettingsClick, traystate.go) reads the slot at click time,
+// verifies the row's LIVE native title still names the slotted setting
+// (trayVerifySettingsItemTitle, ROUND-6), and only then dispatches.
 //
 // R3-F4 ordering discipline: BOTH click-time inputs are assigned around the
 // fork's create call, on this same refresh goroutine, with no channel
@@ -375,23 +515,22 @@ type savedMenuChild struct {
 // closure is NEVER rebound; rebuilds only re-store the slot (before each
 // revealing update, see syncSavedSettingsMenu).
 //
-// Recorded residual (R3-F4, verbatim): a click queued in the same Win32
-// message turn as a name-set rebuild applies the slot's new name. The
-// window is single-turn and user-action-triggered (a click must be queued
-// natively in the exact millisecond an external name-set change rebuilds
-// the menu), and the consequence is reversible - apply the intended name
-// again. No automated test can observe this: on Linux neither the fork's
-// native HMENU nor its message-turn dispatch exists, so this discipline is
-// review-verified only.
-func newSavedMenuChild(parent *systray.MenuItem, title, command string, lightCmd func(string) func()) *savedMenuChild {
+// ROUND-6 closes the recorded R3-F4/R4-F2/R5-F2 residual ("a click queued
+// in the same Win32 message turn as a name-set rebuild applies the slot's
+// new name"): the closure's native-title verification reads the row's
+// ESCAPED title back out of Windows and compares it against the slot's
+// name, so a WM_COMMAND dispatched from a stale native row can now only
+// REFUSE (one WARN, traySetSettingsClick) - never execute the row's new
+// command. The remaining residual is inertness only: a refusal on a
+// legitimate click when its dispatch raced the rebuild by one turn. No
+// automated test can observe any of this on Linux (no native menu, no
+// message turn), so the ordering and the native read-back are
+// review-verified; the pure comparator is unit-tested in traystate_test.go.
+func newSavedMenuChild(parent *systray.MenuItem, title, command string, lightCmd func(string) func(), logger *slog.Logger) *savedMenuChild {
 	child := &savedMenuChild{}
 	child.slot.Store(command) // bound BEFORE the create call: never an uninitialized slot behind a revealed item
 	child.item = parent.AddSubMenuItem(title, "")
-	child.item.Click(func() {
-		if cmd, _ := child.slot.Load().(string); cmd != "" {
-			lightCmd(cmd)()
-		}
-	})
+	child.item.Click(traySetSettingsClick(child.item, &child.slot, lightCmd, logger))
 	return child
 }
 
@@ -421,13 +560,26 @@ func newSavedMenuChild(parent *systray.MenuItem, title, command string, lightCmd
 // so retained items stay bounded by the menu size plus one change-width
 // even with delete churn. The returned spec copy is the new cached render.
 //
-// Recorded residual (R3-F4, verbatim): a click queued in the same Win32
-// message turn as a name-set rebuild applies the slot's new name - a
-// single-turn, user-action-triggered window whose consequence is reversible
-// (apply the intended name again); beyond that one turn the on-screen title
-// and the slot command agree. No automated test can observe the ordering on
-// Linux (no native menu, no message turn), so it is review-verified only.
-func syncSavedSettingsMenu(parent *systray.MenuItem, children []*savedMenuChild, cached, want []trayMenuSpec, lightCmd func(string) func()) ([]*savedMenuChild, []trayMenuSpec) {
+// Historical residual (R3-F4/R4-F2/R5-F2, verbatim): "a click queued in
+// the same Win32 message turn as a name-set rebuild applies the slot's new
+// name". ROUND-6 eliminates the wrong-apply outcome outright: the stable
+// closure (traySetSettingsClick) re-reads the row's LIVE native title via
+// GetMenuItemInfoW and compares it to the slot's name
+// (trayVerifySettingsItemTitle/traySettingsCmdMatchesTitle), so a WM_COMMAND
+// dispatched from a stale native row can NEVER execute the row's new
+// command - it refuses with one WARN, and this very rebuild has already
+// painted the truthful row for the retried click. What remains is at most
+// a refused click in that single-turn window (inert, never wrong). The
+// slot-first / title-second ordering is retained deliberately: combined
+// with verification, slot-first means the window's native title is always
+// the STALE one, so the check refuses; reversing the order would instead
+// arm a click on the row's OLD name against a title already repainted -
+// again refused, but with a window where title and slot point at the new
+// name while the displayed-menu-a-repaint-ago said otherwise. No automated
+// test can observe the ordering on Linux (no native menu, no message
+// turn), so it remains review-verified; only the pure comparator is
+// unit-tested.
+func syncSavedSettingsMenu(parent *systray.MenuItem, children []*savedMenuChild, cached, want []trayMenuSpec, lightCmd func(string) func(), logger *slog.Logger) ([]*savedMenuChild, []trayMenuSpec) {
 	for _, child := range children[:len(cached)] {
 		child.item.Hide()
 		child.slot.Store("") // a pooled orphan is unbound: no stale command can fire from the pool
@@ -455,7 +607,7 @@ func syncSavedSettingsMenu(parent *systray.MenuItem, children []*savedMenuChild,
 			// A NEW child arrives with its slot AND its stable closure
 			// already assigned (see newSavedMenuChild) before any
 			// SetTitle/Enable/Show below.
-			child = newSavedMenuChild(parent, spec.Title, command, lightCmd)
+			child = newSavedMenuChild(parent, spec.Title, command, lightCmd, logger)
 		}
 		child.item.SetTitle(spec.Title)
 		if spec.Enabled {

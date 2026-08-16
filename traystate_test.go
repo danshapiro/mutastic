@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -671,5 +672,77 @@ func TestTraySameMenuSpecs(t *testing.T) {
 	// compare equal to the correct pairing.
 	if traySameMenuSpecs([]trayMenuSpec{{Title: "A&&B", raw: "A&B", Enabled: true}}, []trayMenuSpec{{Title: "A&&B", raw: "A&&B", Enabled: true}}) {
 		t.Error("a raw-name mismatch behind an identical escaped Title must compare DIFFERENT (the click command uses raw)")
+	}
+}
+
+// TestTraySettingsCmdMatchesTitle pins the pure comparator behind the
+// ROUND-6 click-time native title check: the command slot carries the
+// VERBATIM raw name ("light settings apply <name>") and the native title
+// carries the menu-ESCAPED display form ("&" -> "&&"), so a match
+// requires exact equality after re-escaping the raw name. The mismatched
+// case is the reassigned-row race the check exists to refuse: a WM_COMMAND
+// dispatched from a stale native row whose slot now names a DIFFERENT
+// setting must not execute. Malformed commands (missing prefix, empty
+// name, wrong verb, empty everything) never match: refusal is the safe
+// direction.
+func TestTraySettingsCmdMatchesTitle(t *testing.T) {
+	cases := []struct {
+		name   string
+		cmd    string
+		native string
+		want   bool
+	}{
+		{"plain match", "light settings apply focus", "focus", true},
+		{"ampersand name vs escaped title", "light settings apply fish & chips", "fish && chips", true},
+		{"unescaped native title must not match", "light settings apply fish & chips", "fish & chips", false},
+		{"double ampersand name", "light settings apply a && b", "a &&&& b", true},
+		{"reassigned row (the race the check refuses)", "light settings apply dark", "party", false},
+		{"prefix-of-another name", "light settings apply tom", "tomato", false},
+		{"malformed: missing arg after prefix", "light settings apply ", "x", false},
+		{"malformed: prefix without trailing space", "light settings apply", "apply", false},
+		{"malformed: wrong verb", "light toggle", "toggle", false},
+		{"malformed: empty command", "", "", false},
+		{"native title empty against real command", "light settings apply focus", "", false},
+	}
+	for _, c := range cases {
+		if got := traySettingsCmdMatchesTitle(c.cmd, c.native); got != c.want {
+			t.Errorf("%s: traySettingsCmdMatchesTitle(%q, %q) = %v, want %v", c.name, c.cmd, c.native, got, c.want)
+		}
+	}
+}
+
+// TestTraySetSettingsClick pins the stable settings closure's semantics on
+// the portable path (the tray gate runs Linux-only; the Windows arm's
+// native read-back is review-verified): an UNBOUND slot ("" - a
+// placeholder or hidden pool orphan) dispatches nothing, and a bound slot
+// dispatches exactly its command. The portable default
+// trayVerifySettingsItemTitle always verifies true, which the bound case
+// pins transitively - and pins directly below so a regression on the
+// non-Windows path cannot silently drop every settings click.
+func TestTraySetSettingsClick(t *testing.T) {
+	if !trayVerifySettingsItemTitle(nil, "light settings apply focus") {
+		t.Fatal("portable trayVerifySettingsItemTitle default must always verify true (this test runs on the non-Windows path)")
+	}
+	var slot atomic.Value
+	var fired []string
+	lightCmd := func(c string) func() { return func() { fired = append(fired, c) } }
+	logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	click := traySetSettingsClick(nil, &slot, lightCmd, logger)
+	click() // unbound slot: a placeholder/pool-orphan click is a no-op
+	if len(fired) != 0 {
+		t.Fatalf("unbound slot dispatched %v, want nothing", fired)
+	}
+	slot.Store("light settings apply focus")
+	click()
+	if len(fired) != 1 || fired[0] != "light settings apply focus" {
+		t.Fatalf("bound slot dispatched %v, want exactly [light settings apply focus]", fired)
+	}
+	// A re-stored slot (a pooled rebuild reassigning this row) dispatches
+	// the CURRENT command, not the one bound at creation - the closure is
+	// stable and reads the slot at click time (R2-F3).
+	slot.Store("light settings apply party")
+	click()
+	if len(fired) != 2 || fired[1] != "light settings apply party" {
+		t.Fatalf("re-stored slot dispatched %v, want the current command last", fired)
 	}
 }

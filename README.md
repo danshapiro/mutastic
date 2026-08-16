@@ -24,19 +24,23 @@ action, and `mutastic light ...` commands. The active mute paths remain:
    through the daemon and injects the same `F24` app sweep.
 3. **Tray icon Mute/Unmute menu** — the tray's dynamic mic action always
    displays the exact verb its click performs (**Mute** while live,
-   **Unmute** while muted), sends that absolute verb through the daemon
-   with the same `F24` meeting-app sweep, and only after re-checking that
-   the premise the label names still holds. If the mic flipped to the
-   label's target since the last poll, the click runs nothing at all — no
-   mic verb, no sweep: the mic is already there, and the apps were carried
-   by the sweeping path that made the flip (the physical button, the tray,
-   or the deck), so sweeping again would undo them; it just warns and
-   redraws. (A mic-only flip — the panel card's mic buttons or the CLI —
-   leaves the apps untouched by design; the fix is the documented manual
-   resync: toggle the apps once by hand, then every sweeping path keeps
-   them in sync.) At `unknown` state or with the daemon down the click
-   likewise runs nothing at all — one WARN, no verb, no sweep, immediate
-   redraw.
+   **Unmute** while muted): the click performs that displayed action when
+   the displayed state still matches the hardware truth at click time,
+   which it verifies with a fresh status probe against the premise the
+   label names before firing. Only then does it send that absolute verb
+   through the daemon with the same `F24` meeting-app sweep. If the mic
+   flipped to the label's target since the last poll (state stale inside
+   the poll window), the click refuses — it runs nothing at all, no mic
+   verb, no sweep, never a wrong action: the mic is already there, and the
+   apps were carried by the sweeping path that made the flip (the physical
+   button, the tray, or the deck), so sweeping again would undo them; it
+   just warns and redraws, and the label converges back to the truth
+   within one 2 s poll. (A mic-only flip — the panel card's mic buttons or
+   the CLI — leaves the apps untouched by design; the fix is the
+   documented manual resync: toggle the apps once by hand, then every
+   sweeping path keeps them in sync.) At `unknown` state or with the
+   daemon down the click likewise runs nothing at all — one WARN, no verb,
+   no sweep, immediate redraw.
 
 Pressing the **mute button on the Yeti X itself** keeps the meeting apps
 in sync: the daemon sees the mic's `0x21` DeviceMute event (emitted only for
@@ -139,14 +143,17 @@ hardware state. The active paths are loop-free:
   **Mute**/**Unmute** action item (mute-everything — the absolute verb the
   label displays plus the F24 meeting-app sweep, the same in-process flow
   as the Stream Deck mute key; the label always names the exact action a
-  click performs, and the click re-checks the premise the label names
-  before firing: if the mic already flipped to the label's target since
-  the last poll it runs NOTHING — no mic verb, no sweep — because the mic
-  is already there and the apps were carried by the sweeping path that
-  made the flip (physical button, tray, or deck), so sweeping again would
-  undo them; a mic-only flip from the panel card or the CLI leaves the
-  apps untouched, and the documented manual resync fixes that — one WARN
-  and an immediate redraw, and if the mic state is unknown or the daemon
+  click performs while the displayed state still matches the hardware
+  truth at click time — verified by a fresh probe against the premise the
+  label names before firing: if the mic already flipped to the label's
+  target since the last poll (state stale inside the poll window), the
+  click REFUSES — no mic verb, no sweep, never a wrong action — because
+  the mic is already there and the apps were carried by the sweeping path
+  that made the flip (physical button, tray, or deck), so sweeping again
+  would undo them; a mic-only flip from the panel card or the CLI leaves
+  the apps untouched, and the documented manual resync fixes that — one
+  WARN and an immediate redraw, with the label converged back to fresh
+  truth within one poll, and if the mic state is unknown or the daemon
   is down it likewise runs nothing at all — one WARN, no verb, no sweep,
   immediate redraw; both halves are attempted on every fired click and any
   failure is logged),

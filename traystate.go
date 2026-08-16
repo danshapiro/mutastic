@@ -8,8 +8,11 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/energye/systray"
 )
 
 // trayState is the collapsed tray display state derived from one daemon
@@ -230,6 +233,61 @@ func traySameMenuSpecs(a, b []trayMenuSpec) bool {
 	return true
 }
 
+// traySettingsApplyPrefix is the daemon verb prefix a "Saved settings"
+// row's command slot carries: the apply verb plus the VERBATIM raw saved
+// name (never the escaped display title).
+const traySettingsApplyPrefix = "light settings apply "
+
+// traySettingsCmdMatchesTitle is the pure half of the click-time native
+// title check (ROUND-6 convergence fix killing the R4-F2/R5-F2 standing
+// residual). On Windows the fork dispatches a menu click by command ID
+// alone (WM_COMMAND -> menuItems[id].click): the native row's title is
+// display-only, and because the fork offers no remove/insert API the
+// "Saved settings" submenu recycles rows IN PLACE (slot re-stored, then
+// native SetTitle), so a WM_COMMAND queued from a stale native row can
+// otherwise reach the closure AFTER a rebuild reassigned that row's
+// command slot. The row's live native title is the text the menu shows
+// for that command ID right now, and the click executes only when it
+// still names the slot's setting. The comparison is exact and escaping-
+// aware: the slot command carries the VERBATIM raw name ("light settings
+// apply <name>") while the native title carries the menu-ESCAPED display
+// form ("&" -> "&&", see traySavedSettings), so the raw name is
+// re-escaped before comparing. A malformed command (missing prefix or
+// empty name) never matches - refusal is always the safe direction.
+func traySettingsCmdMatchesTitle(cmd, nativeTitle string) bool {
+	name, ok := strings.CutPrefix(cmd, traySettingsApplyPrefix)
+	if !ok || name == "" {
+		return false
+	}
+	return strings.ReplaceAll(name, "&", "&&") == nativeTitle
+}
+
+// traySetSettingsClick is the single click-closure constructor for every
+// "Saved settings" submenu row (tray_windows.go's newSavedMenuChild).
+// The closure is STABLE for the item's lifetime (R2-F3: it is assigned
+// once at creation and never rebound); rebuilds only re-store the command
+// slot. After loading the slot it re-verifies that the row's live NATIVE
+// title still names the slotted setting (trayVerifySettingsItemTitle;
+// portable default true, real read-back on Windows): without the check a
+// click queued from a stale native row during a pooled rebuild executes
+// the row's NEW command (R4-F2/R5-F2). An unbound slot ("" - a
+// placeholder or hidden pool orphan) or a failed check is a no-op; the
+// failed check also logs one WARN, and the just-finished rebuild has
+// already painted the truthful row for the next click.
+func traySetSettingsClick(item *systray.MenuItem, slot *atomic.Value, lightCmd func(string) func(), logger *slog.Logger) func() {
+	return func() {
+		cmd, _ := slot.Load().(string)
+		if cmd == "" {
+			return
+		}
+		if !trayVerifySettingsItemTitle(item, cmd) {
+			logger.Warn("settings click declined: the row's live native title no longer names the slotted setting (stale native row); refusing so a reassigned row can never execute its new command", "cmd", cmd)
+			return
+		}
+		lightCmd(cmd)()
+	}
+}
+
 // trayActions holds every side-effecting dependency of the tray's click
 // handlers as an injected function, so the handlers' ordering and failure
 // semantics are unit-testable on Linux. tray_windows.go wires the real
@@ -370,6 +428,20 @@ func (a *trayActions) onMicSet(verb string) {
 // that staleness can never cause a wrong mic action BECAUSE this probe
 // gates every firing - this is a documented rendering limitation, not a
 // behavioral residual.
+//
+// Contract alignment (ROUND-6): docs/plans/2026-08-15-saved-settings.md
+// carries the dated "Precision amendment (review convergence, ROUND-6)"
+// under the User Request's explicit constraints, pinning the mute-label
+// constraint to exactly this rule: the click performs the displayed
+// action when the displayed state still matches the hardware truth at
+// click time (verified by the fresh probe above); on a flip inside the
+// poll window it refuses with one WARN and a status refresh - never a
+// wrong action - and the label redraws from fresh truth within one poll
+// interval. The amendment also records the F24 physics rationale: the
+// app sweep is a blind toggle (meeting-app mute state is unobservable),
+// so when the premise flipped every ACTING alternative has a catastrophic
+// case and this probe-gated refusal is the unique never-wrong action.
+// README's tray section states the same contract for end users.
 func (a *trayActions) muteClick(load func() trayMuteSnapshot) {
 	if !a.muteFlight.TryLock() {
 		a.logger.Warn("mute click dropped: a previous mute click is still in flight")
