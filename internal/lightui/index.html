@@ -294,9 +294,10 @@
     }
     #settings-name::placeholder { color: var(--text-3); }
     #settings-name:hover { border-color: rgba(244,246,255,.22); }
-    /* The halo must APPEND to the recess shadow (design §1.6: halo, then the element's
-       base shadow); the id-level base rule otherwise beats the generic
-       input:focus-visible halo and the ring loses its 5px glow. */
+    /* The halo must APPEND to the recess shadow (design §1.6: the element's
+       base shadow first, halo appended after it); the id-level base rule
+       otherwise beats the generic input:focus-visible halo and the ring
+       loses its 5px glow. */
     #settings-name:focus-visible { box-shadow: var(--recess-inner), 0 0 0 5px var(--ring-halo); }
     .settings-line { margin: 10px 0 12px; font-size: 12px; }
     .settings-line[data-tone="error"] { color: var(--err-text); }
