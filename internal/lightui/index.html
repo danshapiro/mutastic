@@ -758,12 +758,22 @@
         temp.disabled = !on;
         const brightnessKey = lightKey(light.port, "brightness");
         const tempKey = lightKey(light.port, "temp");
-        if (on && !state.active.has(brightnessKey) && document.activeElement !== brightness) brightness.value = light.brightness;
-        if (on && !state.active.has(tempKey) && document.activeElement !== temp) temp.value = temperatureIndex(light.temp);
-        brightnessOutput.textContent = on ? `${light.brightness}%` : "—";
-        tempOutput.textContent = on ? `${TEMP_STEPS[temperatureIndex(light.temp)]}K` : "Unknown";
+        // While a slider drag is active the user's thumb owns the control:
+        // poll re-renders must not touch its value, its readout chip, or its
+        // track fill — otherwise the fill/chips flicker back to the daemon's
+        // pre-drag value while the guarded value input holds (T7 review).
+        const brightnessActive = on && (state.active.has(brightnessKey) || document.activeElement === brightness);
+        const tempActive = on && (state.active.has(tempKey) || document.activeElement === temp);
+        if (!brightnessActive) {
+          if (on) brightness.value = light.brightness;
+          brightnessOutput.textContent = on ? `${light.brightness}%` : "—";
+        }
+        if (!tempActive) {
+          if (on) temp.value = temperatureIndex(light.temp);
+          tempOutput.textContent = on ? `${TEMP_STEPS[temperatureIndex(light.temp)]}K` : "Unknown";
+        }
         applyGlow(card, light);
-        writeFill(brightness, on ? light.brightness : 0);
+        if (!brightnessActive) writeFill(brightness, on ? light.brightness : 0);
         if (light.error) {
           cardError.hidden = false;
           card.querySelector(".card-error-text").textContent = light.error;
