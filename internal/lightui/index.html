@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
+  <meta name="color-scheme" content="dark light">
   <title>Mutastic</title>
   <style>
     :root {
@@ -26,8 +26,7 @@
       --g1-inner: inset 0 1px 0 rgba(255,255,255,.15);
       --g2-bg: rgba(255,255,255,.05);
       --g2-border: rgba(255,255,255,.11);
-      --g2-blur: none;
-      --g2-shadow: none;
+      --g2-shadow: 0 0 0 rgba(0,0,0,0);
       --g2-inner: inset 0 1px 0 rgba(255,255,255,.07);
       --g3-bg: rgba(255,255,255,.11);
       --g3-border: rgba(255,255,255,.20);
@@ -57,7 +56,7 @@
       --b1-shadow-active: 0 4px 12px rgba(2,4,14,.50), inset 0 1px 0 rgba(255,255,255,.35);
       --b2-bg: rgba(244,246,255,.10); --b2-border: rgba(244,246,255,.18); --b2-text: var(--text);
       --b2-bg-hover: rgba(244,246,255,.14); --b2-border-hover: rgba(244,246,255,.32);
-      --b2-shadow: none;
+      --b2-shadow: 0 0 0 rgba(0,0,0,0);
       --quiet-text: var(--text-2); --quiet-bg-hover: rgba(244,246,255,.07); --quiet-bg-active: rgba(244,246,255,.10);
       --qd-text: #ffc0d0; --qd-bg-hover: rgba(255,135,163,.08); --qd-bg-active: rgba(255,135,163,.12);
       --dot-online: #58f0c8;  --dot-online-fx: 0 0 8px rgba(88,240,200,.70), 0 0 0 3px rgba(88,240,200,.12);
@@ -71,7 +70,7 @@
       --lamp-muted-ring: rgba(255,143,160,.35);
       --lamp-unreach-ring: rgba(244,246,255,.22);
       --lamp-unknown-face: radial-gradient(circle at 34% 30%, rgba(244,246,255,.18), rgba(244,246,255,.05) 60%, rgba(10,12,24,.30));
-      --lamp-unknown-fx: none; --lamp-unknown-blur: blur(4px);
+      --lamp-unknown-fx: 0 0 0 rgba(0,0,0,0); --lamp-unknown-blur: blur(4px);
       --aura-warm: #ffb066; --aura-cool: #ccdcff;
       --track-warm-end: #ffb169; --track-cool-end: #ccdcff;
       --thumb-bg: #f7f9ff;
@@ -99,8 +98,6 @@
     .subtle { color: var(--text-2); font-size: 13px; line-height: 1.45; }
     output, .card-meta, .mic-word, .status-badge { font-variant-numeric: tabular-nums; }
 
-    .icon-fill { fill: currentColor; stroke: none; }
-
     /* ===== Layout shell ===== */
     .shell { min-height: 100vh; display: flex; flex-direction: column; }
     .topbar {
@@ -112,6 +109,7 @@
       width: 42px; height: 42px; border-radius: 10px; display: grid; place-items: center;
       background: var(--g1-sheen), var(--g3-bg); border: 1px solid var(--g3-border);
       box-shadow: var(--g3-shadow), var(--g3-inner);
+      -webkit-backdrop-filter: var(--g3-blur); backdrop-filter: var(--g3-blur);
       color: var(--signal); filter: drop-shadow(0 0 6px rgba(125,227,255,.35));
     }
     .brand h1 { font-size: 20px; font-weight: 750; letter-spacing: -.02em; color: var(--text); }
@@ -211,7 +209,7 @@
     .button-primary:focus-visible { box-shadow: var(--b1-shadow), 0 0 0 5px var(--ring-halo); }
     .button-primary { background: var(--b1-bg); color: var(--pbtn-ink); border-color: transparent; box-shadow: var(--b1-shadow); }
     .button-primary:hover { background: var(--b1-bg-hover); box-shadow: var(--b1-shadow-hover); }
-    .button-primary:active { box-shadow: var(--b1-shadow-active); }
+    .button-primary:active { background: var(--b1-bg); box-shadow: var(--b1-shadow-active); }
     .button-primary:disabled { opacity: .45; box-shadow: none; }
     .button-quiet { background: transparent; border-color: transparent; color: var(--quiet-text); box-shadow: none; }
     .button-quiet:hover { background: var(--quiet-bg-hover); color: var(--text); border-color: transparent; }
@@ -391,7 +389,6 @@
         --g1-inner: inset 0 1px 0 rgba(255,255,255,.90);
         --g2-bg: rgba(255,255,255,.45);
         --g2-border: rgba(255,255,255,.58);
-        --g2-blur: blur(12px) saturate(1.2);
         --g2-shadow: 0 6px 16px -8px rgba(56,64,140,.12);
         --g2-inner: inset 0 1px 0 rgba(255,255,255,.70);
         --g3-bg: rgba(255,255,255,.72);
@@ -500,6 +497,29 @@
       #settings-name:hover, .setting-row:hover { border-color: rgba(23,28,60,.22); }
       .status-badge[data-state="unreachable"] { background: rgba(190,18,60,.06); }
       .empty { background: rgba(255,255,255,.35); }
+      /* Light lamp breathing (design-light §3.2): sonar-ring construction —
+         core scale on the lamp, a fading dashed-free ring on ::after, and NO
+         outer box-shadow blooms at any point of the breath (guardrail §5.3);
+         the lamp's box-shadow stays at its resting inset-rim + signal-shadow
+         stack. Dark keeps lamp-breathe untouched. The muted ::after needs
+         content/position here: the base sheet only generates a lamp ::after
+         for the unreachable state. */
+      @keyframes lamp-core-breathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.045); } }
+      @keyframes lamp-ring-breathe { 0%,100% { transform: scale(.86); opacity: .6; } 50% { transform: scale(1.18); opacity: 0; } }
+      #mic-status[data-state="muted"] ~ .mic-lamp { animation: lamp-core-breathe 2.6s ease-in-out infinite; }
+      #mic-status[data-state="muted"] ~ .mic-lamp::after { content: ""; position: absolute; inset: -6px; border-radius: 50%; border: 2px solid rgba(190,18,60,.5); animation: lamp-ring-breathe 2.6s ease-in-out infinite; }
+      /* Light unreachable orbital: tighter inset + heavier dashed ring (§3.2);
+         dark keeps inset -7px / 1px. */
+      #mic-status[data-state="unreachable"] ~ .mic-lamp::after { inset: -6px; border: 2px dashed rgba(110,116,148,.55); }
+      /* Light disabled primary (§3.6): an asleep ink wash, not a fade — the
+         shared .45 opacity fade would bury white-on-ink contrast. */
+      .button-primary:disabled { background: rgba(31,36,56,.50); color: rgba(255,255,255,.95); box-shadow: none; opacity: 1; }
+      /* Cooler/Warmer hovers: the dark tinted washes are re-homed to an ink
+         darken in daylight (§3.7 hovers darken, never whiten). */
+      .button-cool:hover, .button-warm:hover { background: rgba(23,28,60,.06); }
+      /* The cyan drop-shadow behind the brand glyph is a dark-field glow;
+         daylight drops it (§5.3), the glass-3 blur stays. */
+      .brand-mark { filter: none; }
     }
     /* ===== backdrop-filter fallback ===== */
     @supports not (backdrop-filter: blur(1px)) {
@@ -507,7 +527,7 @@
     }
     @media (prefers-color-scheme: light) {
       @supports not (backdrop-filter: blur(1px)) {
-        :root { --g1-bg: rgba(255,255,255,.92); --g2-bg: rgba(255,255,255,.85); --g3-bg: rgba(255,255,255,.95); --g1-blur: none; --g2-blur: none; --g3-blur: none; }
+        :root { --g1-bg: rgba(255,255,255,.92); --g2-bg: rgba(255,255,255,.85); --g3-bg: rgba(255,255,255,.95); --g1-blur: none; --g3-blur: none; }
       }
     }
     /* ===== reduced motion ===== */
@@ -560,7 +580,7 @@
               <span id="mic-status" class="status-badge" data-state="unknown">unknown</span>
               <span class="mic-lamp" aria-hidden="true"></span>
             </div>
-            <span id="mic-word" class="mic-word" data-state="unknown">unknown</span>
+            <span id="mic-word" class="mic-word" data-state="unknown" aria-hidden="true">unknown</span>
             <p id="mic-line" class="subtle">Waiting for the daemon…</p>
             <p class="subtle">Yeti X mute state, straight from the daemon. These buttons move the mic only — the meeting-app sweep stays on the physical mic button, the tray mute item, and the Stream Deck key.</p>
             <div style="height:14px"></div>
@@ -972,7 +992,9 @@
       // -- Glow + fill helpers (additive; never required for the page to function) --
       function applyGlow(cardEl, light) {
         if (!cardEl || !cardEl.style || !cardEl.style.setProperty) return;
-        const on = lightIsOn(light);
+        // An errored light carries ZERO card aura (adjudicated: the banner
+        // strip + rose border own the error state; the aura would argue).
+        const on = lightIsOn(light) && !light.error;
         const bri = on ? Math.max(0, Math.min(100, Number(light.brightness))) : 0;
         const hue = on ? temperatureIndex(light.temp) : 0;
         cardEl.style.setProperty("--glow-bri", String(bri));
