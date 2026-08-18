@@ -203,6 +203,12 @@
       outline: 2px solid var(--signal); outline-offset: 3px;
       box-shadow: 0 0 0 5px var(--ring-halo);
     }
+    /* The halo APPENDS to each button family's resting shadow (design §1.6 / light §3.7:
+       base shadow first, halo last — same precedent as #settings-name below). Quiet
+       buttons rest at box-shadow none, so their append is the halo alone. */
+    .button-quiet:focus-visible { box-shadow: 0 0 0 5px var(--ring-halo); }
+    button:focus-visible { box-shadow: var(--b2-shadow), 0 0 0 5px var(--ring-halo); }
+    .button-primary:focus-visible { box-shadow: var(--b1-shadow), 0 0 0 5px var(--ring-halo); }
     .button-primary { background: var(--b1-bg); color: var(--pbtn-ink); border-color: transparent; box-shadow: var(--b1-shadow); }
     .button-primary:hover { background: var(--b1-bg-hover); box-shadow: var(--b1-shadow-hover); }
     .button-primary:active { box-shadow: var(--b1-shadow-active); }
@@ -486,6 +492,14 @@
       .error-banner { color: var(--err-text); }
       #retry { color: var(--err-text); }
       .button-quiet[data-delete], .button-quiet.button-danger { color: var(--qd-text); }
+      /* Dark-literal re-homing for daylight (design-light §3.2/§3.4/§3.7): presses
+         darken (never whiten), chip hovers deepen the ink hairline, and the
+         unreachable badge / empty-state wash use the daylight values. */
+      button:active { background: rgba(23,28,60,.10); }
+      .button-primary:active { background: var(--b1-bg); }
+      #settings-name:hover, .setting-row:hover { border-color: rgba(23,28,60,.22); }
+      .status-badge[data-state="unreachable"] { background: rgba(190,18,60,.06); }
+      .empty { background: rgba(255,255,255,.35); }
     }
     /* ===== backdrop-filter fallback ===== */
     @supports not (backdrop-filter: blur(1px)) {
