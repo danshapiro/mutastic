@@ -512,7 +512,7 @@
     <symbol id="icon-alert" viewBox="0 0 24 24"><path d="M12 3 2.8 20h18.4L12 3Z"></path><path d="M12 9v5M12 17h.01"></path></symbol>
   </svg>
 
-  <main class="shell">
+  <div class="shell">
     <header class="topbar">
       <div class="brand">
         <div class="brand-mark"><svg class="icon"><use href="#icon-sun"></use></svg></div>
@@ -525,117 +525,126 @@
       <div id="connection" class="connection" data-state="degraded" role="status" aria-live="polite"><span class="connection-dot"></span><span id="connection-text">Connecting</span></div>
     </header>
 
-    <section class="panel" aria-labelledby="all-lights-title">
-      <div class="panel-inner">
-        <div class="panel-head">
-          <div>
-            <p class="eyebrow">Gang controls</p>
-            <h2 id="all-lights-title">All lights</h2>
-            <p class="subtle">Match writes one absolute value to every connected panel. Trim nudges each panel relative to its current setting.</p>
-          </div>
-          <button id="refresh" class="button-quiet button-icon" type="button" title="Refresh light status"><svg class="icon"><use href="#icon-refresh"></use></svg><span>Refresh</span></button>
-        </div>
-
-        <div class="control-grid">
-          <div class="control-block control-block-wide">
-            <div class="control-label"><span>Power</span><span>whole rig</span></div>
-            <div class="power-row" role="group" aria-label="All lights power">
-              <button class="button-primary button-icon" type="button" data-group-action="on"><svg class="icon"><use href="#icon-power"></use></svg><span>All on</span></button>
-              <button class="button-icon" type="button" data-group-action="off"><svg class="icon"><use href="#icon-power"></use></svg><span>All off</span></button>
-              <button class="button-quiet" type="button" data-group-action="toggle">Toggle</button>
+    <div class="layout">
+      <div class="rail">
+        <section class="panel mic-hero" aria-labelledby="mic-title">
+          <div class="panel-inner">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Audio</p>
+                <h2 id="mic-title">Microphone</h2>
+              </div>
+              <span id="mic-status" class="status-badge" data-state="unknown">unknown</span>
+              <span class="mic-lamp" aria-hidden="true"></span>
             </div>
-          </div>
-
-          <div class="control-block">
-            <label class="control-label" for="group-brightness"><span>Match brightness</span><output id="group-brightness-output" for="group-brightness">Unknown</output></label>
-            <div class="range-wrap">
-              <input id="group-brightness" type="range" min="0" max="100" value="55" aria-label="Match brightness for all lights">
-              <div class="range-hints"><span>0%</span><span>100%</span></div>
-            </div>
-          </div>
-
-          <div class="control-block">
-            <label class="control-label" for="group-temp"><span>Match warmth</span><output id="group-temp-output" for="group-temp">Unknown</output></label>
-            <div class="range-wrap">
-              <input id="group-temp" type="range" min="0" max="18" value="9" aria-label="Match color temperature for all lights">
-              <div class="range-hints"><span>2900K warm</span><span>7000K cool</span></div>
-            </div>
-          </div>
-
-          <div class="control-block">
-            <div class="control-label"><span>Group brightness trim</span><span>relative</span></div>
-            <div class="trim-row" role="group" aria-label="Relative group brightness trim">
-              <button type="button" data-group-action="brightness-delta" data-value="-5">-5</button>
-              <button type="button" data-group-action="brightness-delta" data-value="-1">-1</button>
-              <button type="button" data-group-action="brightness-delta" data-value="1">+1</button>
-              <button type="button" data-group-action="brightness-delta" data-value="5">+5</button>
-            </div>
-          </div>
-
-          <div class="control-block">
-            <div class="control-label"><span>Group warmth trim</span><span>one hardware step</span></div>
-            <div class="trim-row" role="group" aria-label="Relative group warmth trim">
-              <button class="button-cool button-icon" type="button" data-group-action="temp-step-delta" data-value="1"><svg class="icon"><use href="#icon-plus"></use></svg><span>Cooler</span></button>
-              <button class="button-warm button-icon" type="button" data-group-action="temp-step-delta" data-value="-1"><svg class="icon"><use href="#icon-minus"></use></svg><span>Warmer</span></button>
-            </div>
-          </div>
-        </div>
-
-        <div id="error-banner" class="error-banner" hidden role="alert">
-          <div class="error-copy"><svg class="icon"><use href="#icon-alert"></use></svg><span id="error-text"></span></div>
-          <button id="retry" type="button">Retry</button>
-        </div>
-      </div>
-    </section>
-
-    <section class="panel" aria-labelledby="mic-title">
-      <div class="panel-inner">
-        <div class="panel-head">
-          <div>
-            <p class="eyebrow">Audio</p>
-            <h2 id="mic-title">Microphone</h2>
+            <span id="mic-word" class="mic-word" data-state="unknown">unknown</span>
+            <p id="mic-line" class="subtle">Waiting for the daemon…</p>
             <p class="subtle">Yeti X mute state, straight from the daemon. These buttons move the mic only — the meeting-app sweep stays on the physical mic button, the tray mute item, and the Stream Deck key.</p>
+            <div style="height:14px"></div>
+            <div class="power-row" role="group" aria-label="Microphone mute">
+              <button class="button-primary" type="button" data-mic-action="mute">Mute</button>
+              <button type="button" data-mic-action="unmute">Unmute</button>
+              <!-- Toggle starts disarmed: the initial state is unknown, and an unknown-state daemon toggle is unpredictable. updateMic owns the disabled flag from the first definitive poll onward. -->
+              <button class="button-quiet" type="button" data-mic-action="toggle" disabled>Toggle</button>
+            </div>
           </div>
-          <span id="mic-status" class="status-badge" data-state="unknown">unknown</span>
-        </div>
-        <p id="mic-line" class="subtle">Waiting for the daemon…</p>
-        <div class="power-row" role="group" aria-label="Microphone mute">
-          <button class="button-primary" type="button" data-mic-action="mute">Mute</button>
-          <button type="button" data-mic-action="unmute">Unmute</button>
-          <!-- Toggle starts disarmed: the initial state is unknown, and an unknown-state daemon toggle is unpredictable. updateMic owns the disabled flag from the first definitive poll onward. -->
-          <button class="button-quiet" type="button" data-mic-action="toggle" disabled>Toggle</button>
-        </div>
-      </div>
-    </section>
+        </section>
 
-    <section class="panel" aria-labelledby="settings-title">
-      <div class="panel-inner">
-        <div class="panel-head">
-          <div>
-            <p class="eyebrow">Light looks</p>
-            <h2 id="settings-title">Saved settings</h2>
-            <p class="subtle">Snapshot the current look of every known light under a name, then restore or remove it here or from the tray menu. The daemon owns and persists the store, so this page and the tray always see the same set.</p>
+        <section class="panel" aria-labelledby="all-lights-title">
+          <div class="panel-inner">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Gang controls</p>
+                <h2 id="all-lights-title">All lights</h2>
+                <p class="subtle">Match writes one absolute value to every connected panel. Trim nudges each panel relative to its current setting.</p>
+              </div>
+              <button id="refresh" class="button-quiet button-icon" type="button" title="Refresh light status"><svg class="icon"><use href="#icon-refresh"></use></svg><span>Refresh</span></button>
+            </div>
+
+            <div class="control-grid">
+              <div class="control-block control-block-wide">
+                <div class="control-label"><span>Power</span><span>whole rig</span></div>
+                <div class="power-row" role="group" aria-label="All lights power">
+                  <button class="button-primary button-icon" type="button" data-group-action="on"><svg class="icon"><use href="#icon-power"></use></svg><span>All on</span></button>
+                  <button class="button-icon" type="button" data-group-action="off"><svg class="icon"><use href="#icon-power"></use></svg><span>All off</span></button>
+                  <button class="button-quiet" type="button" data-group-action="toggle">Toggle</button>
+                </div>
+              </div>
+
+              <div class="control-block">
+                <label class="control-label" for="group-brightness"><span>Match brightness</span><output id="group-brightness-output" for="group-brightness">Unknown</output></label>
+                <div class="range-wrap">
+                  <input id="group-brightness" type="range" min="0" max="100" value="55" style="--fill-pct:55" aria-label="Match brightness for all lights">
+                  <div class="range-hints"><span>0%</span><span>100%</span></div>
+                </div>
+              </div>
+
+              <div class="control-block">
+                <label class="control-label" for="group-temp"><span>Match warmth</span><output id="group-temp-output" for="group-temp">Unknown</output></label>
+                <div class="range-wrap">
+                  <input id="group-temp" type="range" min="0" max="18" value="9" aria-label="Match color temperature for all lights">
+                  <div class="range-hints"><span>2900K warm</span><span>7000K cool</span></div>
+                </div>
+              </div>
+
+              <div class="control-block">
+                <div class="control-label"><span>Group brightness trim</span><span>relative</span></div>
+                <div class="trim-row" role="group" aria-label="Relative group brightness trim">
+                  <button type="button" data-group-action="brightness-delta" data-value="-5">-5</button>
+                  <button type="button" data-group-action="brightness-delta" data-value="-1">-1</button>
+                  <button type="button" data-group-action="brightness-delta" data-value="1">+1</button>
+                  <button type="button" data-group-action="brightness-delta" data-value="5">+5</button>
+                </div>
+              </div>
+
+              <div class="control-block">
+                <div class="control-label"><span>Group warmth trim</span><span>one hardware step</span></div>
+                <div class="trim-row" role="group" aria-label="Relative group warmth trim">
+                  <button class="button-cool button-icon" type="button" data-group-action="temp-step-delta" data-value="1"><svg class="icon"><use href="#icon-plus"></use></svg><span>Cooler</span></button>
+                  <button class="button-warm button-icon" type="button" data-group-action="temp-step-delta" data-value="-1"><svg class="icon"><use href="#icon-minus"></use></svg><span>Warmer</span></button>
+                </div>
+              </div>
+            </div>
+
+            <div id="error-banner" class="error-banner" hidden role="alert">
+              <div class="error-copy"><svg class="icon"><use href="#icon-alert"></use></svg><span id="error-text"></span></div>
+              <button id="retry" type="button">Retry</button>
+            </div>
           </div>
-        </div>
-        <form id="settings-form" class="settings-save">
-          <input id="settings-name" type="text" maxlength="42" autocomplete="off" placeholder="Name this look" aria-label="Name this look">
-          <button class="button-primary" type="submit">Save</button>
-        </form>
-        <p id="settings-line" class="subtle settings-line">Checking for saved settings…</p>
-        <ul id="settings-list" class="settings-list"></ul>
-        <p id="settings-empty" class="empty" hidden>No saved settings yet — dial in a look above, name it, and Save.</p>
-      </div>
-    </section>
+        </section>
 
-    <div class="section-title">
-      <div><p class="eyebrow">Individual controls</p><h2>Panels</h2></div>
-      <p id="light-count">Waiting for the daemon…</p>
+        <section class="panel" aria-labelledby="settings-title">
+          <div class="panel-inner">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Light looks</p>
+                <h2 id="settings-title">Saved settings</h2>
+                <p class="subtle">Snapshot the current look of every known light under a name, then restore or remove it here or from the tray menu. The daemon owns and persists the store, so this page and the tray always see the same set.</p>
+              </div>
+            </div>
+            <form id="settings-form" class="settings-save">
+              <input id="settings-name" type="text" maxlength="42" autocomplete="off" placeholder="Name this look" aria-label="Name this look">
+              <button class="button-primary" type="submit">Save</button>
+            </form>
+            <p id="settings-line" class="subtle settings-line">Checking for saved settings…</p>
+            <ul id="settings-list" class="settings-list"></ul>
+            <p id="settings-empty" class="empty" hidden>No saved settings yet — dial in a look above, name it, and Save.</p>
+          </div>
+        </section>
+      </div>
+
+      <main class="main-flow">
+        <div class="section-title">
+          <div><p class="eyebrow">Individual controls</p><h2>Panels</h2></div>
+          <p id="light-count">Waiting for the daemon…</p>
+        </div>
+        <section id="lights-grid" class="lights-grid" aria-live="polite" aria-label="Individual lights"></section>
+        <div id="empty" class="empty" hidden><strong>No named or connected lights yet</strong><span>Start the mutastic daemon or plug in a PL81 PRO panel, then refresh.</span></div>
+      </main>
     </div>
-    <section id="lights-grid" class="lights-grid" aria-live="polite" aria-label="Individual lights"></section>
-    <div id="empty" class="empty" hidden><strong>No named or connected lights yet</strong><span>Start the mutastic daemon or plug in a PL81 PRO panel, then refresh.</span></div>
 
-    <footer>Loopback only · changes are persisted by the mutastic daemon · status refreshes every 750 ms</footer>
-  </main>
+    <footer class="footer">Loopback only · changes are persisted by the mutastic daemon · status refreshes every 750 ms</footer>
+  </div>
 
   <script src="/mutation_queue.js"></script>
   <script>
@@ -1016,7 +1025,7 @@
           // the card, so skip the rewrite when the list has not changed.
           $("settings-list").innerHTML = names.map((name) => {
             const escaped = escapeHTML(name);
-            return `<li class="setting-row"><span class="setting-name">${escaped}</span><button type="button" data-apply="${escaped}">Apply</button><button class="button-quiet" type="button" data-delete="${escaped}">Delete</button></li>`;
+            return `<li class="setting-row"><span class="setting-name">${escaped}</span><button type="button" data-apply="${escaped}">Apply</button><button class="button-quiet button-danger" type="button" data-delete="${escaped}">Delete</button></li>`;
           }).join("");
           state.settingsSignature = signature;
           bindSettingsControls();
