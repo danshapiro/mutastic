@@ -252,6 +252,7 @@
       transition: box-shadow var(--t-fast);
     }
     input[type=range]:not(:disabled):hover::-webkit-slider-thumb { box-shadow: var(--thumb-fx), 0 0 0 6px rgba(244,246,255,.10); }
+    input[type=range]:active::-webkit-slider-thumb { box-shadow: var(--thumb-fx), 0 0 0 6px rgba(244,246,255,.16); }
     input[type=range]:focus-visible::-webkit-slider-thumb { box-shadow: var(--thumb-fx), 0 0 0 5px var(--ring-halo); }
     input[type=range]:disabled::-webkit-slider-thumb { background: rgba(244,246,255,.35); box-shadow: none; }
     input[type=range]::-moz-range-track { height: 6px; border-radius: 999px; background: rgba(255,255,255,.12); }
@@ -440,6 +441,10 @@
       }
       /* Light-only structural deltas */
       body { color: var(--text); }
+      /* Signal-voice accents in daylight (design-light §1.4/§3.4): eyebrows + input caret.
+         Dark keeps eyebrow --text-3 (design-dark §1.6) and leaves the caret native. */
+      .eyebrow { color: var(--signal); }
+      #settings-name { caret-color: var(--signal); }
       /* Light cards signal "lit" by deepening, never brightening */
       .light-card {
         --aura-h: calc(38 + var(--glow-hue, 9) * 9.11);
@@ -458,6 +463,8 @@
       }
       .power-button[data-on="true"] { color: var(--live-text); background: rgba(10,110,80,.05); border-color: rgba(10,110,80,.85); }
       .power-button[data-on="true"] .icon { filter: none; }
+      /* Gang power triplet keeps a floor width so it reads as one control (design-light §3.3) */
+      .power-row[aria-label="All lights power"] button { min-width: 88px; }
       /* Brightness fill: deep cyan→teal on ink-wash track */
       input[data-field="brightness"]::-webkit-slider-runnable-track, #group-brightness::-webkit-slider-runnable-track {
         background-color: rgba(23,28,60,.12);
