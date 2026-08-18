@@ -1,136 +1,86 @@
 # Glassline Web UI Redesign — Design Spec
 
-- **Date:** 2026-08-17
-- **Status:** Approved by user (2026-08-17)
-- **Scope:** Complete visual redesign of the embedded web panel (`internal/lightui/index.html`) in the "Glassline" design language, in a command-deck layout, shipping dark and light adaptive themes.
-- **Non-goal:** any behavioral, endpoint, polling, queue, or protocol change.
+- **Date:** 2026-08-17 · **Revision:** 2 (supersedes rev 1, same commit history)
+- **Status:** rev 1 approved 2026-08-17; rev 2 per user directive — *"Ignore the tests and redo it; we want it to be outstanding, not consistent with the previous approach. We will update the tests as needed. Use subagents; make both designs as good."*
+- **Scope:** complete visual redesign of the embedded web panel (`internal/lightui/index.html`) in the Glassline design language, command-deck layout, dark + light adaptive themes, at outstanding design quality.
+- **Non-goal:** any behavioral, endpoint, polling, or protocol change. Tray, Stream Deck, daemon, and `mutation_queue.js` are untouched.
 
-## 1. Locked product decisions (from brainstorm)
+## 1. Locked product decisions (brainstorm, unchanged by rev 2)
 
-1. **Design language — Glassline.** Frosted translucent glass panels over a deep color-field backdrop, pill-shaped controls, airy white-on-glass typography, soft elevation and glow for active state elements. (Chosen from four presented directions.)
-2. **Layout — command deck.** A left rail of *verbs* stays in view: mic hero card, all-lights gang controls, saved settings. The wide main area holds the individual panels grid and owns scrolling at large widths. Below ~1100 px it collapses to a single column in the same order. (Chosen from three hierarchy options.)
-3. **Themes — dark + light, system-adaptive.** Two complete Glassline themes switched by `prefers-color-scheme`. No manual toggle in the page.
-4. **Color semantics — unchanged.** Muted = red (needs attention), unmuted/live = calm (green/cool family), offline/unknown = dimmed. Matches the tray icon meaning today.
-5. **Additive visual surface allowed:** a glowing "lamp" treatment for mic state, and per-light card glow proportional to brightness/steered by warmth. No new controls, no new API calls.
-6. **Execution note (user request):** independent work (theme-token development, pinned-contract verification, visual review passes) is fanned out to parallel subagents; `index.html` itself is a serially-edited single artifact.
+1. **Design language — Glassline:** frosted translucent panels over deep color fields, pill controls, airy typography, macOS/iOS register (chosen from four mockups).
+2. **Hierarchy — command deck:** left rail of verbs (mic hero, gang controls, saved settings) stays in view at ≥1100 px; wide main column holds the panels grid; single column below, same order (chosen from three wireframes).
+3. **Themes — dark + light, system-adaptive** via `prefers-color-scheme`, equal quality in both. No in-page toggle.
+4. **Color semantics — unchanged:** muted = rose/attention, unmuted-live = calm mint, off/unknown/disconnected = dim. Matches the tray icon's meaning.
+5. **Quality bar — outstanding, not consistent-with-today (rev 2):** design leads; markup, CSS, and inline JS may be freely restructured. The existing test suite's page-content assertions no longer constrain the design; the suite is updated to match afterwards (owner's step, §6).
 
-## 2. The contract that must survive (test-pinned surface)
+## 2. How the pair was built (rev 2 process)
 
-`ui_test.go` pins the embedded page hard. The redesign is a restyle *inside* this contract. All rules below have been verified against `ui_test.go` at commit `0654bdd`.
+Dark and light theme designs were produced **in parallel by two subagents** under one shared fixed spec, so the themes cohere without one being a lazy inversion of the other:
 
-### 2.1 JavaScript fragments pinned verbatim by string search
+- **Shared fixed spec (identical in both themes):** motion band 120–160 ms ease-out, press 1 px, hover lift ≤2 px, breathing 2.6 s muted-only, full `prefers-reduced-motion` kill; type scale 11/12/13/14/16/20/27 with uppercase 800-weight state words, tabular numerals, eyebrow labels; radius scale 6/10/14/20 + 999 pill; focus = 2 px signal ring + 3 px offset + 5 px 20%-alpha halo; state semantics per §1.4.
+- **Dark theme** (`design-dark.md`): deepens the chosen mockup to production fidelity.
+- **Light theme** (`design-light.md`): designed natively for daylight — glass white-on-bright with indigo-tinted shadows, "lit" expressed by *deepening* chromatic shadow+rim rather than bright halos (invisible on bright fields), ink primary pill answering dark's white pill.
 
-`TestEmbeddedLightUICardsUseTheirOwnIdentityAsTarget`, `TestEmbeddedLightUIHasSavedSettingsSection`, `TestEmbeddedLightUIMicCardUsesTheMicEndpoints` require (among others) the exact presence of:
+**Authoritative component-level design lives in the two theme files committed beside this spec:**
 
-- `const on = lightIsOn(light);`, `const brightnessDisplay = on ?`, `const tempDisplay = on ?`, `data-port="${port}"`, `const target = port;`, `{target, action: "toggle"}`, `{target, action: field, value: field === "brightness" ? value : TEMP_STEPS[value]}`, `lights.map(cardMarkup)`, `brightness.disabled = !on;`, `temp.disabled = !on;`, `"Mixed"` outputs for both group sliders, `refreshLights(true);` after a successful apply.
-- Saved settings: `>Saved settings</h2>`, `id="settings-form"`, `id="settings-name"`, `id="settings-list"`, `id="settings-empty"`, `function renderSettings(names) {`, `function refreshSettings() {`, `function bindSettingsControls() {`, `const escaped = escapeHTML(name);`, `data-apply="${escaped}"`, `data-delete="${escaped}"`, `>Delete</button>`, `renderSettings(data.names || []);`, `renderSettings(result.names);`, `if (name.trim() === "") return;`, `if (action === "apply") {`, `function showApplyDetail(detail) {`, the three exact `enqueueMutation(...)` strings for save/apply/delete, `refreshLights(true);\n            showApplyDetail(result.detail);`, `function flushPendingSliders() {`, `function settingsNameOverByteCap(name) {`, `new TextEncoder().encode(name).length > 42`, `const SETTINGS_NAME_TOO_LONG = "error: settings name too long (max 42 bytes)";`.
-- Exact call-site counts: `settingsNameOverByteCap(name)` guard appears **exactly 2** times (save, delete); `showError(SETTINGS_NAME_TOO_LONG);` exactly 2; `flushPendingSliders();` exactly 3.
-- Mic: `id="mic-status"`, `id="mic-line"`, `data-mic-action="mute"`, `data-mic-action="unmute"`, `data-mic-action="toggle"`, the literal startup button `<button class="button-quiet" type="button" data-mic-action="toggle" disabled>Toggle</button>`, the CSS selector `.status-badge[data-state="unreachable"]`, ``enqueueMutation(`mic:${action}`, "/api/mic", {action}, false)``, `function refreshMic()`, `function updateMic(`, `function bindMicControls()`.
-- Shared poll: `window.setInterval(() => { refreshLights(true); refreshMic(); refreshSettings(); }, 750);`.
-- Forbidden in source: `onSettled: () => refreshLights(true)`, `const target = escapeHTML(light.name || light.port);`, `data-target`, `lights[index]`, `data-index`, mute/unmute buttons rendered initially `disabled`, direct `fetch("/api/settings", {method: "POST"...})` or `fetch("/api/mic", {method: "POST"...)`.
-- DOM section order assertion: `id="all-lights-title"` index < `id="settings-title"` index < `Individual controls` index. (Mic section position is unpinned and may legally move above the gang section.)
-- Exactly one attribute-less `<script>` tag (the inline IIFE), which must compile under Node (`TestEmbeddedLightUIInlineScriptCompilesNode`).
+- `docs/superpowers/specs/design-dark.md` — tokens, backdrop field, three glass elevations, per-component treatments for every state, photometer warmth track, `--glow-bri`/hue aura formula, signature details, guardrails, and its computed-contrast table + state-matrix checklist.
+- `docs/superpowers/specs/design-light.md` — same structure for light, with daylight-native glass/lit-state engineering and per-stack computed contrasts.
 
-### 2.2 Behavioral contract under the Node DOM stub
+Everything in §3–§5 of this spec defers to those two files for values; this spec is the behavior/layout/acceptance contract.
 
-`runPageScriptWithDOMStub` executes the inline script against a minimal stub. The stub supports only: `getElementById`, `querySelector`/`querySelectorAll` (registry-backed for `[data-mic-action]`, `[data-apply]`, `[data-delete]`; fresh element otherwise), listener registration/dispatch (`click`, `submit`, `dispatch`), `setAttribute`/`getAttribute`, `dataset`, `hidden`, `disabled`, `value`, `textContent`, `innerHTML`, `document.activeElement === null`, `window.setInterval`, `fetch`.
+### Signature details that define "outstanding" here (both themes)
 
-Stub elements have **no** `style`, `classList`, `createElement`, `closest`, or CSS awareness. Therefore:
-- Any additive JS (e.g., writing CSS custom properties for per-light glow) must feature-detect (`if (el.style && el.style.setProperty)`) or run inside browser-only paths, or the DOM-stub tests throw and fail.
-- Preferred for mic-lamp state mirroring: pure CSS keyed off the existing `#mic-status` badge's `data-state` attribute (sibling combinator on an additive static lamp element placed after the badge in DOM order) — zero JS change needed for the mic hero.
+- **Physical tally lamp** for mic state: specular fleck, rim, weighted base; calm-steady when live, breathing sonar ring only when muted; unknown renders as an unlit glass bead.
+- **Photometer warmth control:** the 2900K→7000K track is a true color-temperature ramp with nineteen 1 px hardware detents (one per PL81 step), so the slider *is* the physics it controls.
+- **Per-light spill:** lit cards glow via `--glow-bri` (JS-set, 0–100) with hue steered by Kelvin (`color-mix(in oklab, …)` in dark so mid-temps never go green; deepening chromatic shadow in light). Off/error cards stay dark.
+- **Blur discipline:** only top-tier glass blurs; inset surfaces are tint-only with hairlines — no compound blur smearing.
+- **Brightness reads as luminance,** warmth reads as temperature, state reads as light: the whole page is built out of light metaphors.
 
-### 2.3 Not pinned by any test (safe to change)
+## 3. Layout — command deck (final)
 
-- `<meta name="color-scheme" content="dark">` — will become `light dark`.
-- All CSS (except the pinned selector `.status-badge[data-state="unreachable"]` — keep a rule carrying that selector; it may carry new declarations).
-- Static markup structure beyond the pinned fragments/IDs/order assertion, provided additive changes keep every pinned substring byte-exact.
+Desktop ≥1100 px: `.shell` is a grid — left rail `minmax(300px, 340px)`, main `1fr`; topbar spans both columns. Rail order: **mic hero card → gang/all-lights card → saved-settings card**, sticky within scroll. Main column: panels section header, `#lights-grid` (auto-fit), empty state; footer spans full width.
 
-## 3. Design language tokens
+900–1100 px and below: single column in the same order, existing mobile density adaptations re-skinned to Glassline.
 
-All tokens are CSS custom properties on `:root`, redefined per theme inside `@media (prefers-color-scheme: light)`. Values below are starting points; implementation may fine-tune ±1 step for contrast.
+**Markup freedom (rev 2):** the implementation restructures the DOM as needed to make DOM order == visual order (mic first in rail ⇒ tab order follows the hero emphasis), add the lamp element, re-shape card internals, rename classes, and reorganize the inline script — none of it is pinned anymore. The visible copy (headings, hints, state lines) stays as-is unless the design deliberately improves it; copy changes belong to the design review, not silent drift.
 
-### 3.1 Dark theme (default)
+## 4. Behavioral invariants (function-level; these survive redesign)
 
-- **Backdrop field** (`body` background): base `#0c0c18`; three large, soft radial color fields — violet at top-left (`rgba(120,80,220,.5)`), cyan top-right (`rgba(20,150,190,.45)`), magenta bottom-center (`rgba(190,60,150,.4)`) — each faded to transparent over ~55–65% of its radius. Static (no animation); the fields also live behind the rail so glass blurs against them.
-- **Glass panel surface:** `background: rgba(255,255,255,.08)`; `border: 1px solid rgba(255,255,255,.15)`; `border-radius: 20px` (cards 14–16px); `backdrop-filter: blur(16px) saturate(1.3)`; shadow `0 20px 44px rgba(0,0,0,.38)`, inner hairline `inset 0 1px 0 rgba(255,255,255,.14)`.
-- **Text:** primary `#f4f6ff`, secondary `rgba(244,246,255,.62)`, dim `rgba(244,246,255,.42)`.
-- **Accents:** signal cyan `#7de3ff` (focus rings, active tracks, cool end), warm amber `#ffc97d` (warm slider end, brand chip gradient), mint `#58f0c8` (online/on states).
-- **State hues:** live/unmuted = mint family; muted/mic-error = rose `#ff8f9e`; offline/unknown = dim.
-- **Typography:** system UI stack (unchanged); state words and panel names keep weight 700–800; tabular numerals for all values; uppercase tracking-eyebrow labels at `.69–.75rem`.
-- **Buttons:** pill radius `999px`; primary = near-opaque `rgba(255,255,255,.93)` with dark ink text `#1a1c2e` and soft drop shadow; secondary = glass with visible border; quiet = borderless dim text. Min hit height stays 44px.
+The tests' byte-pins are gone, but the product behaviors they enthroned remain binding on the new implementation:
 
-### 3.2 Light theme
+1. **Endpoints and payloads:** `/api/lights`, `/api/light`, `/api/group`, `/api/mic`, `/api/settings` — request/response shapes exactly as the daemon serves them. `mutation_queue.js` is not modified.
+2. **Update loop:** lights/mic/settings refresh together on the shared 750 ms interval; every poller keeps its in-flight guard.
+3. **Mutation discipline:** 100 ms slider debounce; pending slider mutations flush **before** any settings save/apply/delete enqueues; no direct `fetch` POSTs around the queue; mutation responses re-render cards/mic/settings from their own payloads; failed mutations surface in the rose banner and re-poll.
+4. **Identity binding:** every light-card control targets its canonical COM port, never the display name, never an array index.
+5. **Settings safety:** the 42-byte UTF-8 gate rejects over-cap names client-side with the daemon's own message, at both entry points (Save, row Delete), before any network call; Save of an empty/whitespace name issues no mutation; settings POST-response `names` render the list without a follow-up GET; partial-apply `detail` lines containing real failure shapes render into the banner, never hidden.
+6. **Mic verbs:** Mute/Unmute are absolute and armed at any reachable state; Toggle starts disarmed in markup and arms only at definitive muted/unmuted; unreachable disarms everything; state lines keep their four-shape text behavior (muted/unmuted/unknown/unreachable).
+7. **State semantics (§1.4) and ARIA:** error banner keeps `role="alert"`; live regions, labels, `aria-pressed`, and disabled-state logic keep their behavior under the new structure.
+8. **Group outputs:** match-slider outputs still show `Unknown` and `Mixed` per the same rules; both group trim rows keep their current deltas.
 
-- **Backdrop field:** base `#eef1fb`; same field positions at 40–50% opacity with pastel hues (violet `rgba(150,120,235,.35)`, cyan `rgba(90,180,220,.35)`, magenta `rgba(235,140,200,.3)`).
-- **Glass panel surface:** `background: rgba(255,255,255,.62)`; `border: 1px solid rgba(255,255,255,.9)` plus outer hairline via shadow tint; blur 16px; shadow `0 16px 36px rgba(60,70,120,.14)`.
-- **Text:** primary `#171b2e`, secondary `rgba(23,27,46,.6)`, dim `rgba(23,27,46,.42)`.
-- **Accents re-darkened for contrast:** cyan `#0e7490`, amber `#b5780f`, mint `#16845f`; rose `#c2434f`.
-- **Primary button:** dark glass — `rgba(23,27,46,.88)` with white text (a white-on-light-primary has no contrast; the "solid pill" inverts).
-- Contrast target: ≥ 4.5:1 for body text, ≥ 3:1 for large state words, in both themes.
+## 5. Accessibility & performance (both themes)
 
-### 3.3 Motion
+- DOM order equals visual order; focus sequence follows the hero hierarchy.
+- Focus ring per the fixed spec — never removed.
+- Contrast: acceptance = the computed tables in `design-dark.md §6.1` and `design-light.md §6.1` (body ≥4.5:1, large state words ≥3:1) verified as visually built.
+- `backdrop-filter` bounded to top-tier surfaces only; `@supports not (backdrop-filter: blur(1px))` fallbacks ship (opaque-enough alpha boosts per theme files); no animated blur.
+- Color field is one static pseudo-element; card re-renders remain signature-gated (§4.2 discipline applies to re-render churn as well).
 
-- Transitions on background/border/shadow/color ≤ 160 ms ease; press translation 1px; hover lift ≤ 2px.
-- Lamp glow breathes only when mic is *muted* (attention should pulse; calm states don't). All animation fully disabled under `prefers-reduced-motion: reduce` (keep and extend the existing guard block).
+## 6. Test strategy (rev 2 — suite follows design)
 
-## 4. Layout — command deck
+1. **Build gate:** `go build ./...` must pass.
+2. **Known-failing, by design:** any `ui_test.go` assertion that string-matches the old page fails until the owner (or a follow-up task) refreshes the suite. Expected failure classes: exact-fragment searches, exact call-site counts, the mic-button fixture markup, the DOM-stub behavioral harnesses (they can be re-pointed at the new structure — the harness pattern survives, selectors change), the inline-script compile gate (mechanically satisfied by keeping exactly one attribute-less `<script>` block).
+3. **Delivery includes a refresh map** (in the implementation plan): a table mapping each old assertion category to its new-page equivalent so the suite update is mechanical — e.g., *"toggle starts disabled"* now points at the new lamp/button markup; *"`settingsNameOverByteCap` gates ×2"* maps to the two gate call sites in the reorganized script; selector-level invariants (`.status-badge[data-state="unreachable"]` rule presence) map to their new selector names. The refresh map is generated from the final page, not hand-guessed.
+4. **Acceptance = visual/behavioral runbook:** the full state matrix from both theme files' §6.2 — every element × every state (mic unmuted/muted/unknown/unreachable; connection online/degraded; light on/off/error/disconnected; group outputs Unknown/Mixed; settings empty/populated/store-error; banner paths incl. partial apply) — at **1440 px and 650 px**, in **both themes**, verified via browser screenshots. Plus interactive checks: slider debounce/ordering (drag a slider then immediately Save, confirm the applied look matches the drag), queue ordering, focus visibility, `prefers-reduced-motion`.
 
-Desktop ≥1100 px: `.shell` becomes a grid — left rail column (`minmax(300px, 340px)`) and main column (`1fr`); the topbar spans both columns. Rail contains, in order: **mic hero card**, **gang/all-lights card**, **saved-settings card**. Main column contains: panels section header, `#lights-grid` (2+ column auto-fit), the empty state. The rail has `position: sticky` within the scroll so verbs stay in view while panels scroll; the footer spans the full width at the bottom.
-
-900–1100 px: single column; order = topbar, mic, gang, settings, panels (identical to DOM order after the mic move).
-
-<900 px: existing mobile adaptations kept and re-skinned (padding/radius scale down, rail unstick).
-
-**Markup strategy:** the mic `<section>` physically moves above the gang section in source so DOM order == visual order (keyboard tab order follows focus order: Mute/Unmute/Toggle reachable before gang controls; matches the hero emphasis). The section-order assertion in the tests (`gang < settings < individual`) is unaffected by this move. No other structural reordering; additive decorative elements only.
-
-## 5. Component specifications
-
-1. **Backdrop field:** implemented on `body::before` (fixed, `inset:0`, `pointer-events:none`, `z-index:-1` stacking) so it never intercepts clicks; static gradients only.
-2. **Topbar:** brand chip = pill with the sun glyph on a frosted tile; connection pill is glass with a glowing dot (mint=cool glow online, amber degraded, dim offline).
-3. **Mic hero card (rail):** large state lamp — a static, additive element (`aria-hidden`) placed as a following sibling of `#mic-status` inside the card head region; its appearance is driven entirely by CSS keyed on `#mic-status[data-state=...]` (unmuted → mint glow, calm; muted → rose glow + breathing pulse; unknown/unreachable → dim/inert). Big state word + `#mic-line` beneath; Mute = primary solid pill, Unmute/Toggle glass pills; Toggle's pinned initial-disabled markup is untouched.
-4. **Gang card:** same control set (power row, two match sliders with warm→cool gradient tracks, two trim rows); wide control blocks become a vertical stack sized to the rail; slider tracks gain cyan→amber gradient and a lit fill up to thumb where feasible with pure CSS.
-5. **Saved-settings card:** save form pill input + primary pill button; rows = thin frosted chips with the name, Apply (solid small pill), Delete (quiet small pill); empty state keeps the dashed treatment re-toned to glass.
-6. **Light cards:** frosted cards in the main grid; name + connection meta + status badge (unchanged semantics); power button as glowing toggle (lit edge + glow ring when `data-on="true"`); sliders as gang-card sliders. **Per-light glow (additive JS):** `updateCard` sets `card.style.setProperty('--glow-bri', …)` (0–100) and `--glow-hue` (from the temp index) inside an `if (card.style && card.style.setProperty)` feature-detect so the Node DOM stub (no `style`) keeps passing untouched; the card's aura is `box-shadow`/pseudo-element computed from the custom properties (higher brightness = stronger halo; warmer temp = warmer halo tint). Off/disconnected/error → no glow (halo alpha 0), and the card-error banner keeps visual precedence over any glow.
-7. **Error banner + card errors:** frosted rose-tinted glass, keep `role="alert"`/structure; error presentation always outranks glows.
-8. **Footer:** centered dim line, unchanged text.
-
-## 6. State-coverage requirement
-
-Every visual treatment must be designed and verified for: mic unmuted/muted/unknown/unreachable; connection online/degraded; light on/off/error/disconnected/mixed-group outputs; settings list empty/populated + store-error line — in **both** themes, and at ~650 px and ~1440 px widths. A checklist runbook (screenshots) is part of the implementation plan's verification step.
-
-## 7. Accessibility
-
-- DOM order equals visual order after the mic move; no focus-trapping elements added.
-- All interactive elements keep `focus-visible` outlines — restyled to the signal cyan ring, never removed.
-- Pure-CSS/sibling-driven state visuals mean no new live-region behavior; existing `aria-live` nodes and roles remain exactly as pinned.
-- Contrast per §3.2 in both themes.
-
-## 8. Performance constraints
-
-- `backdrop-filter` budget: rail cards + topbar pill + each light card = O(5–10) blurred surfaces on one page; no nested blur-in-blur stacking. If jank appears with many panels, reduce card blur to 10px or swap grid cards to an opaque surface — never animate backdrop-filter.
-- The color-field backdrop is one static pseudo-element; no per-frame GPU work. Poll renders unchanged (signature-gated innerHTML rewrite logic untouched).
-
-## 9. Testing & verification strategy
-
-1. **Existing suite:** `go test ./...` must be green with **zero edits to test logic**; the suite itself is the regression net for the contract in §2. (`internal/lightui/mutation_queue_test.js` similarly untouched; standalone Node gate passes.)
-2. **Pinned-contract verification (automated, additive):** before-opening-PR step diffs a machine-extracted list of every string literal asserted against `lightUIHTML` in `ui_test.go` between pre-redesign and post-redesign page content — all must still be present `go test` green suffices for enforcement; the diff list is a review aid.
-3. **Manual visual runbook:** build the Windows binary (`./build.sh`), run the daemon + panel locally, and capture screenshots for every state cell in §6 in both themes (Chrome device emulation `prefers-color-scheme`, or inspect in light via OS toggle). Drag sliders to check warm/cool tracks and card glow response; confirm the rail stays pinned while scrolling a long panel grid (synthesize ≥6 fake light cards if hardware isn't present — devtools-only, no code hooks added).
-
-## 9.1 Visual north-star
-
-The chosen direction mockup lives at `.superpowers/brainstorm/2776365-1787011390/content/directions.html` (option B, "Glassline"). The redesign should read as a faithful, full-fidelity realization of that mockup — same backdrop fields, glass treatment, pill controls, and airy type — adapted to the command-deck layout from `hierarchy.html` option C ("Command deck"). If the implementation diverges from the mock in any visible way, the divergence is a bug unless deliberately decided in review.
-
-## 10. Risks and mitigations
+## 7. Risks (rev 2)
 
 | Risk | Mitigation |
 |---|---|
-| Pinned-fragment drift while re-skinning markup | Fragment list above; `go test ./...` after every markup session; move-only mic section (no content edits). |
-| `backdrop-filter` cost or absence | Bounded surface count; graceful opaque fallback via `@supports not (backdrop-filter: …)` raising glass alpha. |
-| Light-glass contrast misses | Token values chosen with §3.2 targets; runbook includes a contrast spot-check pass. |
-| `updateCard` additive style writes breaking DOM-stub tests | Feature-detect gate (`card.style && card.style.setProperty`) — verified by the untouched Node tests. |
-| `position: sticky` rail weirdness with long grids | Sticky only ≥1100 px; drop to static below; manual scroll runbook item. |
-| Single-file edit bottleneck vs. parallel subagents | Serial core edit owned by one worker; parallelism applied to token derivation, runbook execution, and review — not to concurrent edits of `index.html`. |
+| Behavior drift now that byte-pins are gone | §4 invariant list is the checklist; diff review walks every removed line against it; the runbook covers each invariant's user-visible surface. |
+| Suite red on merge until refresh | Communicated as expected; refresh map makes the follow-up mechanical; `go build` + runbook are the interim gate. |
+| Backdrop-field banding on cheap displays | Static gradients with wide fades are banding-prone; if visible, add a 1–2% opacity noise overlay — tokens already isolate the field in one pseudo-element. |
+| Two themes diverging silently later | The shared fixed spec tokens (motion/type/radii/focus) are the single source both themes read; any later tweak touches that table in both files or neither. |
 
-## 11. Out of scope
+## 8. Out of scope
 
-Tray icons/menus, Stream Deck key actions, daemon endpoints and UDP protocol, `mutation_queue.js`, build/deploy scripts, and any new feature (no themes toggle UI, no drag-reordering, no renaming from the panel).
+Tray icons/menus, Stream Deck actions, daemon endpoints/UDP protocol, `mutation_queue.js`, build/deploy scripts, in-page theme toggle, renaming lights from the panel, drag-reordering, and the test-suite refresh itself (owner's follow-up per §6).
