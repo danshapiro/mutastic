@@ -924,7 +924,10 @@
           }
           // F6 (200 with a failed follow-up refresh): surface the cause in
           // the card's status line so the POST itself is not silent.
-          if (result && result.error) $("settings-line").textContent = String(result.error);
+          if (result && result.error) {
+            $("settings-line").textContent = String(result.error);
+            $("settings-line").dataset.tone = "error";
+          }
           const action = mutation && mutation.body ? mutation.body.action : "";
           if (action === "save") {
             $("settings-name").value = "";
@@ -1093,13 +1096,16 @@
           renderSettings(data.names || []);
           const error = data && data.error ? String(data.error) : "";
           // F5: a disabled/corrupt store's refusal string surfaces in the
-          // card itself; the light poll keeps owning the error banner.
+          // card itself; the light poll keeps owning the error banner. Store
+          // errors render in rose (design §3.5), the healthy line does not.
           $("settings-line").textContent = error || SETTINGS_LINE_DEFAULT;
+          if (error) $("settings-line").dataset.tone = "error"; else delete $("settings-line").dataset.tone;
           if (error) {
             $("settings-empty").hidden = true;
           }
         } catch {
           $("settings-line").textContent = "Saved settings are unreachable — the daemon is not answering.";
+          $("settings-line").dataset.tone = "error";
         } finally {
           state.settingsPolling = false;
         }
