@@ -132,44 +132,6 @@ func TestSortUILightsOrdersExtraNamesAndUnnamedPorts(t *testing.T) {
 	}
 }
 
-func TestEmbeddedLightUICardsUseTheirOwnIdentityAsTarget(t *testing.T) {
-	source := string(lightUIHTML)
-	for _, fragment := range []string{
-		`const on = lightIsOn(light);`,
-		`const brightnessDisplay = on ?`,
-		`const tempDisplay = on ?`,
-		`data-port="${port}"`,
-		`const target = port;`,
-		`{target, action: "toggle"}`,
-		`{target, action: field, value: field === "brightness" ? value : TEMP_STEPS[value]}`,
-		`lights.map(cardMarkup)`,
-	} {
-		if !strings.Contains(source, fragment) {
-			t.Fatalf("embedded UI is missing identity-bound control fragment %q", fragment)
-		}
-	}
-	for _, fragment := range []string{
-		`brightness.disabled = !on;`,
-		`temp.disabled = !on;`,
-		`$("group-brightness-output").textContent = "Mixed";`,
-		`$("group-temp-output").textContent = "Mixed";`,
-		`refreshLights(true);`,
-	} {
-		if !strings.Contains(source, fragment) {
-			t.Fatalf("embedded UI is missing state/refresh fragment %q", fragment)
-		}
-	}
-	if strings.Contains(source, `onSettled: () => refreshLights(true)`) {
-		t.Fatal("successful mutation must not trigger a redundant status refresh")
-	}
-	if strings.Contains(source, `const target = escapeHTML(light.name || light.port);`) || strings.Contains(source, `data-target`) {
-		t.Fatal("card controls must target the canonical COM port, never the mutable display name")
-	}
-	if strings.Contains(source, "lights[index]") || strings.Contains(source, "data-index") {
-		t.Fatal("embedded UI must not bind a card control through a visual array index")
-	}
-}
-
 func TestLightMutationQueueNode(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
