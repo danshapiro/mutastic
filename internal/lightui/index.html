@@ -572,7 +572,7 @@
               </div>
 
               <div class="control-block">
-                <label class="control-label" for="group-brightness"><span>Match brightness</span><output id="group-brightness-output" for="group-brightness">Unknown</output></label>
+                <label class="control-label" for="group-brightness"><span>Match brightness</span><output id="group-brightness-output" for="group-brightness" data-tone="unknown">Unknown</output></label>
                 <div class="range-wrap">
                   <input id="group-brightness" type="range" min="0" max="100" value="55" style="--fill-pct:55" aria-label="Match brightness for all lights">
                   <div class="range-hints"><span>0%</span><span>100%</span></div>
@@ -580,7 +580,7 @@
               </div>
 
               <div class="control-block">
-                <label class="control-label" for="group-temp"><span>Match warmth</span><output id="group-temp-output" for="group-temp">Unknown</output></label>
+                <label class="control-label" for="group-temp"><span>Match warmth</span><output id="group-temp-output" for="group-temp" data-tone="unknown">Unknown</output></label>
                 <div class="range-wrap">
                   <input id="group-temp" type="range" min="0" max="18" value="9" aria-label="Match color temperature for all lights">
                   <div class="range-hints"><span>2900K warm</span><span>7000K cool</span></div>
@@ -770,7 +770,7 @@
         }
         if (!tempActive) {
           if (on) temp.value = temperatureIndex(light.temp);
-          tempOutput.textContent = on ? `${TEMP_STEPS[temperatureIndex(light.temp)]}K` : "Unknown";
+          setChip(tempOutput, on ? `${TEMP_STEPS[temperatureIndex(light.temp)]}K` : "Unknown", !on);
         }
         applyGlow(card, light);
         if (!brightnessActive) writeFill(brightness, on ? light.brightness : 0);
@@ -780,6 +780,14 @@
         } else {
           cardError.hidden = true;
         }
+      }
+
+      // Unknown/Mixed readout chips render in the dim tone; definite values
+      // are bright (design-dark §3.1 value outputs). data-tone="unknown" is
+      // the hook the stylesheet already ships.
+      function setChip(output, text, dim) {
+        output.textContent = text;
+        if (dim) output.dataset.tone = "unknown"; else delete output.dataset.tone;
       }
 
       function updateGroupDefaults(lights) {
@@ -793,23 +801,23 @@
 
         if (!brightnessActive) {
           if (brightnessValues.length === 0) {
-            $("group-brightness-output").textContent = "Unknown";
+            setChip($("group-brightness-output"), "Unknown", true);
           } else if (brightnessValues.every((value) => value === brightnessValues[0])) {
             brightness.value = brightnessValues[0];
             writeFill(brightness, brightnessValues[0]);
-            $("group-brightness-output").textContent = `${brightnessValues[0]}%`;
+            setChip($("group-brightness-output"), `${brightnessValues[0]}%`, false);
           } else {
-            $("group-brightness-output").textContent = "Mixed";
+            setChip($("group-brightness-output"), "Mixed", true);
           }
         }
         if (!tempActive) {
           if (tempValues.length === 0) {
-            $("group-temp-output").textContent = "Unknown";
+            setChip($("group-temp-output"), "Unknown", true);
           } else if (tempValues.every((value) => value === tempValues[0])) {
             temp.value = tempValues[0];
-            $("group-temp-output").textContent = `${TEMP_STEPS[tempValues[0]]}K`;
+            setChip($("group-temp-output"), `${TEMP_STEPS[tempValues[0]]}K`, false);
           } else {
-            $("group-temp-output").textContent = "Mixed";
+            setChip($("group-temp-output"), "Mixed", true);
           }
         }
       }
@@ -1161,14 +1169,14 @@
         brightness.addEventListener("focus", () => state.active.add("group:brightness"));
         brightness.addEventListener("blur", () => state.active.delete("group:brightness"));
         brightness.addEventListener("input", () => {
-          $("group-brightness-output").textContent = `${brightness.value}%`;
+          setChip($("group-brightness-output"), `${brightness.value}%`, false);
           writeFill(brightness, Number(brightness.value));
           scheduleSlider("group:brightness", "/api/group", {action: "set-brightness", value: Number(brightness.value)});
         });
         temp.addEventListener("focus", () => state.active.add("group:temp"));
         temp.addEventListener("blur", () => state.active.delete("group:temp"));
         temp.addEventListener("input", () => {
-          $("group-temp-output").textContent = `${TEMP_STEPS[Number(temp.value)]}K`;
+          setChip($("group-temp-output"), `${TEMP_STEPS[Number(temp.value)]}K`, false);
           scheduleSlider("group:temp", "/api/group", {action: "set-temp", value: TEMP_STEPS[Number(temp.value)]});
         });
       }
