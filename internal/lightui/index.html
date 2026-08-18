@@ -762,6 +762,8 @@
         if (on && !state.active.has(tempKey) && document.activeElement !== temp) temp.value = temperatureIndex(light.temp);
         brightnessOutput.textContent = on ? `${light.brightness}%` : "—";
         tempOutput.textContent = on ? `${TEMP_STEPS[temperatureIndex(light.temp)]}K` : "Unknown";
+        applyGlow(card, light);
+        writeFill(brightness, on ? light.brightness : 0);
         if (light.error) {
           cardError.hidden = false;
           card.querySelector(".card-error-text").textContent = light.error;
@@ -784,6 +786,7 @@
             $("group-brightness-output").textContent = "Unknown";
           } else if (brightnessValues.every((value) => value === brightnessValues[0])) {
             brightness.value = brightnessValues[0];
+            writeFill(brightness, brightnessValues[0]);
             $("group-brightness-output").textContent = `${brightnessValues[0]}%`;
           } else {
             $("group-brightness-output").textContent = "Mixed";
@@ -818,6 +821,7 @@
               const value = Number(input.value);
               const output = card.querySelector(`output[id^=${field}-output]`);
               output.textContent = field === "brightness" ? `${value}%` : `${TEMP_STEPS[value]}K`;
+              if (field === "brightness") writeFill(input, value);
               scheduleSlider(key, "/api/light", {target, action: field, value: field === "brightness" ? value : TEMP_STEPS[value]});
             });
           });
@@ -921,6 +925,21 @@
         mutationQueue.enqueue({key, endpoint, body, replace});
       }
 
+      // -- Glow + fill helpers (additive; never required for the page to function) --
+      function applyGlow(cardEl, light) {
+        if (!cardEl || !cardEl.style || !cardEl.style.setProperty) return;
+        const on = lightIsOn(light);
+        const bri = on ? Math.max(0, Math.min(100, Number(light.brightness))) : 0;
+        const hue = on ? temperatureIndex(light.temp) : 0;
+        cardEl.style.setProperty("--glow-bri", String(bri));
+        cardEl.style.setProperty("--glow-hue", String(hue >= 0 ? hue : 0));
+      }
+      function writeFill(inputEl, pct) {
+        if (!inputEl || !inputEl.style || !inputEl.style.setProperty) return;
+        inputEl.style.setProperty("--fill-pct", String(Math.max(0, Math.min(100, Number(pct)))));
+      }
+      let micCommittedAt = 0;
+
       function micLineText(micState) {
         switch (micState) {
           case "muted":
@@ -935,10 +954,13 @@
       }
 
       function updateMic(micState) {
+        if (Date.now() - micCommittedAt < 175) return; // a just-pressed verb owns the UI until the daemon acks
         const badge = $("mic-status");
         badge.dataset.state = micState;
         badge.textContent = micState;
         $("mic-line").textContent = micLineText(micState);
+        const word = $("mic-word");
+        if (word) { word.dataset.state = micState; word.textContent = micState; }
         document.querySelectorAll("[data-mic-action]").forEach((button) => {
           if (button.dataset.micAction === "toggle") {
             // Toggle at unknown resolves to an absolute mute the user cannot
@@ -972,6 +994,7 @@
       function bindMicControls() {
         document.querySelectorAll("[data-mic-action]").forEach((button) => {
           button.addEventListener("click", () => {
+            micCommittedAt = Date.now();
             const action = button.dataset.micAction;
             enqueueMutation(`mic:${action}`, "/api/mic", {action}, false);
           });
@@ -1129,6 +1152,7 @@
         brightness.addEventListener("blur", () => state.active.delete("group:brightness"));
         brightness.addEventListener("input", () => {
           $("group-brightness-output").textContent = `${brightness.value}%`;
+          writeFill(brightness, Number(brightness.value));
           scheduleSlider("group:brightness", "/api/group", {action: "set-brightness", value: Number(brightness.value)});
         });
         temp.addEventListener("focus", () => state.active.add("group:temp"));
