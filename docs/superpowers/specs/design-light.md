@@ -91,9 +91,9 @@ State semantics are **locked**: muted = rose/attention, live = calm mint, unknow
 | type scale | `11 / 12 / 13 / 14 / 16 / 20 / 27px` |
 | state words | `27px`, weight 800, uppercase, `letter-spacing: -.01em` |
 | eyebrows | `11px` (.69–.72rem), weight 750, uppercase, `letter-spacing: .13em`, color `--signal` |
-| card names / section h2 | `16px` weight 700 / `20px` weight 800 |
+ | card names / section h2 | `14px` weight 700 / `20px` weight 800 |
 | values (%, K, port meta digits) | `font-variant-numeric: tabular-nums`, weight 700 |
-| spacing | `4 / 8 / 12 / 16 / 20 / 28px` scale; card padding `20px`; grid gap `16px` |
+ | spacing | `4 / 8 / 12 / 16 / 20 / 28px` scale; card padding `17px`; grid gap `16px` |
 
 ---
 

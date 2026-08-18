@@ -81,7 +81,7 @@ off and unknown deliberately render identically (same text, wash, and hairline �
 | `--mut-r-6/10/14/20` | `6px / 10px / 14px / 20px` 🔒 | readout chips+tracks 6 · setting rows, inputs, card-error 10 · control blocks, light cards, empty states, error banner 14 · rail cards/panels 20 |
 | `--mut-r-pill` | `999px` 🔒 | all buttons, badges, connection pill, sliders' channel caps |
 | `--mut-sp-1…7` | `4 / 8 / 12 / 16 / 20 / 24 / 32px` | card padding 20; card gap 16; control gap 12; intra-label gaps 8/4; section gaps 24/32 |
-| Type scale 🔒 | `11 / 12 / 13 / 14 / 16 / 20 / 27px` | 11 eyebrow+footer+hints · 12 meta+secondary lines · 13 body · 14 light names/card titles+outputs (700, tabular) · 20 wordmark (750) · 27 mic state word |
+ | Type scale 🔒 | `11 / 12 / 13 / 14 / 16 / 20 / 27px` | 11 eyebrow+footer+hints · 12 meta+secondary lines · 13 body·outputs (700, tabular) · 14 names/card titles (700) · 20 wordmark (750) · 27 mic state word |
 | State words 🔒 | uppercase, weight `800`, tracking `-0.01em`, line-height `1.15` | mic state word |
 | Eyebrows 🔒 | `11.5px` (.72rem), uppercase, weight `750`, tracking `.13em`, color `--mut-text-3` | section eyebrows |
 | Numerals 🔒 | `font-variant-numeric: tabular-nums` on every output/%/K/meta value | outputs, readout chips |
