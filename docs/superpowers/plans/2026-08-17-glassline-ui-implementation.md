@@ -211,7 +211,7 @@ Replace from `<style>` through the end of the old `:root`/body/html and backdrop
       --g2-bg: rgba(255,255,255,.05);
       --g2-border: rgba(255,255,255,.11);
       --g2-blur: none;
-      --g2-shadow: none;
+      --g2-shadow: 0 0 0 rgba(0,0,0,0);
       --g2-inner: inset 0 1px 0 rgba(255,255,255,.07);
       --g3-bg: rgba(255,255,255,.11);
       --g3-border: rgba(255,255,255,.20);
@@ -241,7 +241,7 @@ Replace from `<style>` through the end of the old `:root`/body/html and backdrop
       --b1-shadow-active: 0 4px 12px rgba(2,4,14,.50), inset 0 1px 0 rgba(255,255,255,.35);
       --b2-bg: rgba(244,246,255,.10); --b2-border: rgba(244,246,255,.18); --b2-text: var(--text);
       --b2-bg-hover: rgba(244,246,255,.14); --b2-border-hover: rgba(244,246,255,.32);
-      --b2-shadow: none;
+      --b2-shadow: 0 0 0 rgba(0,0,0,0);
       --quiet-text: var(--text-2); --quiet-bg-hover: rgba(244,246,255,.07); --quiet-bg-active: rgba(244,246,255,.10);
       --qd-text: #ffc0d0; --qd-bg-hover: rgba(255,135,163,.08); --qd-bg-active: rgba(255,135,163,.12);
       --dot-online: #58f0c8;  --dot-online-fx: 0 0 8px rgba(88,240,200,.70), 0 0 0 3px rgba(88,240,200,.12);
@@ -255,7 +255,7 @@ Replace from `<style>` through the end of the old `:root`/body/html and backdrop
       --lamp-muted-ring: rgba(255,143,160,.35);
       --lamp-unreach-ring: rgba(244,246,255,.22);
       --lamp-unknown-face: radial-gradient(circle at 34% 30%, rgba(244,246,255,.18), rgba(244,246,255,.05) 60%, rgba(10,12,24,.30));
-      --lamp-unknown-fx: none; --lamp-unknown-blur: blur(4px);
+      --lamp-unknown-fx: 0 0 0 rgba(0,0,0,0); --lamp-unknown-blur: blur(4px);
       --aura-warm: #ffb066; --aura-cool: #ccdcff;
       --track-warm-end: #ffb169; --track-cool-end: #ccdcff;
       --thumb-bg: #f7f9ff;
@@ -959,7 +959,7 @@ git commit -m "feat(ui): glow/fill writers, mic commit buffer + state word"
 - [ ] **Step 1: Connection + topbar** — `default`→ dot green-halo "Daemon connected"; `degraded` → amber "Daemon issue"/"Panel offline"; fresh load shows dim "Connecting" before first poll.
 - [ ] **Step 2: Mic hero × {unmuted, muted, unknown, unreachable}** — badge/lamp/word/line agree; breathing ONLY in muted (2.6 s); unknown = Toggle disabled, Mute/Unmute armed, bead renders the field; unreachable = all three disabled, dashed orbital ring, lamp opacity .5.
 - [ ] **Step 3: Gang outputs** — `default` (COM5 on 55%/4950K vs COM7 on 80%/2900K) ⇒ group outputs read `Mixed`/`Mixed` in the dim tone; click COM7's power off ⇒ outputs resolve to the definite `55%`/`4950K` chips; drag group brightness then hit Save ⇒ `/tmp/opencode/verify/mutations.log` shows the slider POST **before** the settings save POST; definite-brightness state shows the fill tracking the thumb.
-- [ ] **Step 4: Light cards** — `default` (on 55% 4950K, on 80% 2900K, off) + `mixed` (30% 6500K, 100% 2900K) + `errcard` (`card-error` strip visible; card border rose in light mode, aura still present but banner visually outranks: aura is outside, error strip inside) + off card = zero aura + disabled sliders + `off` badge; heater: power-button `data-on="true"` carries the lit-edge treatment; disconnected cards quieted.
+- [ ] **Step 4: Light cards** — `default` (on 55% 4950K, on 80% 2900K, off) + `mixed` (30% 6500K, 100% 2900K) + `errcard` (`card-error` strip visible; card border rose in light mode, aura zeroed by construction; banner + rose border own the error state) + off card = zero aura + disabled sliders + `off` badge; heater: power-button `data-on="true"` carries the lit-edge treatment; disconnected cards quieted.
 - [ ] **Step 5: Settings** — empty (`empty` profile) → dashed empty state; 1 row + 3 rows (`default`) → apply/delete round-trip from the `settings-line`, rows keep hover border; `settings_store_error` → `#settings-line` shows the store error in rose text; over-42-byte name typed into `#settings-name` + Save → zero network call (no new line in `mutations.log`), page banner shows `SETTINGS_NAME_TOO_LONG` text, then clears after the timeout.
 - [ ] **Step 6: Banner lifecycle** — `degraded` → banner visible with `role="alert"`, Retry present; press Retry (or wait for next poll after switching back to `default`) → banner fades, connection pill returns to online.
 - [ ] **Step 7: Empty panels** — `empty` → dashed panel with two-part copy in main column; section count reads "0 lights".
