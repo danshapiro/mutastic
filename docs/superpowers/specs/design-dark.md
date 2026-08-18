@@ -28,10 +28,12 @@ All tokens are CSS custom properties on `:root`.
 | Tier | Used for | background | border | backdrop-filter | outer shadow | inner shadow |
 |---|---|---|---|---|---|---|
 | **Glass-1** (card) | rail cards, light cards, top-level panels | `rgba(255,255,255,.075)` + `linear-gradient(180deg, rgba(255,255,255,.045), transparent 30%)` | `1px solid rgba(255,255,255,.155)` | `blur(20px) saturate(1.35)` | `0 24px 48px rgba(2,4,14,.50)` | `inset 0 1px 0 rgba(255,255,255,.15)` |
-| **Glass-2** (inset) | control blocks, setting rows, text input, readout chips | `rgba(255,255,255,.05)` | `1px solid rgba(255,255,255,.11)` | **none — deliberately** (see §4.5) | none | `inset 0 1px 0 rgba(255,255,255,.07)` |
+| **Glass-2** (inset) | control blocks, setting rows, text input, readout chips | `rgba(255,255,255,.05)` | `1px solid rgba(255,255,255,.11)` | **none — deliberately** (see §4.5) | `0 0 0 rgba(0,0,0,0)` | `inset 0 1px 0 rgba(255,255,255,.07)` |
 | **Glass-3** (float) | connection pill, brand chip, badges | `rgba(255,255,255,.11)` | `1px solid rgba(255,255,255,.20)` | `blur(12px) saturate(1.3)` | `0 8px 20px rgba(2,4,14,.40)` | `inset 0 1px 0 rgba(255,255,255,.20)` |
 
 Recessed variants (inputs, readout chips) swap the inner hairline for `inset 0 1px 3px rgba(2,4,14,.32), inset 0 -1px 0 rgba(255,255,255,.05)` and use `rgba(10,12,24,.32)` as fill. Fallback: under `@supports not (backdrop-filter: blur(1px))`, glass-1 bg rises to `rgba(19,21,42,.90)`, glass-3 to solid `#22253f`.
+
+Zero-shadow tiers and zero-glow states carry the real value `0 0 0 rgba(0,0,0,0)`, never the keyword `none` — composite shadow stacks (element + tier token + appended halo/glow) must stay parseable with the token slotted in.
 
 ### 1.3 Text ramp (contrast computed in §6.1 against the worst-case glass composite `(85,64,141)`)
 
@@ -66,9 +68,11 @@ Recessed variants (inputs, readout chips) swap the inner hairline for `inset 0 1
 | muted | `--mut-rose-text` | `rgba(255,135,163,.10)` | `rgba(255,150,190,.48)` |
 | error (light card) | `--mut-rose-text` | `rgba(255,135,163,.12)` | `1px solid rgba(255,143,160,.50)` |
 | unreachable (mic) | `--mut-rose-text` | `rgba(255,135,163,.08)` | `1px dashed rgba(255,143,160,.55)` |
-| off | `--mut-text-3` | transparent | `1px solid rgba(244,246,255,.14)` |
+| off | `--mut-text-3` | `rgba(244,246,255,.04)` — shares unknown's wash (`--unknown-bg`) | `1px solid rgba(244,246,255,.14)` |
 | unknown | `--mut-text-3` | `rgba(244,246,255,.04)` | `1px solid rgba(244,246,255,.14)` |
 | disconnected | `--mut-text-3` | transparent | `1px dashed rgba(244,246,255,.18)` |
+
+off and unknown deliberately render identically (same text, wash, and hairline — one shared rule): the states are never co-located (off appears on light cards, unknown on the mic), so sameness is unambiguous against §5 rule 3.
 
 ### 1.6 Radius 🔒, spacing, typography, motion
 
@@ -77,7 +81,7 @@ Recessed variants (inputs, readout chips) swap the inner hairline for `inset 0 1
 | `--mut-r-6/10/14/20` | `6px / 10px / 14px / 20px` 🔒 | readout chips+tracks 6 · setting rows, inputs, card-error 10 · control blocks, light cards, empty states, error banner 14 · rail cards/panels 20 |
 | `--mut-r-pill` | `999px` 🔒 | all buttons, badges, connection pill, sliders' channel caps |
 | `--mut-sp-1…7` | `4 / 8 / 12 / 16 / 20 / 24 / 32px` | card padding 20; card gap 16; control gap 12; intra-label gaps 8/4; section gaps 24/32 |
-| Type scale 🔒 | `11 / 12 / 13 / 14 / 16 / 20 / 27px` | 11 eyebrow+footer+hints · 12 meta+secondary lines · 13 body · 14 light names+outputs (700, tabular) · 16 card titles (700) · 20 wordmark (750) · 27 mic state word |
+| Type scale 🔒 | `11 / 12 / 13 / 14 / 16 / 20 / 27px` | 11 eyebrow+footer+hints · 12 meta+secondary lines · 13 body · 14 light names/card titles+outputs (700, tabular) · 20 wordmark (750) · 27 mic state word |
 | State words 🔒 | uppercase, weight `800`, tracking `-0.01em`, line-height `1.15` | mic state word |
 | Eyebrows 🔒 | `11.5px` (.72rem), uppercase, weight `750`, tracking `.13em`, color `--mut-text-3` | section eyebrows |
 | Numerals 🔒 | `font-variant-numeric: tabular-nums` on every output/%/K/meta value | outputs, readout chips |
@@ -156,7 +160,7 @@ Small variants (setting rows, trim buttons): min-height 36px, padding `7px 12px`
   ```
   Warm→cool hint labels in `--mut-text-3` at 11px: `2900K warm` / `7000K cool`.
 
-**Value outputs** (all `%`/`K`/`Unknown`/`Mixed`/port meta): tabular numerals 🔒. Slider outputs render in **readout chips**: inline-flex, radius 6px, bg `rgba(10,12,24,.34)`, `inset 0 1px 3px rgba(2,4,14,.35), inset 0 -1px 0 rgba(255,255,255,.05)`, padding `2px 8px`, 13px/700, `--mut-text`; the unit (`%`, `K`) at 11px `--mut-text-2`. `Unknown`/`Mixed` in `--mut-text-3`.
+**Value outputs** (all `%`/`K`/`Unknown`/`Mixed`/port meta): tabular numerals 🔒. Slider outputs render in **readout chips**: inline-flex, radius 6px, consuming `--recess-*` — bg `rgba(10,12,24,.32)`, `inset 0 1px 3px rgba(2,4,14,.32), inset 0 -1px 0 rgba(255,255,255,.05)`, padding `2px 8px`, 13px/700, `--mut-text`; the unit (`%`, `K`) at 11px `--mut-text-2`. `Unknown`/`Mixed` in `--mut-text-3`.
 
 **Badges** — 999 pills, 11px/740 uppercase, tracking .06em, padding `4px 10px`, border 1px; palettes exactly per §1.5 (dashed reserved for unreachable/disconnected). State fade on all. All eight states (`on/off/error/disconnected`, `unmuted[live]/muted/unknown/unreachable`) are drawn from §1.5 — no other badge variant exists.
 
@@ -166,13 +170,13 @@ Small variants (setting rows, trim buttons): min-height 36px, padding `7px 12px`
 
 ### 3.2 Topbar
 
-- **Brand chip:** 42×42, radius 10, glass-3 recipe; sun glyph `stroke: var(--mut-signal)` at 80% opacity… final: `color: #cfe9ff` with `filter: drop-shadow(0 0 6px rgba(125,227,255,.35))`; a quiet cyan ember, not a neon sign.
+- **Brand chip:** 42×42, radius 10, glass-3 recipe; sun glyph `stroke: var(--mut-signal)` at 80% opacity… final: `color: var(--mut-signal)` (`#7de3ff`), the cyan drop-shadow retained: `filter: drop-shadow(0 0 6px rgba(125,227,255,.35))`; a quiet cyan ember, not a neon sign.
 - **Wordmark:** 20px/750 `--mut-text`, tracking -.02em; eyebrow above per §1.6; tagline 13px `--mut-text-2`.
 - **Connection pill** (glass-3, 999): dot 8px + text 12px `--mut-text-2`, state fade.
   - `online`: dot `--mut-mint`, `box-shadow: 0 0 8px rgba(88,240,200,.70), 0 0 0 3px rgba(88,240,200,.12)`.
   - `degraded`: dot `--mut-amber`, `0 0 8px rgba(255,201,125,.55), 0 0 0 3px rgba(255,201,125,.12)`.
-  - initial `Connecting…`: dot `rgba(244,246,255,.40)`, ring `rgba(244,246,255,.10)`, no glow.
-- Layout: flex, space-between, static (not sticky); stacks below 720px per existing breakpoint.
+  - initial `data-state="idle"` (`Connecting`, no ellipsis): dot `rgba(244,246,255,.40)`, ring `rgba(244,246,255,.10)`, no glow — dim-neutral, same treatment in both themes.
+- Layout: flex, space-between, static (not sticky); collapses in the 900px density block.
 
 ### 3.3 Mic hero card (rail, first)
 
@@ -196,7 +200,7 @@ Glass-1, radius 20. Head row: **lamp → eyebrow block ("Microphone" + wordmark 
 |---|---|---|---|
 | `unmuted` (LIVE) | `radial-gradient(circle at 34% 30%, #d2fff0, #58f0c8 52%, #22956f)` | `0 0 20px rgba(88,240,200,.50), 0 0 48px rgba(88,240,200,.18)` | none — calm is still |
 | `muted` | `radial-gradient(circle at 34% 30%, #ffd5df, #ff7f96 52%, #c23e5e)` | breathes (below) | 🔒 only breathing element |
-| `unknown` | **unlit glass bead:** `radial-gradient(circle at 34% 30%, rgba(244,246,255,.18), rgba(244,246,255,.05) 60%, rgba(10,12,24,.30))`, own `backdrop-filter: blur(4px)` | none | none |
+| `unknown` | **unlit glass bead:** `radial-gradient(circle at 34% 30%, rgba(244,246,255,.18), rgba(244,246,255,.05) 60%, rgba(10,12,24,.30))`, own `backdrop-filter: blur(4px)` | `0 0 0 rgba(0,0,0,0)` | none |
 | `unreachable` | bead + `::after` ring: `inset: -7px`, `border: 1px dashed rgba(244,246,255,.22)`, radius 50%; lamp `opacity .5` | none | none |
 
 Breathing (muted only, 2.6s ease-in-out infinite 🔒):
@@ -212,7 +216,7 @@ Breathing (muted only, 2.6s ease-in-out infinite 🔒):
 }
 ```
 
-Reduced motion: animation removed; lamp holds the 50% shadow values statically at scale 1.
+Reduced motion: animation removed; the lamp holds its static scarf (`--lamp-muted-fx` rest values) at scale 1.
 
 - **State word** (27px/800 uppercase 🔒): `unmuted` → `--mut-mint-word`, no bloom; `muted` → `--mut-rose-word` + `text-shadow: 0 0 22px rgba(255,127,150,.35)`; `unknown`/`unreachable` → `--mut-text-3`. State fade 160ms cross-fades color.
 - **Badge**, `#mic-line`, buttons per leaf recipes and §1.5. Choreography: at `unknown`, Toggle disabled only (Mute/Unmute stay armed — absolute verbs); at `unreachable`, all three disabled. Disabled recipe per §3.1.
@@ -229,7 +233,7 @@ Glass-1; control blocks stack vertically (rail width), each glass-2 radius 14, p
 
 ### 3.5 Saved-settings card (rail, third)
 
-Glass-1. Save form: recessed input + primary **Save** pill. `#settings-line` 12px `--mut-text-2`; its store-error text state goes `--mut-rose-text` (no extra chrome). Rows: glass-2 chips, radius 10, padding `6px 6px 6px 12px`; name 13px `--mut-text`, ellipsis; **Apply** small secondary, **Delete** small quiet-danger. Row hover: border `.11→.20`, no lift. Empty state: `1px dashed rgba(244,246,255,.22)`, radius 14, bg `rgba(244,246,255,.03)`, copy 12px `--mut-text-3`, centered.
+Glass-1. Save form: recessed input + primary **Save** pill. `#settings-line` 12px `--mut-text-2`; its store-error text state goes `--mut-rose-text` (no extra chrome). Rows: glass-2 chips, radius 10, padding `6px 6px 6px 12px`; name 13px `--mut-text`, ellipsis; **Apply** small secondary, **Delete** small quiet-danger. Row hover: border `.11→.20`, no lift. Empty state: `1px dashed var(--disc-border)` (`rgba(244,246,255,.18)`), radius 14, bg `rgba(244,246,255,.03)`, copy 12px `--mut-text-3`, centered.
 
 ### 3.6 Light cards (main column)
 

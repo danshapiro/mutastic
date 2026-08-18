@@ -182,7 +182,7 @@ curl -s -X POST http://127.0.0.1:8788/__profile__ -d '{"profile":"default"}' # r
 - Modify: `internal/lightui/index.html` — replace the entire `<style> ... </style>` block (currently lines 5–157) with the consolidated stylesheet of Tasks 2–4. The stylesheet is shown in three code blocks (one per task: tokens/base → dark components → light overrides + interactions); the deliverable is their concatenation inside one `<style>` element.
 
 **Interfaces:**
-- Produces (tokens used by later blocks): `--field-base --f1 --f2 --f3 --f4 --g1-bg --g1-sheen --g1-border --g1-blur --g1-shadow --g1-inner --g2-bg --g2-border --g2-blur --g2-shadow --g2-inner --g3-bg --g3-border --g3-blur --g3-shadow --g3-inner --recess-bg --recess-border --recess-inner --text --text-2 --text-3 --text-disabled --pbtn-ink --signal --ring-halo --live-text --live-bg --live-border --live-word --muted-text --muted-bg --muted-border --muted-word --muted-word-fx --unreach-border --dim-word --off-border --unknown-bg --disc-border --err-bg --err-border --err-text --carderr-bg --carderr-border --hint-warm --hint-cool --b1-bg --b1-bg-hover --b1-ink --b1-shadow --b1-shadow-hover --b1-shadow-active --b2-bg --b2-border --b2-text --b2-bg-hover --b2-border-hover --b2-shadow --quiet-text --quiet-bg-hover --quiet-bg-active --qd-text --qd-bg-hover --qd-bg-active --dot-online --dot-online-fx --dot-degraded --dot-degraded-fx --dot-idle --dot-idle-fx --lamp-base-fx --lamp-live-face --lamp-live-fx --lamp-muted-face --lamp-muted-fx --lamp-muted-ring --lamp-unreach-ring --lamp-unknown-face --lamp-unknown-fx --lamp-unknown-blur --aura-warm --aura-cool --track-warm-end --track-cool-end --thumb-bg --thumb-fx --sel --scrollbar --t-fast --t-state --r-6 --r-10 --r-14 --r-20`.
+- Produces (tokens used by later blocks): `--field-base --f1 --f2 --f3 --f4 --g1-bg --g1-sheen --g1-border --g1-blur --g1-shadow --g1-inner --g2-bg --g2-border --g2-shadow --g2-inner --g3-bg --g3-border --g3-blur --g3-shadow --g3-inner --recess-bg --recess-border --recess-inner --text --text-2 --text-3 --text-disabled --pbtn-ink --signal --ring-halo --live-text --live-bg --live-border --live-word --muted-text --muted-bg --muted-border --muted-word --muted-word-fx --unreach-border --dim-word --off-border --unknown-bg --disc-border --err-bg --err-border --err-text --carderr-bg --carderr-border --hint-warm --hint-cool --b1-bg --b1-bg-hover --b1-shadow --b1-shadow-hover --b1-shadow-active --b2-bg --b2-border --b2-text --b2-bg-hover --b2-border-hover --b2-shadow --quiet-text --quiet-bg-hover --quiet-bg-active --qd-text --qd-bg-hover --qd-bg-active --dot-online --dot-online-fx --dot-degraded --dot-degraded-fx --dot-idle --dot-idle-fx --lamp-base-fx --lamp-live-face --lamp-live-fx --lamp-muted-face --lamp-muted-fx --lamp-muted-ring --lamp-unreach-ring --lamp-unknown-face --lamp-unknown-fx --lamp-unknown-blur --aura-warm --aura-cool --track-warm-end --track-cool-end --thumb-bg --thumb-fx --sel --scrollbar --t-fast --t-state --r-6 --r-10 --r-14 --r-20`.
 - Consumes: nothing (first block).
 
 - [ ] **Step 1: Write the tokens + base + backdrop block**
@@ -210,7 +210,6 @@ Replace from `<style>` through the end of the old `:root`/body/html and backdrop
       --g1-inner: inset 0 1px 0 rgba(255,255,255,.15);
       --g2-bg: rgba(255,255,255,.05);
       --g2-border: rgba(255,255,255,.11);
-      --g2-blur: none;
       --g2-shadow: 0 0 0 rgba(0,0,0,0);
       --g2-inner: inset 0 1px 0 rgba(255,255,255,.07);
       --g3-bg: rgba(255,255,255,.11);
@@ -325,6 +324,7 @@ git commit -m "feat(ui): Glassline token foundation, backdrop field, base elemen
       width: 42px; height: 42px; border-radius: 10px; display: grid; place-items: center;
       background: var(--g1-sheen), var(--g3-bg); border: 1px solid var(--g3-border);
       box-shadow: var(--g3-shadow), var(--g3-inner);
+      -webkit-backdrop-filter: var(--g3-blur); backdrop-filter: var(--g3-blur);
       color: var(--signal); filter: drop-shadow(0 0 6px rgba(125,227,255,.35));
     }
     .brand h1 { font-size: 20px; font-weight: 750; letter-spacing: -.02em; color: var(--text); }
@@ -418,7 +418,7 @@ git commit -m "feat(ui): Glassline token foundation, backdrop field, base elemen
     }
     .button-primary { background: var(--b1-bg); color: var(--pbtn-ink); border-color: transparent; box-shadow: var(--b1-shadow); }
     .button-primary:hover { background: var(--b1-bg-hover); box-shadow: var(--b1-shadow-hover); }
-    .button-primary:active { box-shadow: var(--b1-shadow-active); }
+    .button-primary:active { background: var(--b1-bg); box-shadow: var(--b1-shadow-active); }
     .button-primary:disabled { opacity: .45; box-shadow: none; }
     .button-quiet { background: transparent; border-color: transparent; color: var(--quiet-text); box-shadow: none; }
     .button-quiet:hover { background: var(--quiet-bg-hover); color: var(--text); border-color: transparent; }
@@ -624,7 +624,6 @@ git commit -m "feat(ui): Glassline dark component skins"
         --g1-inner: inset 0 1px 0 rgba(255,255,255,.90);
         --g2-bg: rgba(255,255,255,.45);
         --g2-border: rgba(255,255,255,.58);
-        --g2-blur: blur(12px) saturate(1.2);
         --g2-shadow: 0 6px 16px -8px rgba(56,64,140,.12);
         --g2-inner: inset 0 1px 0 rgba(255,255,255,.70);
         --g3-bg: rgba(255,255,255,.72);
@@ -725,6 +724,37 @@ git commit -m "feat(ui): Glassline dark component skins"
       .error-banner { color: var(--err-text); }
       #retry { color: var(--err-text); }
       .button-quiet[data-delete], .button-quiet.button-danger { color: var(--qd-text); }
+      /* Dark-literal re-homing for daylight (design-light §3.2/§3.4/§3.7): presses
+         darken (never whiten), chip hovers deepen the ink hairline, and the
+         unreachable badge / empty-state wash use the daylight values. */
+      button:active { background: rgba(23,28,60,.10); }
+      .button-primary:active { background: var(--b1-bg); }
+      #settings-name:hover, .setting-row:hover { border-color: rgba(23,28,60,.22); }
+      .status-badge[data-state="unreachable"] { background: rgba(190,18,60,.06); }
+      .empty { background: rgba(255,255,255,.35); }
+      /* Light lamp breathing (design-light §3.2): sonar-ring construction —
+         core scale on the lamp, a fading dashed-free ring on ::after, and NO
+         outer box-shadow blooms at any point of the breath (guardrail §5.3);
+         the lamp's box-shadow stays at its resting inset-rim + signal-shadow
+         stack. Dark keeps lamp-breathe untouched. The muted ::after needs
+         content/position here: the base sheet only generates a lamp ::after
+         for the unreachable state. */
+      @keyframes lamp-core-breathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.045); } }
+      @keyframes lamp-ring-breathe { 0%,100% { transform: scale(.86); opacity: .6; } 50% { transform: scale(1.18); opacity: 0; } }
+      #mic-status[data-state="muted"] ~ .mic-lamp { animation: lamp-core-breathe 2.6s ease-in-out infinite; }
+      #mic-status[data-state="muted"] ~ .mic-lamp::after { content: ""; position: absolute; inset: -6px; border-radius: 50%; border: 2px solid rgba(190,18,60,.5); animation: lamp-ring-breathe 2.6s ease-in-out infinite; }
+      /* Light unreachable orbital: tighter inset + heavier dashed ring (§3.2);
+         dark keeps inset -7px / 1px. */
+      #mic-status[data-state="unreachable"] ~ .mic-lamp::after { inset: -6px; border: 2px dashed rgba(110,116,148,.55); }
+      /* Light disabled primary (§3.6): an asleep ink wash, not a fade — the
+         shared .45 opacity fade would bury white-on-ink contrast. */
+      .button-primary:disabled { background: rgba(31,36,56,.50); color: rgba(255,255,255,.95); box-shadow: none; opacity: 1; }
+      /* Cooler/Warmer hovers: the dark tinted washes are re-homed to an ink
+         darken in daylight (§3.7 hovers darken, never whiten). */
+      .button-cool:hover, .button-warm:hover { background: rgba(23,28,60,.06); }
+      /* The cyan drop-shadow behind the brand glyph is a dark-field glow;
+         daylight drops it (§5.3), the glass-3 blur stays. */
+      .brand-mark { filter: none; }
     }
     /* ===== backdrop-filter fallback ===== */
     @supports not (backdrop-filter: blur(1px)) {
@@ -732,7 +762,7 @@ git commit -m "feat(ui): Glassline dark component skins"
     }
     @media (prefers-color-scheme: light) {
       @supports not (backdrop-filter: blur(1px)) {
-        :root { --g1-bg: rgba(255,255,255,.92); --g2-bg: rgba(255,255,255,.85); --g3-bg: rgba(255,255,255,.95); --g1-blur: none; --g2-blur: none; --g3-blur: none; }
+        :root { --g1-bg: rgba(255,255,255,.92); --g2-bg: rgba(255,255,255,.85); --g3-bg: rgba(255,255,255,.95); --g1-blur: none; --g3-blur: none; }
       }
     }
     /* ===== reduced motion ===== */
@@ -861,7 +891,9 @@ git commit -m "feat(ui): command-deck DOM — rail mic/gang/settings, mainFlow p
       // -- Glow + fill helpers (additive; never required for the page to function) --
       function applyGlow(cardEl, light) {
         if (!cardEl || !cardEl.style || !cardEl.style.setProperty) return;
-        const on = lightIsOn(light);
+        // An errored light carries ZERO card aura (adjudicated: the banner
+        // strip + rose border own the error state; the aura would argue).
+        const on = lightIsOn(light) && !light.error;
         const bri = on ? Math.max(0, Math.min(100, Number(light.brightness))) : 0;
         const hue = on ? temperatureIndex(light.temp) : 0;
         cardEl.style.setProperty("--glow-bri", String(bri));
@@ -962,7 +994,7 @@ git commit -m "feat(ui): glow/fill writers, mic commit buffer + state word"
 - [ ] **Step 4: Light cards** — `default` (on 55% 4950K, on 80% 2900K, off) + `mixed` (30% 6500K, 100% 2900K) + `errcard` (`card-error` strip visible; card border rose in light mode, aura zeroed by construction; banner + rose border own the error state) + off card = zero aura + disabled sliders + `off` badge; heater: power-button `data-on="true"` carries the lit-edge treatment; disconnected cards quieted.
 - [ ] **Step 5: Settings** — empty (`empty` profile) → dashed empty state; 1 row + 3 rows (`default`) → apply/delete round-trip from the `settings-line`, rows keep hover border; `settings_store_error` → `#settings-line` shows the store error in rose text; over-42-byte name typed into `#settings-name` + Save → zero network call (no new line in `mutations.log`), page banner shows `SETTINGS_NAME_TOO_LONG` text, then clears after the timeout.
 - [ ] **Step 6: Banner lifecycle** — `degraded` → banner visible with `role="alert"`, Retry present; press Retry (or wait for next poll after switching back to `default`) → banner fades, connection pill returns to online.
-- [ ] **Step 7: Empty panels** — `empty` → dashed panel with two-part copy in main column; section count reads "0 lights".
+- [ ] **Step 7: Empty panels** — `empty` → dashed panel with two-part copy in main column; section count reads "0 panels".
 - [ ] **Step 8: Keyboard walk (both widths, default profile)** — Tab from topbar: focus ring (2px signal + 5px halo) clearly visible on connection pill (if focusable), Refresh, all mic buttons (Toggle skipped only when disabled), every gang control, sliders (ring offset 6px clears the thumb), settings name input, Save, each row Apply/Delete, each card's power button + sliders. Tab order == DOM order (mic first). No focus trap.
 - [ ] **Step 9: Motion budget** — `prefers-reduced-motion: reduce` emulated: lamp static, no lift/press, instant badge changes; normal: only the muted lamp animates (observe 3 s on `muted` profile: no color-field shimmering, no slider self-motion).
 - [ ] **Step 10: Blur fallback spot-check** — force no-`backdrop-filter` (browser flag or emulation); light panels read as near-opaque porcelain (alphas raised); dark panels solid-navy. Field still peeks at card rims via border+shadow.

@@ -90,7 +90,7 @@ State semantics are **locked**: muted = rose/attention, live = calm mint, unknow
 | focus ring | `outline: 2px solid var(--signal); outline-offset: 3px` **+** `box-shadow: 0 0 0 5px rgba(12,107,133,.18)` appended to resting shadow |
 | type scale | `11 / 12 / 13 / 14 / 16 / 20 / 27px` |
 | state words | `27px`, weight 800, uppercase, `letter-spacing: -.01em` |
-| eyebrows | `11px` (.69–.72rem), weight 760, uppercase, `letter-spacing: .13em`, color `--signal` |
+| eyebrows | `11px` (.69–.72rem), weight 750, uppercase, `letter-spacing: .13em`, color `--signal` |
 | card names / section h2 | `16px` weight 700 / `20px` weight 800 |
 | values (%, K, port meta digits) | `font-variant-numeric: tabular-nums`, weight 700 |
 | spacing | `4 / 8 / 12 / 16 / 20 / 28px` scale; card padding `20px`; grid gap `16px` |
@@ -110,6 +110,8 @@ body::before {
   z-index: -1;
   pointer-events: none;
   background:
+    /* porcelain vignette on top, concentrates the field */
+    radial-gradient(900px 1000px at 50% 38%, transparent 55%, rgba(200,205,240,.35) 100%),
     radial-gradient(760px 560px at -8% -18%, rgba(150,120,235,.40), rgba(150,120,235,0) 62%),
     radial-gradient(820px 600px at 112% 2%,  rgba(90,180,220,.38),  rgba(90,180,220,0) 58%),
     radial-gradient(900px 680px at 62% 118%, rgba(235,140,200,.32), rgba(235,140,200,0) 60%);
@@ -130,12 +132,13 @@ Layout follows the approved command-deck (parent spec §3): rail `minmax(300px, 
 - **Brand eyebrow** ("MUTASTIC / LOCAL CONTROL"): eyebrow spec, `--signal`.
 - **Connection pill:** **E3** chip, `padding: 8px 12px`, radius 999, text 12px `--text-2` (5.12:1 on chip). Dot 8px, radius 50%:
   - `data-state="online"`: dot `#0e9670`, `box-shadow: 0 0 0 3px rgba(14,150,112,.18)`. No glow-bloom — the halo ring is the daylight legible form.
-  - `data-state="degraded"` ("Daemon issue" / "Panel offline" / "Connecting"): dot `#b06204`, `box-shadow: 0 0 0 3px rgba(176,98,4,.18)`.
+  - `data-state="degraded"` ("Daemon issue" / "Panel offline"): dot `#b06204`, `box-shadow: 0 0 0 3px rgba(176,98,4,.18)`.
+  - `data-state="idle"` (initial "Connecting", no ellipsis — dim-neutral in both themes): dot `rgba(23,27,46,.35)`, `box-shadow: 0 0 0 3px rgba(23,27,46,.10)`.
   - No pulse on the dot in either state — page motion budget belongs to the muted lamp alone.
 
 ### 3.2 Mic hero card (rail)
 
-E1 panel, radius 20, padding 24. Interior order: header row (eyebrow "MICROPHONE" + `#mic-status` badge), **lamp + state word block**, `#mic-line` (`--text-2`, 14px), button row.
+E1 panel, radius 20, padding 24. Interior order: header row (eyebrow "MICROPHONE" + `#mic-status` badge), **lamp + state word block**, `#mic-line` (`--text-2`, 13px), button row.
 
 **State word** (27px / 800 / uppercase / -.01em, tabular where digits):
 
@@ -176,18 +179,18 @@ No breathing for LIVE/unknown/unreachable (calm), all off under reduced-motion.
 
 E1 panel. Control blocks become a vertical stack of **E2** wells, radius 14.
 
-- **Power row:** `All on` = primary; `All off` = secondary; `Toggle` = quiet. 44px min height, `min-width: 88px`.
-- **Match brightness** slider + **Match warmth** slider — construction §3.5. Labels: 12px `--text-2`, 700, letter-spacing .02em; outputs 14px, `--ink`, tabular; "Unknown" / "Mixed" in `--text-3` (same tabular slot; the word is the state, not the color).
+- **Power row:** `All on` = primary; `All off` = secondary; `Toggle` = quiet. 44px min height, `min-width: 88px` — shipped light-only as `.power-row[aria-label="All lights power"] button`.
+- **Match brightness** slider + **Match warmth** slider — construction §3.5. Labels: 12px two-tone — key span `--text-2` 650, trailing span `--text-3`, no tracking; outputs 13px/700, `--ink`, tabular; "Unknown" / "Mixed" in `--text-3` (same tabular slot; the word is the state, not the color).
 - **Trim rows:** four `-5/-1/+1/+5` secondary chips (`min-width: 58px`), and `Warmer` / `Cooler` quiet buttons with icon + text in `--amber-deep` / `--sky-deep` (6.18:1 / 5.64:1). The trim hues are *hints*, not state — they never fill.
 - **Refresh** (panel head): quiet icon button, `--text-2`, hover `--ink`.
 
 ### 3.4 Saved-settings card (rail)
 
-- **Name input:** E2 well, radius 10, 44px, `padding: 9px 13px`, text `--ink`, placeholder `--text-3` (5.40:1 on the well), caret `--signal`. Focus: global ring recipe (well keeps its own border underneath — the 3px offset keeps both visible).
+- **Name input:** E2 well, radius 10, 44px, `padding: 10px 14px`, text `--ink`, placeholder `--text-3` (5.40:1 on the well), caret `--signal`. Focus: global ring recipe (well keeps its own border underneath — the 3px offset keeps both visible).
 - **Save:** primary, same row as input.
 - **Setting rows:** E2 chips, radius 10, `padding: 6px/12px`, name `--ink` 13px with ellipsis, **Apply** = small secondary (36px), **Delete** = small destructive-quiet: text `--rose-deep`, hover `background: rgba(190,18,60,.08)` (text 5.23:1 on hover bg).
-- **Empty state:** `1px dashed rgba(23,27,46,.28)`, radius 20, bg `rgba(255,255,255,.35)`, padding 30px 20px, centered; headline `--ink`, body `--text-2`.
-- **Error line** (store refusal render target): 13px `--rose-deep` — it replaces the hint line in place, no extra box (the page banner owns boxed errors).
+- **Empty state:** `1px dashed var(--disc-border)` (`rgba(23,27,46,.24)`), radius 14, bg `rgba(255,255,255,.35)`, padding 30px 20px, centered; headline `--ink`, body `--text-2`.
+- **Error line** (store refusal render target): 12px `--rose-deep` — it replaces the hint line in place, no extra box (the page banner owns boxed errors).
 
 ### 3.5 Sliders (gang + per-card, identical construction)
 
@@ -243,34 +246,35 @@ Shared: radius 999, min-height 44px, weight 650–760, transitions `var(--t-stat
 
 ### 3.8 Light cards (main grid)
 
-E1 panel, radius 20, padding 20. Header: name (16px/700 `--ink`) + meta line (12px, `--text-3`, tabular — "COM7 · connected") + status badge (§3.2 badge recipes, states `on`/`off`/`error`/`disconnected`). Power toggle: quiet chip — **`data-on="true"` adds** `color: var(--mint-deep); border: 1px solid rgba(10,110,80,.85)` (4.52:1, computed border, not adjective) `background: rgba(10,110,80,.05)`; **`data-on="false"`** is plain quiet. Sliders per §3.5; disabled when off.
+E1 panel, radius 14, padding 17. Header: name (14px/700 `--ink`) + meta line (12px, `--text-3`, tabular — "COM7 · connected") + status badge (§3.2 badge recipes, states `on`/`off`/`error`/`disconnected`). Power toggle: quiet chip — **`data-on="true"` adds** `color: var(--mint-deep); border: 1px solid rgba(10,110,80,.85)` (4.52:1, computed border, not adjective) `background: rgba(10,110,80,.05)`; **`data-on="false"`** is plain quiet. Sliders per §3.5; disabled when off.
 
 **The bright-field aura (replaces dark-theme glow).** Daylight rule: *light deepens, it does not brighten.* The card announces "lit" through a **chromatic rim + hue-carrying drop shadow** — a colored *shadow* stays visible on a pastel field where a bright halo washes out. Driven by the two feature-detected custom properties (parent spec §2, signature details): `--glow-bri` (0–100, brightness) and `--glow-hue` (0–18, temperature index).
 
 ```css
 .light-card {
-  --glow-bri: 0;                     /* JS: brightness 0–100; 0 when off/error/disconnected */
-  --glow-hue: 0;                     /* JS: temp index 0 (2900K) – 18 (7000K) */
-  --aura-h: calc(38 + var(--glow-hue) * 9.11);   /* 38° amber → 202° sky across the 19 steps */
+  --aura-h: calc(38 + var(--glow-hue, 9) * 9.11);   /* 38° amber → 202° sky across the 19 steps */
+  border-color: hsl(var(--aura-h) 76% 42% / calc(.02 + var(--glow-bri, 0) * .0026));   /* rim tint rides the border */
   box-shadow:
     0 1px 2px rgba(47,54,116,.05),                                              /* E1 base, always */
     0 16px 40px -12px rgba(56,64,140,.18),                                      /* E1 base, always */
-    0 8px 28px -6px hsl(var(--aura-h) 82% 46% / calc(.04 + var(--glow-bri) * .0028)),  /* chromatic cast */
-    0 0 0 1px hsl(var(--aura-h) 76% 42% / calc(.02 + var(--glow-bri) * .0026)),        /* rim tint */
-    inset 0 0 22px hsl(var(--aura-h) 88% 58% / calc(var(--glow-bri) * .0013));         /* inner rim-light */
-  transition: box-shadow var(--t-state);
+    0 8px 28px -6px hsl(var(--aura-h) 82% 46% / calc(.04 + var(--glow-bri, 0) * .0028)),  /* chromatic cast */
+    inset 0 0 22px hsl(var(--aura-h) 88% 58% / calc(var(--glow-bri, 0) * .0013)),       /* inner rim-light */
+    var(--g1-inner);                                                            /* sun line */
+  transition: border-color var(--t-state), box-shadow 160ms ease-out;
 }
 ```
 
-- At `--glow-bri: 100`, 2900K: cast `hsla(38°,82%,46%,.32)` — a deep amber shadow pooling under the card; rim `hsla(38°,76%,42%,.28)`; inner warm rim `.13`. At 7000K the same weights arrive in sky `202°`. At 0 the two aura fades land at `.04/.02/0` — bare glass.
+(`--glow-bri`/`--glow-hue` arrive as per-card inline custom properties from JS — 0 when off/error/disconnected — so the `, 0`/`, 9` fallbacks in the calc are the pre-JS rest state.)
+
+- At `--glow-bri: 100`, 2900K: cast `hsla(38°,82%,46%,.32)` — a deep amber shadow pooling under the card; rim `hsla(38°,76%,42%,.28)` carried on `border-color`; inner warm rim `.13`. At 7000K the same weights arrive in sky `202°`. At 0 the aura weights land at `.04/.02/0` — bare glass.
 - **Hue map (19 steps):** `h = 38 + i × 9.11` — i=0→38.0, i=9 (≈4950K)→120.0 (neutral sage-crossing, the midpoint stops looking amber *or* blue, matching the ribbon's pale midpoint), i=18→202.0.
 - **Precedence (locked):** aura exists only when the light is on and healthy. Off / disconnected → JS writes 0. Error → 0 **and** the card takes `border: 1px solid rgba(190,18,60,.45)` via `.light-card:has(.card-error:not([hidden]))`; the error banner outranks any glow visually. (`:has()` no-ops harmlessly where unsupported — legibility never depends on it.)
-- `disconnected` cards additionally quiet the whole surface: `.light-card:has(.status-badge[data-state="disconnected"]) { box-shadow: <E1 base only>; }` + meta/badge already dim; sliders disabled per §3.5.
+- `disconnected` cards additionally quiet the whole surface: `.light-card:has(.status-badge[data-state="disconnected"]) { box-shadow: 0 1px 2px rgba(47,54,116,.05), 0 16px 40px -12px rgba(56,64,140,.18), var(--g1-inner); border-color: var(--g1-border); }` + meta/badge already dim; sliders disabled per §3.5.
 
 ### 3.9 Page error banner, empty-panels, footer
 
-- **Page error banner** (`role="alert"`): frosted rose glass — `background: rgba(190,18,60,.07)` **over** an E1 body (composite `#f4deea` worst-case rose-on-rose), `border: 1px solid rgba(190,18,60,.45)`, radius 14, text 14px `--rose-deep` (4.93–5.31:1), alert icon `--rose-deep`, **Retry** = small secondary with `--rose-deep` text. Inside the gang card, below controls; margin `16px 0 0`.
-- **Empty-panels state:** dashed `1px rgba(23,27,46,.28)`, radius 20, bg `rgba(255,255,255,.35)`, padding `30px 20px`, centered; `<strong>` `--ink`, span `--text-2`.
+- **Page error banner** (`role="alert"`): frosted rose glass — `background: rgba(190,18,60,.07)` **over** an E1 body (composite `#f4deea` worst-case rose-on-rose), `border: 1px solid rgba(190,18,60,.45)`, radius 14, text 13px `--rose-deep` (4.93–5.31:1), alert icon `--rose-deep`, **Retry** = small secondary with `--rose-deep` text. Inside the gang card, below controls; margin `16px 0 0`.
+- **Empty-panels state:** dashed `1px var(--disc-border)` (`rgba(23,27,46,.24)`), radius 14, bg `rgba(255,255,255,.35)`, padding `30px 20px`, centered; `<strong>` `--ink`, span `--text-2`.
 - **Footer:** centered, 11px, `--text-3` (5.21:1 directly on field base).
 
 ---
