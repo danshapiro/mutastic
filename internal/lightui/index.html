@@ -3,156 +3,633 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
+  <meta name="color-scheme" content="dark light">
   <title>Mutastic</title>
   <style>
     :root {
-      color-scheme: dark;
-      --bg: #0b0e12;
-      --panel: #12171d;
-      --panel-2: #171e26;
-      --panel-3: #1d2630;
-      --line: #2b3743;
-      --line-strong: #405160;
-      --text: #edf3f7;
-      --muted: #94a4b1;
-      --dim: #647482;
-      --accent: #f2b35d;
-      --accent-strong: #ffca78;
-      --accent-ink: #21170b;
-      --cool: #80c8ef;
-      --green: #72d5a0;
-      --red: #ff8f86;
-      --shadow: 0 18px 50px rgba(0, 0, 0, .24);
-      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      font-size: 16px;
+      color-scheme: dark light;
+      --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --t-fast: 120ms ease-out;
+      --t-state: 140ms ease-out;
+      --r-6: 6px; --r-10: 10px; --r-14: 14px; --r-20: 20px;
+      /* ==== DARK THEME (default) ==== */
+      --field-base: #0c0c18;
+      --f1: radial-gradient(150% 120% at 50% 38%, transparent 55%, rgba(2,3,9,.46) 100%);
+      --f2: radial-gradient(760px 500px at 7% -14%, rgba(120,80,220,.55), rgba(120,80,220,0) 62%);
+      --f3: radial-gradient(700px 460px at 105% 3%, rgba(20,150,190,.50), rgba(20,150,190,0) 58%);
+      --f4: radial-gradient(900px 620px at 57% 132%, rgba(190,60,150,.45), rgba(190,60,150,.45) 0%, rgba(190,60,150,0) 64%);
+      --g1-sheen: linear-gradient(180deg, rgba(255,255,255,.045), rgba(255,255,255,0) 30%);
+      --g1-bg: rgba(255,255,255,.075);
+      --g1-border: rgba(255,255,255,.155);
+      --g1-blur: blur(20px) saturate(1.35);
+      --g1-shadow: 0 24px 48px rgba(2,4,14,.50);
+      --g1-inner: inset 0 1px 0 rgba(255,255,255,.15);
+      --g2-bg: rgba(255,255,255,.05);
+      --g2-border: rgba(255,255,255,.11);
+      --g2-shadow: 0 0 0 rgba(0,0,0,0);
+      --g2-inner: inset 0 1px 0 rgba(255,255,255,.07);
+      --g3-bg: rgba(255,255,255,.11);
+      --g3-border: rgba(255,255,255,.20);
+      --g3-blur: blur(12px) saturate(1.3);
+      --g3-shadow: 0 8px 20px rgba(2,4,14,.40);
+      --g3-inner: inset 0 1px 0 rgba(255,255,255,.20);
+      --recess-bg: rgba(10,12,24,.32);
+      --recess-border: rgba(255,255,255,.10);
+      --recess-inner: inset 0 1px 3px rgba(2,4,14,.32), inset 0 -1px 0 rgba(255,255,255,.05);
+      --text: #f4f6ff; --text-2: rgba(244,246,255,.82); --text-3: rgba(244,246,255,.68);
+      --text-disabled: rgba(244,246,255,.40); --pbtn-ink: #191b2b;
+      --signal: #7de3ff; --ring-halo: rgba(125,227,255,.20);
+      --live-text: #8df5d9; --live-bg: rgba(88,240,200,.10);  --live-border: rgba(88,240,200,.42);
+      --live-word: #7df4d6;
+      --muted-text: #ffc0d0; --muted-bg: rgba(255,135,163,.10); --muted-border: rgba(255,150,190,.48);
+      --muted-word: #ff9aae; --muted-word-fx: 0 0 22px rgba(255,127,150,.35);
+      --unreach-border: rgba(255,143,160,.55);
+      --dim-word: rgba(244,246,255,.68); --off-border: rgba(244,246,255,.14);
+      --unknown-bg: rgba(244,246,255,.04); --disc-border: rgba(244,246,255,.18);
+      --err-bg: linear-gradient(180deg, rgba(255,135,163,.12), rgba(255,135,163,.07));
+      --err-border: rgba(255,143,160,.50); --err-text: #ffc0d0;
+      --carderr-bg: rgba(255,135,163,.08); --carderr-border: rgba(255,143,160,.45);
+      --hint-warm: #ffc97d; --hint-cool: #7de3ff;
+      --b1-bg: rgba(244,246,255,.94); --b1-bg-hover: rgba(244,246,255,.97);
+      --b1-shadow: 0 10px 24px rgba(2,4,14,.45), inset 0 1px 0 rgba(255,255,255,.35);
+      --b1-shadow-hover: 0 14px 30px rgba(2,4,14,.50), inset 0 1px 0 rgba(255,255,255,.35);
+      --b1-shadow-active: 0 4px 12px rgba(2,4,14,.50), inset 0 1px 0 rgba(255,255,255,.35);
+      --b2-bg: rgba(244,246,255,.10); --b2-border: rgba(244,246,255,.18); --b2-text: var(--text);
+      --b2-bg-hover: rgba(244,246,255,.14); --b2-border-hover: rgba(244,246,255,.32);
+      --b2-shadow: 0 0 0 rgba(0,0,0,0);
+      --quiet-text: var(--text-2); --quiet-bg-hover: rgba(244,246,255,.07); --quiet-bg-active: rgba(244,246,255,.10);
+      --qd-text: #ffc0d0; --qd-bg-hover: rgba(255,135,163,.08); --qd-bg-active: rgba(255,135,163,.12);
+      --dot-online: #58f0c8;  --dot-online-fx: 0 0 8px rgba(88,240,200,.70), 0 0 0 3px rgba(88,240,200,.12);
+      --dot-degraded: #ffc97d; --dot-degraded-fx: 0 0 8px rgba(255,201,125,.55), 0 0 0 3px rgba(255,201,125,.12);
+      --dot-idle: rgba(244,246,255,.40); --dot-idle-fx: 0 0 0 3px rgba(244,246,255,.10);
+      --lamp-base-fx: 0 0 0 1px rgba(255,255,255,.22), inset 0 2px 2px rgba(255,255,255,.50), inset 0 -6px 10px rgba(0,0,0,.28);
+      --lamp-live-face: radial-gradient(circle at 34% 30%, #d2fff0, #58f0c8 52%, #22956f);
+      --lamp-live-fx: 0 0 20px rgba(88,240,200,.50), 0 0 48px rgba(88,240,200,.18);
+      --lamp-muted-face: radial-gradient(circle at 34% 30%, #ffd5df, #ff7f96 52%, #c23e5e);
+      --lamp-muted-fx: 0 0 20px rgba(255,127,150,.58), 0 0 48px rgba(255,127,150,.22);
+      --lamp-muted-ring: rgba(255,143,160,.35);
+      --lamp-unreach-ring: rgba(244,246,255,.22);
+      --lamp-unknown-face: radial-gradient(circle at 34% 30%, rgba(244,246,255,.18), rgba(244,246,255,.05) 60%, rgba(10,12,24,.30));
+      --lamp-unknown-fx: 0 0 0 rgba(0,0,0,0); --lamp-unknown-blur: blur(4px);
+      --aura-warm: #ffb066; --aura-cool: #ccdcff;
+      --track-warm-end: #ffb169; --track-cool-end: #ccdcff;
+      --thumb-bg: #f7f9ff;
+      --thumb-fx: 0 1px 4px rgba(2,4,14,.55), 0 0 0 1px rgba(255,255,255,.35), 0 0 10px rgba(244,246,255,.25);
+      --sel: rgba(125,227,255,.32); --scrollbar: rgba(255,255,255,.16);
     }
-
     * { box-sizing: border-box; }
-
+    [hidden] { display: none !important; }
+    html, body { margin: 0; padding: 0; }
     body {
-      margin: 0;
-      min-width: 320px;
-      background:
-        radial-gradient(circle at 92% -10%, rgba(242, 179, 93, .12), transparent 35rem),
-        var(--bg);
-      color: var(--text);
+      font-family: var(--font); min-height: 100vh; background: var(--field-base); color: var(--text);
+      -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
     }
-
+    body::before {
+      content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+      background: var(--f1), var(--f2), var(--f3), var(--f4);
+    }
+    ::selection { background: var(--sel); }
+    html { scrollbar-color: var(--scrollbar) transparent; }
     .sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
-    .icon { width: 1.1rem; height: 1.1rem; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: 0 0 auto; }
-    .icon-fill { fill: currentColor; stroke: none; }
+    .icon { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+    h1, h2, h3 { margin: 0; }
+    p { margin: 0; }
+    .eyebrow { font-size: .72rem; font-weight: 750; letter-spacing: .13em; text-transform: uppercase; color: var(--text-3); margin: 0 0 4px; }
+    .subtle { color: var(--text-2); font-size: 13px; line-height: 1.45; }
+    output, .card-meta, .mic-word, .status-badge { font-variant-numeric: tabular-nums; }
 
-    .shell { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 56px; }
-    .topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 24px; }
-    .brand { display: flex; align-items: center; gap: 13px; }
-    .brand-mark { width: 42px; height: 42px; border: 1px solid rgba(242, 179, 93, .55); border-radius: 13px; display: grid; place-items: center; color: var(--accent); background: rgba(242, 179, 93, .08); box-shadow: 0 0 0 5px rgba(242, 179, 93, .03); }
+    .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+    /* ===== App shell (viewport-locked; only the tile grid scrolls) ===== */
+    html, body { height: 100%; }
+    body { height: 100vh; overflow: hidden; }
+    .shell { height: 100vh; display: flex; flex-direction: column; }
+    /* Centered column; chrome strips draw full-width */
+    .column { width: 100%; max-width: 1740px; margin: 0 auto; padding: 0 28px; min-width: 0; height: 100%; }
+    .titlebar .column, .statusbar .column { display: flex; align-items: center; gap: 18px; }
+    .titlebar {
+      flex: none; display: flex; padding: 0;
+      height: 66px; border-bottom: 1px solid var(--g2-border);
+      background: var(--g1-sheen), var(--g2-bg);
+    }
+    .statusbar {
+      flex: none; display: flex; padding: 0;
+      height: 40px; font-size: 16px; letter-spacing: .06em; color: var(--text-3);
+      background: var(--g1-sheen), var(--g2-bg); border-top: 1px solid var(--g2-border);
+    }
+    .statusbar .s-err { margin-left: auto; color: var(--err-text); font-size: 15px; letter-spacing: 0; }
+    .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .brand-mark {
+      width: 42px; height: 42px; border-radius: 10px; display: grid; place-items: center;
+      background: var(--g1-sheen), var(--g3-bg); border: 1px solid var(--g3-border);
+      box-shadow: var(--g3-shadow), var(--g3-inner);
+      -webkit-backdrop-filter: var(--g3-blur); backdrop-filter: var(--g3-blur);
+      color: var(--signal); filter: drop-shadow(0 0 6px rgba(125,227,255,.35));
+    }
+    .brand h1 { font-size: 21px; font-weight: 750; letter-spacing: -.02em; color: var(--text); }
+    .brand .subtle { font-size: 15px; }
+    .brand-mark { width: 40px; height: 40px; border-radius: 12px; }
     .brand-mark .icon { width: 22px; height: 22px; }
-    .eyebrow { margin: 0 0 4px; color: var(--accent); font-size: .69rem; font-weight: 760; letter-spacing: .13em; text-transform: uppercase; }
-    h1, h2, h3, p { margin-top: 0; }
-    h1 { margin-bottom: 3px; font-size: 1.15rem; letter-spacing: -.02em; }
-    h2 { margin-bottom: 4px; font-size: 1.1rem; letter-spacing: -.02em; }
-    h3 { margin-bottom: 5px; font-size: 1rem; letter-spacing: -.015em; }
-    .subtle { margin: 0; max-width: 60ch; color: var(--muted); font-size: .86rem; line-height: 1.45; }
+    .titlebar-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+    .connection { font-size: 15px; padding: 8px 16px; }
+    /* Titlebar refresh: quiet icon affordance */
+    #refresh { min-height: 40px; padding: 8px 14px; font-size: 15px; }
+    .connection {
+      margin-left: auto; display: inline-flex; align-items: center; gap: 8px;
+      padding: 8px 12px; border-radius: 999px; font-size: 12px; color: var(--text-2);
+      background: var(--g1-sheen), var(--g3-bg); border: 1px solid var(--g3-border);
+      box-shadow: var(--g3-shadow), var(--g3-inner);
+      -webkit-backdrop-filter: var(--g3-blur); backdrop-filter: var(--g3-blur);
+      transition: color var(--t-state);
+    }
+    .connection-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dot-idle); box-shadow: var(--dot-idle-fx); transition: background var(--t-state), box-shadow var(--t-state); }
+    .connection[data-state="online"] .connection-dot { background: var(--dot-online); box-shadow: var(--dot-online-fx); }
+    .connection[data-state="degraded"] .connection-dot { background: var(--dot-degraded); box-shadow: var(--dot-degraded-fx); }
+    .layout { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    @media (max-width: 700px) {
+      .column { padding: 0 16px; }
+    }
+    /* Content head + grid live inside the second column wrapper (content) */
+    .content-head { flex: none; display: flex; align-items: baseline; gap: 16px; padding: 16px 0 12px; }
+    .content-head .eyebrow { font-size: 15px; margin: 0; }
+    #light-count { font-size: 16px; color: var(--text-3); margin: 0; }
+    .content-head .c-hint { margin-left: auto; font-size: 15px; color: var(--text-3); }
+    /* ===== Command band ===== */
+    .band {
+      flex: none; border-bottom: 1px solid var(--g2-border);
+      background: var(--g1-sheen), rgba(255,255,255,.03);
+    }
+    .band-inner { display: flex; align-items: stretch; }
+    .band .cell { padding: 20px 26px 20px 24px; display: flex; align-items: center; gap: 18px; min-width: 0; }
+    .band .cell + .cell { border-left: 1px solid var(--g2-border); }
+    .band .cell.grow { flex: 1; gap: 22px; }
+    .stack { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+    .stack .sub { font-size: 15px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-    .connection { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 999px; padding: 8px 11px; color: var(--muted); font-size: .75rem; white-space: nowrap; }
-    .connection-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); box-shadow: 0 0 0 3px rgba(100, 116, 130, .12); }
-    .connection[data-state="online"] .connection-dot { background: var(--green); box-shadow: 0 0 0 3px rgba(114, 213, 160, .12); }
-    .connection[data-state="degraded"] .connection-dot { background: var(--accent); box-shadow: 0 0 0 3px rgba(242, 179, 93, .12); }
+    /* --- Mic: the button IS the lamp --- */
+    .mic-lamp {
+      width: 64px; height: 64px; border-radius: 50%; flex: none;
+      border: none; padding: 0; cursor: pointer;
+      background: var(--lamp-unknown-face);
+      box-shadow: var(--lamp-base-fx), var(--lamp-unknown-fx);
+      -webkit-backdrop-filter: var(--lamp-unknown-blur); backdrop-filter: var(--lamp-unknown-blur);
+      transition: background 160ms ease-out, box-shadow 160ms ease-out, opacity 160ms ease-out, transform var(--t-fast);
+      position: relative; min-height: 0; display: block;
+    }
+    .mic-lamp:hover { transform: scale(1.06); }
+    .mic-lamp:active { transform: translateY(1px) scale(.97); }
+    .mic-lamp:disabled { cursor: not-allowed; transform: none !important; }
+    .mic-lamp:focus-visible { outline: 2px solid var(--signal); outline-offset: 3px; }
+    .mic-lamp::before { content: ""; position: absolute; top: 15%; left: 20%; width: 14px; height: 14px; border-radius: 50%;
+      background: radial-gradient(circle, rgba(255,255,255,.85), rgba(255,255,255,0) 70%); }
+    .mic-word { display: block; font-size: 25px; font-weight: 800; letter-spacing: -.01em; line-height: 1.15; text-transform: uppercase; color: var(--dim-word); margin: 0; transition: color var(--t-state), text-shadow var(--t-state); }
+    #mic-status[data-state="unmuted"] ~ .mic-lamp { background: var(--lamp-live-face); box-shadow: var(--lamp-base-fx), var(--lamp-live-fx); -webkit-backdrop-filter: none; backdrop-filter: none; }
+    #mic-status[data-state="muted"] ~ .mic-lamp { background: var(--lamp-muted-face); box-shadow: var(--lamp-base-fx), var(--lamp-muted-fx); -webkit-backdrop-filter: none; backdrop-filter: none; animation: lamp-breathe 2.6s ease-in-out infinite; }
+    #mic-status[data-state="unreachable"] ~ .mic-lamp { opacity: .5; }
+    #mic-status[data-state="unreachable"] ~ .mic-lamp::after { content: ""; position: absolute; inset: -8px; border-radius: 50%; border: 1px dashed var(--lamp-unreach-ring); }
+    @keyframes lamp-breathe {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.045); box-shadow: var(--lamp-base-fx), 0 0 30px var(--lamp-muted-ring), 0 0 64px var(--lamp-muted-ring); }
+    }
+    .mic-word[data-state="unmuted"] { color: var(--live-word); }
+    .mic-word[data-state="muted"] { color: var(--muted-word); text-shadow: var(--muted-word-fx); }
+    #mic-line { font-size: 15px; margin: 0; color: var(--text-2); }
 
-    .panel { border: 1px solid var(--line); border-radius: 18px; background: linear-gradient(145deg, rgba(255,255,255,.025), transparent 55%), var(--panel); box-shadow: var(--shadow); }
-    .panel-inner { padding: 20px; }
-    .panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 20px; }
-    .panel-head .subtle { max-width: 72ch; }
+    /* --- Gang power square (lit / dark, no icon) --- */
+    .gang-power {
+      position: relative; flex: none; width: 64px; height: 64px; min-height: 0; border-radius: 17px;
+      cursor: pointer; display: block; padding: 0;
+      border: 1px solid transparent;
+      font-size: 17px; font-weight: 800; letter-spacing: .02em; text-align: center;
+      transition: transform var(--t-fast), color var(--t-state), background var(--t-state), box-shadow var(--t-state);
+    }
+    .gang-power:hover { transform: translateY(-1px); }
+    .gang-power:active { transform: translateY(1px); }
+    .gang-power:focus-visible { outline: 2px solid var(--signal); outline-offset: 3px; box-shadow: 0 0 0 5px var(--ring-halo); }
+    .gang-power[data-on="true"] {
+      background: linear-gradient(180deg, #ffffff, #e6ecff);
+      color: #191b2b;
+      box-shadow: 0 8px 20px rgba(2,4,14,.40), inset 0 1px 0 rgba(255,255,255,.9), 0 0 26px rgba(125,227,255,.28);
+    }
+    .gang-power[data-on="false"] {
+      background: rgba(10,12,24,.55);
+      color: rgba(244,246,255,.45);
+      border-color: var(--g2-border);
+      box-shadow: inset 0 1px 3px rgba(2,4,14,.42);
+    }
+    /* ===== Badges (eight states) ===== */
+    .status-badge {
+      display: inline-flex; align-items: center; padding: 4px 10px; border-radius: 999px;
+      font-size: 11px; font-weight: 740; letter-spacing: .06em; text-transform: uppercase;
+      border: 1px solid transparent; transition: background var(--t-state), border-color var(--t-state), color var(--t-state);
+    }
+    .status-badge[data-state="unmuted"], .status-badge[data-state="on"] { color: var(--live-text); background: var(--live-bg); border-color: var(--live-border); }
+    .status-badge[data-state="muted"], .status-badge[data-state="error"] { color: var(--muted-text); background: var(--muted-bg); border-color: var(--muted-border); }
+    .status-badge[data-state="unreachable"] { color: var(--muted-text); background: rgba(255,135,163,.08); border-color: var(--unreach-border); border-style: dashed; }
+    .status-badge[data-state="off"], .status-badge[data-state="unknown"] { color: var(--text-3); background: var(--unknown-bg); border-color: var(--off-border); }
+    .status-badge[data-state="disconnected"] { color: var(--text-3); background: transparent; border-color: var(--disc-border); border-style: dashed; }
+    /* ===== Buttons ===== */
+    button {
+      font: inherit; font-size: 16px; font-weight: 700; color: var(--b2-text);
+      display: inline-flex; align-items: center; justify-content: center; gap: 9px;
+      min-height: 46px; padding: 10px 20px; border-radius: 999px; cursor: pointer;
+      background: var(--b2-bg); border: 1px solid var(--b2-border);
+      transition: transform var(--t-fast), background var(--t-state), border-color var(--t-state), color var(--t-state), box-shadow var(--t-fast), opacity var(--t-state);
+      box-shadow: var(--b2-shadow);
+    }
+    button:hover { background: var(--b2-bg-hover); border-color: var(--b2-border-hover); transform: translateY(-1px); }
+    button:active { transform: translateY(1px); background: rgba(244,246,255,.12); }
+    button:disabled { opacity: .45; cursor: not-allowed; transform: none !important; }
+    button:focus-visible, input:focus-visible {
+      outline: 2px solid var(--signal); outline-offset: 3px;
+      box-shadow: 0 0 0 5px var(--ring-halo);
+    }
+    /* The halo APPENDS to each button family's resting shadow (design §1.6 / light §3.7:
+       base shadow first, halo last — same precedent as #settings-name below). Quiet
+       buttons rest at box-shadow none, so their append is the halo alone. */
+    .button-quiet:focus-visible { box-shadow: 0 0 0 5px var(--ring-halo); }
+    button:focus-visible { box-shadow: var(--b2-shadow), 0 0 0 5px var(--ring-halo); }
+    .button-primary:focus-visible { box-shadow: var(--b1-shadow), 0 0 0 5px var(--ring-halo); }
+    .button-primary { background: var(--b1-bg); color: var(--pbtn-ink); border-color: transparent; box-shadow: var(--b1-shadow); }
+    .button-primary:hover { background: var(--b1-bg-hover); box-shadow: var(--b1-shadow-hover); }
+    .button-primary:active { background: var(--b1-bg); box-shadow: var(--b1-shadow-active); }
+    .button-primary:disabled { opacity: .45; box-shadow: none; }
+    .button-quiet { background: transparent; border-color: transparent; color: var(--quiet-text); box-shadow: none; }
+    .button-quiet:hover { background: var(--quiet-bg-hover); color: var(--text); border-color: transparent; }
+    .button-quiet:active { background: var(--quiet-bg-active); }
+    .button-quiet:disabled { opacity: .40; }
+    .button-quiet[data-delete], .button-quiet.button-danger { color: var(--qd-text); }
+    .button-quiet[data-delete]:hover, .button-quiet.button-danger:hover { background: var(--qd-bg-hover); }
+    .button-quiet[data-delete]:active, .button-quiet.button-danger:active { background: var(--qd-bg-active); }
+    .button-cool { color: var(--hint-cool); } .button-cool:hover { background: rgba(125,227,255,.08); }
+    .button-warm { color: var(--hint-warm); } .button-warm:hover { background: rgba(255,201,125,.08); }
+    .button-icon .icon { margin: -2px 0; }
+    .control-label { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 8px; color: var(--text-3); font-size: 15px; }
+    .control-label span:first-child { color: var(--text-2); font-weight: 650; }
+    .control-label output {
+      background: var(--recess-bg); border: 1px solid var(--recess-border); border-radius: 6px;
+      padding: 3px 10px; font-size: 15px; font-weight: 700; color: var(--text);
+      box-shadow: var(--recess-inner);
+    }
+    .control-label output[data-tone="unknown"] { color: var(--text-3); }
+    /* ===== Sliders ===== */
+    .range-wrap { display: flex; flex-direction: column; gap: 6px; }
+    .range-hints { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-3); }
+    input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 22px; background: transparent; cursor: pointer; margin: 0; }
+    input[type=range]:disabled { cursor: not-allowed; }
+    input[type=range]::-webkit-slider-runnable-track {
+      height: 7px; border-radius: 999px; background: rgba(255,255,255,.12);
+    }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none; width: 20px; height: 20px; border-radius: 50%;
+      background: var(--thumb-bg); border: none; margin-top: -6.5px; box-shadow: var(--thumb-fx);
+      transition: box-shadow var(--t-fast);
+    }
+    input[type=range]:not(:disabled):hover::-webkit-slider-thumb { box-shadow: var(--thumb-fx), 0 0 0 6px rgba(244,246,255,.10); }
+    input[type=range]:active::-webkit-slider-thumb { box-shadow: var(--thumb-fx), 0 0 0 6px rgba(244,246,255,.16); }
+    input[type=range]:focus-visible::-webkit-slider-thumb { box-shadow: var(--thumb-fx), 0 0 0 5px var(--ring-halo); }
+    input[type=range]:disabled::-webkit-slider-thumb { background: rgba(244,246,255,.35); box-shadow: none; }
+    input[type=range]::-moz-range-track { height: 7px; border-radius: 999px; background: rgba(255,255,255,.12); }
+    input[type=range]::-moz-range-thumb { width: 20px; height: 20px; border-radius: 50%; background: var(--thumb-bg); border: none; box-shadow: var(--thumb-fx); }
+    input[data-field="brightness"]::-webkit-slider-runnable-track, #group-brightness::-webkit-slider-runnable-track {
+      background-image: linear-gradient(90deg, #2a2d3f, #eef1fb);
+      background-size: calc(var(--fill-pct, 50) * 1%) 100%; background-repeat: no-repeat;
+      background-color: rgba(255,255,255,.12);
+    }
+    input[data-field="brightness"]::-moz-range-track, #group-brightness::-moz-range-track {
+      background-image: linear-gradient(90deg, #2a2d3f, #eef1fb);
+      background-size: calc(var(--fill-pct, 50) * 1%) 100%; background-repeat: no-repeat;
+      background-color: rgba(255,255,255,.12);
+    }
+    input[data-field="temp"]::-webkit-slider-runnable-track, #group-temp::-webkit-slider-runnable-track {
+      background: linear-gradient(90deg, #2f6df6 0%, #16b981 100%);
+    }
+    input[data-field="temp"]::-moz-range-track, #group-temp::-moz-range-track {
+      background: linear-gradient(90deg, #2f6df6 0%, #16b981 100%);
+    }
+    input[type=range]:disabled::-webkit-slider-runnable-track { opacity: .5; }
+    input[type=range]:disabled::-moz-range-track { opacity: .5; }
+    /* ===== Error banner (page) ===== */
+    .error-banner {
+      margin-top: 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      background: var(--err-bg); border: 1px solid var(--err-border); border-radius: var(--r-14);
+      padding: 12px 14px; color: var(--err-text); font-size: 13px;
+    }
+    .error-banner[hidden] { display: none !important; }
+    .error-copy { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .error-copy .icon { color: var(--err-text); }
+    #retry { min-height: 36px; padding: 7px 12px; }
+    /* ===== Preset dropdown (names only; save row inside the menu) ===== */
+    .preset-dd { position: relative; }
+    .preset-dd > button {
+      display: inline-flex; align-items: center; gap: 10px;
+      background: var(--b2-bg); border: 1px solid var(--b2-border); color: var(--text);
+      border-radius: 999px; font-size: 17px; font-weight: 650; padding: 11px 20px; min-height: 48px;
+      transition: background var(--t-state), border-color var(--t-state);
+    }
+    .preset-dd > button:hover { background: var(--b2-bg-hover); border-color: var(--b2-border-hover); }
+    .preset-dd .chev { transition: transform var(--t-state); font-size: 13px; color: var(--text-3); }
+    .preset-dd.open .chev { transform: rotate(180deg); }
+    .preset-menu {
+      position: absolute; top: calc(100% + 8px); right: 0; min-width: 300px; z-index: 10;
+      padding: 8px; border-radius: 14px; display: none; max-height: 60vh; overflow-y: auto;
+      background: var(--g1-sheen), var(--g3-bg); border: 1px solid var(--g3-border);
+      box-shadow: var(--g3-shadow), var(--g3-inner);
+      -webkit-backdrop-filter: var(--g3-blur); backdrop-filter: var(--g3-blur);
+      scrollbar-width: thin; scrollbar-color: var(--scrollbar) transparent;
+    }
+    .preset-dd.open .preset-menu { display: block; }
+    .preset-menu .settings-list { gap: 4px; }
+    .preset-menu .setting-row { display: flex; align-items: stretch; gap: 4px; border: none; background: none; box-shadow: none; padding: 0; }
+    .preset-menu .item {
+      flex: 1; text-align: left; padding: 10px 12px; border: none; border-radius: 10px; min-height: 0;
+      background: transparent; color: var(--text); font-size: 16px; font-weight: 600;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .preset-menu .item:hover { background: var(--quiet-bg-hover); }
+    .preset-menu .item:active { background: var(--quiet-bg-active); }
+    .preset-menu .pdel {
+      flex: none; width: 30px; border-radius: 10px; min-height: 0; padding: 0;
+      background: transparent; border: none; color: var(--text-3); font-size: 13px; line-height: 1;
+      visibility: hidden; cursor: pointer;
+    }
+    .preset-menu .setting-row:hover .pdel, .preset-menu .setting-row:focus-within .pdel { visibility: visible; }
+    .preset-menu .pdel:hover { background: var(--qd-bg-hover); color: var(--qd-text); }
+    .preset-foot { display: flex; gap: 8px; padding: 8px 6px 4px; border-top: 1px solid var(--g2-border); margin-top: 6px; }
+    .preset-foot button { min-height: 40px; padding: 8px 14px; font-size: 15px; }
+    #settings-empty { border: none; background: none; padding: 14px 12px; font-size: 15px; }
 
-    button, input { font: inherit; }
-    button { min-height: 44px; border: 1px solid var(--line-strong); border-radius: 10px; padding: 9px 13px; background: var(--panel-2); color: var(--text); cursor: pointer; transition: background 120ms ease, border-color 120ms ease, color 120ms ease, transform 120ms ease; }
-    button:hover:not(:disabled) { border-color: var(--accent); background: var(--panel-3); }
-    button:active:not(:disabled) { transform: translateY(1px); }
-    button:focus-visible, input:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 3px; }
-    button:disabled, input:disabled { cursor: not-allowed; opacity: .42; }
-    .button-icon { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
-    .button-primary { border-color: var(--accent); background: var(--accent); color: var(--accent-ink); font-weight: 760; }
-    .button-primary:hover:not(:disabled) { border-color: var(--accent-strong); background: var(--accent-strong); }
-    .button-quiet { color: var(--muted); }
-    .button-quiet:hover:not(:disabled) { color: var(--text); }
-    .button-warm { color: var(--accent-strong); }
-    .button-cool { color: var(--cool); }
-
-    .power-row { display: flex; flex-wrap: wrap; gap: 8px; }
-    .power-row button { min-width: 88px; }
-    .control-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-    .control-block { min-width: 0; border: 1px solid var(--line); border-radius: 13px; padding: 14px; background: rgba(255,255,255,.015); }
-    .control-block-wide { grid-column: 1 / -1; }
-    .control-label { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; color: var(--muted); font-size: .77rem; font-weight: 700; letter-spacing: .02em; }
-    output { color: var(--text); font-size: .95rem; font-variant-numeric: tabular-nums; }
-    .range-wrap { display: grid; gap: 8px; }
-    input[type="range"] { width: 100%; height: 26px; margin: 0; accent-color: var(--accent); cursor: pointer; }
-    input[type="range"]::-webkit-slider-runnable-track { height: 6px; border-radius: 99px; background: linear-gradient(90deg, #cf975a, #f3bd73 35%, #d7e6ee 65%, #75bfe6); }
-    input[type="range"]::-moz-range-track { height: 6px; border-radius: 99px; background: linear-gradient(90deg, #cf975a, #f3bd73 35%, #d7e6ee 65%, #75bfe6); }
-    input[type="range"]::-webkit-slider-thumb { width: 20px; height: 20px; margin-top: -7px; border: 2px solid var(--bg); border-radius: 50%; background: var(--text); box-shadow: 0 0 0 2px var(--accent); -webkit-appearance: none; }
-    input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border: 2px solid var(--bg); border-radius: 50%; background: var(--text); box-shadow: 0 0 0 2px var(--accent); }
-    .range-hints { display: flex; justify-content: space-between; color: var(--dim); font-size: .7rem; }
-    .trim-row { display: flex; flex-wrap: wrap; gap: 8px; }
-    .trim-row button { min-width: 58px; padding-inline: 10px; }
-    .settings-save { display: flex; flex-wrap: wrap; gap: 8px; }
-    .settings-save input { flex: 1 1 200px; min-width: 0; min-height: 44px; border: 1px solid var(--line-strong); border-radius: 10px; padding: 9px 13px; background: var(--panel-2); color: var(--text); }
-    .settings-line, .settings-list, #settings-empty { margin-top: 12px; }
-    .settings-line { margin-bottom: 0; }
-    .settings-list { list-style: none; margin-bottom: 0; padding: 0; display: grid; gap: 8px; }
-    .setting-row { display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 10px; padding: 6px 6px 6px 12px; background: rgba(255,255,255,.015); }
-    .setting-row .setting-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .setting-row button { min-height: 36px; padding: 6px 10px; }
-    .semantics { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 18px; color: var(--muted); font-size: .74rem; }
-    .semantics span { display: inline-flex; align-items: center; gap: 6px; }
-    .semantics .icon { width: .9rem; height: .9rem; color: var(--accent); }
-
-    .section-title { display: flex; align-items: end; justify-content: space-between; gap: 16px; margin: 34px 0 13px; }
-    .section-title p { margin: 0; color: var(--muted); font-size: .78rem; }
-    .lights-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 13px; }
-    .light-card { min-width: 0; border: 1px solid var(--line); border-radius: 16px; padding: 17px; background: var(--panel); box-shadow: 0 10px 24px rgba(0,0,0,.12); }
-    .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 17px; }
-    .card-meta { margin: 0; color: var(--muted); font-size: .73rem; font-variant-numeric: tabular-nums; }
-    .status-badge { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--line); border-radius: 999px; padding: 5px 8px; color: var(--muted); font-size: .66rem; font-weight: 740; text-transform: uppercase; letter-spacing: .06em; }
-    .status-badge[data-state="on"] { border-color: rgba(114, 213, 160, .35); color: var(--green); }
-    .status-badge[data-state="off"] { color: var(--muted); }
-    .status-badge[data-state="error"] { border-color: rgba(255, 143, 134, .4); color: var(--red); }
-    .status-badge[data-state="disconnected"] { color: var(--dim); }
-    .status-badge[data-state="muted"] { border-color: rgba(255, 143, 134, .4); color: var(--red); }
-    .status-badge[data-state="unmuted"] { border-color: rgba(114, 213, 160, .35); color: var(--green); }
-    .status-badge[data-state="unknown"] { color: var(--dim); }
-    .status-badge[data-state="unreachable"] { border-style: dashed; border-color: rgba(255, 143, 134, .55); color: var(--red); background: rgba(255, 143, 134, .07); }
-    .panel + .panel { margin-top: 16px; }
-    #mic-line { margin: 0 0 14px; }
-    .power-button { display: inline-flex; align-items: center; gap: 7px; min-height: 40px; padding: 7px 10px; color: var(--muted); }
-    .power-button[data-on="true"] { border-color: rgba(114, 213, 160, .45); color: var(--green); }
-    .card-control { display: grid; gap: 7px; margin-top: 14px; }
-    .card-control .control-label { margin-bottom: 0; }
-    .card-error { display: flex; align-items: flex-start; gap: 8px; margin-top: 14px; border: 1px solid rgba(255, 143, 134, .35); border-radius: 10px; padding: 9px 10px; color: var(--red); font-size: .75rem; line-height: 1.35; }
-    .card-error[hidden], .error-banner[hidden], .empty[hidden] { display: none; }
-    .card-error .icon { margin-top: 1px; width: .95rem; height: .95rem; flex: 0 0 auto; }
-    .empty { border: 1px dashed var(--line-strong); border-radius: 14px; padding: 30px 20px; color: var(--muted); text-align: center; }
-    .empty strong { display: block; margin-bottom: 5px; color: var(--text); }
-    .error-banner { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin: 16px 0 0; border: 1px solid rgba(255, 143, 134, .4); border-radius: 12px; padding: 12px 13px; color: var(--red); background: rgba(255, 143, 134, .06); font-size: .8rem; line-height: 1.4; }
-    .error-copy { display: flex; gap: 9px; }
-    .error-copy .icon { margin-top: 1px; width: 1rem; height: 1rem; flex: 0 0 auto; }
-    .error-banner button { min-height: 36px; padding: 6px 10px; color: var(--red); }
-    footer { margin-top: 25px; color: var(--dim); font-size: .7rem; text-align: center; }
-
-    @media (max-width: 720px) {
-      .shell { width: min(100% - 20px, 560px); padding-top: 18px; }
-      .topbar { align-items: stretch; flex-direction: column; gap: 15px; }
-      .connection { align-self: flex-start; }
-      .control-grid { grid-template-columns: 1fr; }
-      .control-block-wide { grid-column: auto; }
+    /* ===== Settings ===== */
+    .settings-save { display: flex; gap: 10px; align-items: center; flex: 1; min-width: 0; }
+    #settings-name {
+      flex: 1; min-height: 44px; padding: 10px 14px; font: inherit; font-size: 13px;
+      color: var(--text); background: var(--recess-bg); border: 1px solid var(--recess-border);
+      border-radius: var(--r-10); box-shadow: var(--recess-inner);
+    }
+    #settings-name::placeholder { color: var(--text-3); }
+    #settings-name:hover { border-color: rgba(244,246,255,.22); }
+    /* The halo must APPEND to the recess shadow (design §1.6: the element's
+       base shadow first, halo appended after it); the id-level base rule
+       otherwise beats the generic input:focus-visible halo and the ring
+       loses its 5px glow. */
+    #settings-name:focus-visible { box-shadow: var(--recess-inner), 0 0 0 5px var(--ring-halo); }
+    .settings-line { margin: 10px 0 12px; font-size: 12px; }
+    .settings-line[data-tone="error"] { color: var(--err-text); }
+    .settings-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+    .setting-row {
+      display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 12px;
+      background: var(--g2-bg); border: 1px solid var(--g2-border); border-radius: var(--r-10);
+      box-shadow: var(--g2-shadow), var(--g2-inner);
+      transition: border-color var(--t-state);
+    }
+    .setting-row:hover { border-color: rgba(244,246,255,.20); }
+    .setting-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--text); }
+    .setting-row button { min-height: 36px; padding: 7px 12px; }
+    .empty {
+      border: 1px dashed var(--disc-border); border-radius: var(--r-14); background: rgba(244,246,255,.03);
+      padding: 30px 20px; text-align: center; color: var(--text-3); font-size: 12px;
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .empty strong { color: var(--text-2); font-size: 13px; }
+    /* ===== Lights grid + cards ===== */
+    .lights-grid {
+      flex: 1; min-height: 0; overflow-y: auto;
+      scrollbar-width: thin; scrollbar-color: var(--scrollbar) transparent;
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(470px, 1fr)); gap: 14px;
+      padding: 0 0 18px; align-content: start;
+    }
+    .lights-grid::-webkit-scrollbar { width: 10px; }
+    .lights-grid::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 5px; }
+    .lights-grid::-webkit-scrollbar-track { background: transparent; }
+    .light-card {
+      background: var(--g1-sheen), var(--g1-bg); border: 1px solid var(--g1-border);
+      border-radius: var(--r-14); padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; min-width: 0;
+      -webkit-backdrop-filter: var(--g1-blur); backdrop-filter: var(--g1-blur);
+      --bri01: calc(var(--glow-bri, 0) / 100);
+      --glow-t: calc(var(--glow-hue, 9) / 18 * 100);
+      --aura-c: #ffc089;
+      --aura-c: color-mix(in oklab, var(--aura-warm), var(--aura-cool) calc(var(--glow-t) * 1%));
+      border-color: color-mix(in oklab, var(--g1-border), var(--aura-c) calc(45% * var(--bri01)));
+      box-shadow:
+        0 16px 34px rgba(2,4,14,.50),
+        inset 0 1px 0 rgba(255,255,255,.15),
+        0 6px calc(24px + 34px * var(--bri01)) color-mix(in oklab, var(--aura-c) calc(30% * var(--bri01)), transparent),
+        0 0 calc(8px + 14px * var(--bri01)) color-mix(in oklab, var(--aura-c) calc(40% * var(--bri01)), transparent),
+        inset 0 -20px 34px -20px color-mix(in oklab, var(--aura-c) calc(20% * var(--bri01)), transparent);
+      transition: border-color var(--t-state), box-shadow 160ms ease-out;
+    }
+    .card-head { display: grid; grid-template-columns: 1fr auto; grid-template-areas: "name power" "meta power"; align-items: center; column-gap: 14px; row-gap: 5px; margin-bottom: 2px; }
+    .card-head > div:first-child { display: contents; }
+    .card-head > div:last-child { display: contents; }
+    .light-name { grid-area: name; font-size: 20px; font-weight: 700; letter-spacing: -.01em; line-height: 1.25; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .card-meta { grid-area: meta; font-size: 15px; color: var(--text-3); display: flex; gap: 10px; align-items: center; line-height: 1.3; }
+    .power-button {
+      grid-area: power;
+      display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 8px 18px;
+      border-radius: 999px; font-size: 16px; font-weight: 700;
+      background: var(--b2-bg); border: 1px solid var(--b2-border); color: var(--b2-text);
+      transition: transform var(--t-fast), background var(--t-state), border-color var(--t-state), color var(--t-state);
+    }
+    .power-button:hover { transform: translateY(-1px); background: var(--b2-bg-hover); border-color: var(--b2-border-hover); }
+    .power-button:active { transform: translateY(1px); }
+    .power-button:disabled { opacity: .45; cursor: not-allowed; transform: none !important; }
+    .power-button[data-on="true"] {
+      color: var(--live-text); background: rgba(88,240,200,.08); border-color: rgba(88,240,200,.45);
+    }
+    .power-button[data-on="true"] .icon { filter: drop-shadow(0 0 5px rgba(88,240,200,.5)); }
+    .card-control { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px; }
+    .card-control .control-label { margin: 0; display: contents; }
+    .card-control .control-label output { order: 2; }
+    .card-control input[type=range] { order: 1; grid-column: 1; }
+    .card-control output { grid-column: 2; }
+    .card-error {
+      margin: 0 -20px -18px; display: flex; align-items: center; gap: 8px;
+      background: var(--carderr-bg); border-top: 1px solid var(--carderr-border); border-left: none; border-right: none; border-bottom: none;
+      border-radius: 0 0 var(--r-14) var(--r-14);
+      padding: 9px 20px; color: var(--err-text); font-size: 15px;
+    }
+    .card-error[hidden] { display: none !important; }
+    /* ===== Narrow fallback ===== */
+    @media (max-width: 900px) {
+      .topbar { padding: 14px 16px 10px; flex-wrap: wrap; }
+      .layout { padding: 0 16px; }
       .panel-inner { padding: 15px; }
       .panel-head { margin-bottom: 16px; }
       .section-title { align-items: flex-start; flex-direction: column; gap: 4px; }
       .lights-grid { grid-template-columns: 1fr; }
     }
-
+    /* ===== LIGHT THEME (system-adaptive) ===== */
+    @media (prefers-color-scheme: light) {
+      :root {
+        --field-base: #eef1fb;
+        --f1: radial-gradient(900px 1000px at 50% 38%, transparent 55%, rgba(200,205,240,.35) 100%);
+        --f2: radial-gradient(760px 560px at -8% -18%, rgba(150,120,235,.40), rgba(150,120,235,0) 62%);
+        --f3: radial-gradient(820px 600px at 112% 2%, rgba(90,180,220,.38), rgba(90,180,220,0) 58%);
+        --f4: radial-gradient(900px 680px at 62% 118%, rgba(235,140,200,.32), rgba(235,140,200,0) 60%);
+        --g1-sheen: linear-gradient(180deg, rgba(255,255,255,.60), rgba(255,255,255,0) 40%);
+        --g1-bg: rgba(255,255,255,.60);
+        --g1-border: rgba(255,255,255,.72);
+        --g1-blur: blur(20px) saturate(1.25);
+        --g1-shadow: 0 1px 2px rgba(47,54,116,.05), 0 16px 40px -12px rgba(56,64,140,.18);
+        --g1-inner: inset 0 1px 0 rgba(255,255,255,.90);
+        --g2-bg: rgba(255,255,255,.45);
+        --g2-border: rgba(255,255,255,.58);
+        --g2-shadow: 0 6px 16px -8px rgba(56,64,140,.12);
+        --g2-inner: inset 0 1px 0 rgba(255,255,255,.70);
+        --g3-bg: rgba(255,255,255,.72);
+        --g3-border: rgba(255,255,255,.85);
+        --g3-blur: blur(8px);
+        --g3-shadow: 0 2px 8px -2px rgba(47,54,116,.14);
+        --g3-inner: inset 0 1px 0 rgba(255,255,255,.95);
+        --recess-bg: rgba(23,28,60,.08);
+        --recess-border: rgba(23,28,60,.12);
+        --recess-inner: inset 0 1px 2px rgba(23,28,60,.10), inset 0 -1px 0 rgba(255,255,255,.55);
+        --text: #171b2e; --text-2: rgba(23,27,46,.64); --text-3: rgba(23,27,46,.66);
+        --text-disabled: rgba(23,27,46,.52); --pbtn-ink: #f8f9ff;
+        --signal: #0c6b85; --ring-halo: rgba(12,107,133,.18);
+        --live-text: #0a6e50; --live-bg: rgba(10,110,80,.06); --live-border: rgba(10,110,80,.40); --live-word: #0a6e50;
+        --muted-text: #be123c; --muted-bg: rgba(190,18,60,.08); --muted-border: rgba(190,18,60,.38);
+        --muted-word: #be123c; --muted-word-fx: none;
+        --unreach-border: rgba(190,18,60,.55);
+        --dim-word: #5a6079; --off-border: rgba(23,27,46,.12);
+        --unknown-bg: rgba(23,27,46,.05); --disc-border: rgba(23,27,46,.24);
+        --err-bg: rgba(190,18,60,.07); --err-border: rgba(190,18,60,.45); --err-text: #be123c;
+        --carderr-bg: rgba(190,18,60,.06); --carderr-border: rgba(190,18,60,.45);
+        --hint-warm: #8a5003; --hint-cool: #0369a1;
+        --b1-bg: #1f2438; --b1-bg-hover: #2a3150;
+        --b1-shadow: 0 8px 20px -6px rgba(31,36,56,.35), inset 0 1px 0 rgba(255,255,255,.14);
+        --b1-shadow-hover: 0 10px 24px -6px rgba(31,36,56,.40), inset 0 1px 0 rgba(255,255,255,.14);
+        --b1-shadow-active: 0 2px 6px rgba(31,36,56,.30), inset 0 1px 0 rgba(255,255,255,.14);
+        --b2-bg: rgba(255,255,255,.55); --b2-border: rgba(23,28,60,.16); --b2-text: var(--text);
+        --b2-bg-hover: rgba(255,255,255,.70); --b2-border-hover: rgba(23,28,60,.22);
+        --b2-shadow: inset 0 1px 0 rgba(255,255,255,.9), 0 1px 2px rgba(47,54,116,.08);
+        --quiet-text: var(--text-2); --quiet-bg-hover: rgba(23,28,60,.06); --quiet-bg-active: rgba(23,28,60,.10);
+        --qd-text: #be123c; --qd-bg-hover: rgba(190,18,60,.08); --qd-bg-active: rgba(190,18,60,.12);
+        --dot-online: #0e9670; --dot-online-fx: 0 0 0 3px rgba(14,150,112,.18);
+        --dot-degraded: #b06204; --dot-degraded-fx: 0 0 0 3px rgba(176,98,4,.18);
+        --dot-idle: rgba(23,27,46,.35); --dot-idle-fx: 0 0 0 3px rgba(23,27,46,.10);
+        --lamp-base-fx: inset 0 -6px 12px rgba(23,28,60,.18), inset 0 2px 3px rgba(255,255,255,.65);
+        --lamp-unknown-face: radial-gradient(circle at 34% 30%, #f7f8fd, #a7accb 55%, #7a80a3);
+        --lamp-unknown-fx: 0 0 0 3px rgba(90,96,121,.16); --lamp-unknown-blur: none;
+        --lamp-live-face: radial-gradient(circle at 34% 30%, #f4fefb, #17b98b 55%, #0b6349);
+        --lamp-live-fx: 0 0 0 3px rgba(10,90,66,.14), 0 8px 22px rgba(10,90,66,.30);
+        --lamp-muted-face: radial-gradient(circle at 34% 30%, #fff6f7, #ee4a6e 55%, #9f1239);
+        --lamp-muted-fx: 0 0 0 3px rgba(159,18,57,.14), 0 8px 22px rgba(159,18,57,.30);
+        --lamp-muted-ring: rgba(190,18,60,.50);
+        --lamp-unreach-ring: rgba(110,116,148,.55);
+        --aura-warm: #d8913f; --aura-cool: #0369a1;
+        --track-warm-end: #a34d08; --track-cool-end: #0369a1;
+        --thumb-bg: #fff;
+        --thumb-fx: 0 0 0 1.5px rgba(23,28,60,.50), 0 2px 5px rgba(23,28,60,.25);
+        --sel: rgba(12,107,133,.22); --scrollbar: rgba(23,28,60,.22);
+      }
+      /* Light-only structural deltas */
+      body { color: var(--text); }
+      /* Signal-voice accents in daylight (design-light §1.4/§3.4): eyebrows + input caret.
+         Dark keeps eyebrow --text-3 (design-dark §1.6) and leaves the caret native. */
+      .eyebrow { color: var(--signal); }
+      #settings-name { caret-color: var(--signal); }
+      /* Light cards signal "lit" by deepening, never brightening */
+      .light-card {
+        --aura-h: calc(38 + var(--glow-hue, 9) * 9.11);
+        border-color: hsl(var(--aura-h) 76% 42% / calc(.02 + var(--glow-bri, 0) * .0026));
+        box-shadow:
+          0 1px 2px rgba(47,54,116,.05),
+          0 16px 40px -12px rgba(56,64,140,.18),
+          0 8px 28px -6px hsl(var(--aura-h) 82% 46% / calc(.04 + var(--glow-bri, 0) * .0028)),
+          inset 0 0 22px hsl(var(--aura-h) 88% 58% / calc(var(--glow-bri, 0) * .0013)),
+          var(--g1-inner);
+      }
+      .light-card:has(.card-error:not([hidden])) { border-color: rgba(190,18,60,.45); }
+      .light-card:has(.status-badge[data-state="disconnected"]) {
+        box-shadow: 0 1px 2px rgba(47,54,116,.05), 0 16px 40px -12px rgba(56,64,140,.18), var(--g1-inner);
+        border-color: var(--g1-border);
+      }
+      .power-button[data-on="true"] { color: var(--live-text); background: rgba(10,110,80,.05); border-color: rgba(10,110,80,.85); }
+      .power-button[data-on="true"] .icon { filter: none; }
+      /* Gang power triplet keeps a floor width so it reads as one control (design-light §3.3) */
+      .power-row[aria-label="All lights power"] button { min-width: 88px; }
+      /* Light slider fills: brightness dark→light, temp blue→green */
+      input[data-field="brightness"]::-webkit-slider-runnable-track, #group-brightness::-webkit-slider-runnable-track {
+        background-color: rgba(23,28,60,.12);
+        background-image: linear-gradient(90deg, #62688a, #d9dffa);
+        box-shadow: inset 0 1px 2px rgba(23,28,60,.14), 0 1px 0 rgba(255,255,255,.55);
+      }
+      input[data-field="brightness"]::-moz-range-track, #group-brightness::-moz-range-track {
+        background-color: rgba(23,28,60,.12);
+        background-image: linear-gradient(90deg, #62688a, #d9dffa);
+      }
+      input[data-field="temp"]::-webkit-slider-runnable-track, #group-temp::-webkit-slider-runnable-track {
+        background: linear-gradient(90deg, #2f6df6 0%, #16b981 100%);
+        box-shadow: inset 0 1px 2px rgba(23,28,60,.14), 0 1px 0 rgba(255,255,255,.55);
+      }
+      input[data-field="temp"]::-moz-range-track, #group-temp::-moz-range-track {
+        background: linear-gradient(90deg, #2f6df6 0%, #16b981 100%);
+      }
+      /* Thumb: white face + ink identity ring */
+      input[type=range]:not(:disabled):hover::-webkit-slider-thumb { box-shadow: 0 0 0 1.5px rgba(23,28,60,.60), 0 2px 6px rgba(23,28,60,.28); }
+      input[type=range]:active::-webkit-slider-thumb { box-shadow: 0 0 0 1.5px rgba(23,28,60,.50), 0 3px 8px rgba(23,28,60,.30); }
+      input[type=range]:focus-visible { outline-offset: 6px; }
+      input[type=range]:disabled::-webkit-slider-thumb { background: #fff; box-shadow: 0 0 0 1.5px rgba(23,28,60,.30); }
+      input[type=range]::-moz-range-thumb { border: 1.5px solid rgba(23,28,60,.28); }
+      .error-banner { color: var(--err-text); }
+      #retry { color: var(--err-text); }
+      .button-quiet[data-delete], .button-quiet.button-danger { color: var(--qd-text); }
+      /* Dark-literal re-homing for daylight (design-light §3.2/§3.4/§3.7): presses
+         darken (never whiten), chip hovers deepen the ink hairline, and the
+         unreachable badge / empty-state wash use the daylight values. */
+      button:active { background: rgba(23,28,60,.10); }
+      .button-primary:active { background: var(--b1-bg); }
+      #settings-name:hover, .setting-row:hover { border-color: rgba(23,28,60,.22); }
+      .status-badge[data-state="unreachable"] { background: rgba(190,18,60,.06); }
+      .empty { background: rgba(255,255,255,.35); }
+      /* Light lamp breathing (design-light §3.2): sonar-ring construction —
+         core scale on the lamp, a fading dashed-free ring on ::after, and NO
+         outer box-shadow blooms at any point of the breath (guardrail §5.3);
+         the lamp's box-shadow stays at its resting inset-rim + signal-shadow
+         stack. Dark keeps lamp-breathe untouched. The muted ::after needs
+         content/position here: the base sheet only generates a lamp ::after
+         for the unreachable state. */
+      @keyframes lamp-core-breathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.045); } }
+      @keyframes lamp-ring-breathe { 0%,100% { transform: scale(.86); opacity: .6; } 50% { transform: scale(1.18); opacity: 0; } }
+      #mic-status[data-state="muted"] ~ .mic-lamp { animation: lamp-core-breathe 2.6s ease-in-out infinite; }
+      #mic-status[data-state="muted"] ~ .mic-lamp::after { content: ""; position: absolute; inset: -6px; border-radius: 50%; border: 2px solid rgba(190,18,60,.5); animation: lamp-ring-breathe 2.6s ease-in-out infinite; }
+      /* Light unreachable orbital: tighter inset + heavier dashed ring (§3.2);
+         dark keeps inset -7px / 1px. */
+      #mic-status[data-state="unreachable"] ~ .mic-lamp::after { inset: -6px; border: 2px dashed rgba(110,116,148,.55); }
+      /* Light disabled primary (§3.6): an asleep ink wash, not a fade — the
+         shared .45 opacity fade would bury white-on-ink contrast. */
+      .button-primary:disabled { background: rgba(31,36,56,.50); color: rgba(255,255,255,.95); box-shadow: none; opacity: 1; }
+      /* Cooler/Warmer hovers: the dark tinted washes are re-homed to an ink
+         darken in daylight (§3.7 hovers darken, never whiten). */
+      .button-cool:hover, .button-warm:hover { background: rgba(23,28,60,.06); }
+      /* The cyan drop-shadow behind the brand glyph is a dark-field glow;
+         daylight drops it (§5.3), the glass-3 blur stays. */
+      .brand-mark { filter: none; }
+      /* Daylight gang square: dark square reads "off"; bright stays lit. */
+      .gang-power[data-on="false"] { background: #171b2e; color: rgba(255,255,255,.55); border-color: transparent; box-shadow: inset 0 1px 3px rgba(23,28,60,.30); }
+      .gang-power[data-on="true"] { box-shadow: 0 8px 20px -6px rgba(31,36,56,.35), inset 0 1px 0 rgba(255,255,255,.9), 0 0 20px rgba(12,107,133,.20); }
+      /* Daylight band: glass gets a hairline divider tone shift */
+      .band .cell + .cell { border-left-color: rgba(23,28,60,.12); }
+      .titlebar { border-bottom-color: rgba(23,28,60,.10); }
+      .statusbar { border-top-color: rgba(23,28,60,.10); }
+    }
+    /* ===== backdrop-filter fallback ===== */
+    @supports not (backdrop-filter: blur(1px)) {
+      :root { --g1-bg: rgba(19,21,42,.90); --g3-bg: #22253f; --g1-blur: none; --g3-blur: none; }
+    }
+    @media (prefers-color-scheme: light) {
+      @supports not (backdrop-filter: blur(1px)) {
+        :root { --g1-bg: rgba(255,255,255,.92); --g2-bg: rgba(255,255,255,.85); --g3-bg: rgba(255,255,255,.95); --g1-blur: none; --g3-blur: none; }
+      }
+    }
+    /* ===== reduced motion ===== */
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+    }
+    /* reduced-motion kill: pin the muted lamp (kills lamp-breathe) */
+    @media (prefers-reduced-motion: reduce) {
+      #mic-status[data-state="muted"] ~ .mic-lamp { animation: none; transform: scale(1); }
     }
   </style>
 </head>
@@ -167,131 +644,87 @@
     <symbol id="icon-alert" viewBox="0 0 24 24"><path d="M12 3 2.8 20h18.4L12 3Z"></path><path d="M12 9v5M12 17h.01"></path></symbol>
   </svg>
 
-  <main class="shell">
-    <header class="topbar">
+  <div class="shell">
+    <header class="titlebar"><div class="column">
       <div class="brand">
         <div class="brand-mark"><svg class="icon"><use href="#icon-sun"></use></svg></div>
-        <div>
-          <p class="eyebrow">Mutastic / local control</p>
-          <h1>Mutastic</h1>
-          <p class="subtle">Tune each panel on its own, or move the whole rig together without losing your balance.</p>
+        <h1>Mutastic</h1>
+      </div>
+      <div class="titlebar-right">
+        <button id="refresh" class="button-quiet" type="button" title="Refresh light status"><span>Refresh</span></button>
+        <!-- Initial state is "idle" (dim dot); any value outside
+             online/degraded falls through to the base idle dot. -->
+        <div id="connection" class="conn connection" data-state="idle" role="status" aria-live="polite"><span class="connection-dot"></span><span id="connection-text">Connecting</span></div>
+      </div>
+    </div></header>
+
+    <div class="band" aria-label="Command band"><div class="column band-inner">
+      <div class="cell">
+        <!-- #mic-status keeps its id; it must precede the lamp button so the
+             sibling lamp-state rules (#mic-status[data-state] ~ .mic-lamp) apply. -->
+        <span id="mic-status" class="visually-hidden" data-state="unknown">unknown</span>
+        <button id="mic-toggle" class="mic-lamp" type="button" data-mic-action="toggle" aria-label="Toggle microphone mute" title="Toggle microphone" disabled><span class="visually-hidden">Toggle microphone</span></button>
+        <span class="stack">
+          <span id="mic-word" class="mic-word" data-state="unknown" aria-hidden="true">Unknown</span>
+          <span class="sub"><span id="mic-line">Waiting for the daemon…</span></span>
+        </span>
+      </div>
+
+      <div class="cell">
+        <button id="gang-toggle" class="gang-power" type="button" data-group-action="toggle" data-on="false" aria-label="Toggle all lights"><span class="gp-label">On</span></button>
+        <span class="stack">
+          <span class="eyebrow" style="margin:0">All lights</span>
+          <span class="sub" id="gang-sub">— of — on</span>
+        </span>
+      </div>
+
+      <div class="cell grow" style="gap:22px">
+        <span style="display:grid;grid-template-columns:minmax(150px,220px) auto;align-items:center;gap:12px;flex:1">
+          <input id="group-brightness" type="range" min="0" max="100" value="55" style="--fill-pct:55" aria-label="Match brightness for all lights">
+          <output id="group-brightness-output" for="group-brightness" data-tone="unknown">Unknown</output>
+        </span>
+        <span style="display:grid;grid-template-columns:minmax(150px,220px) auto;align-items:center;gap:12px;flex:1">
+          <input id="group-temp" type="range" min="0" max="18" value="9" aria-label="Match color temperature for all lights">
+          <output id="group-temp-output" for="group-temp" data-tone="unknown">Unknown</output>
+        </span>
+      </div>
+
+      <div class="cell">
+        <div class="preset-dd" id="preset-dd">
+          <button id="preset-btn" type="button" aria-haspopup="menu" aria-expanded="false">Presets <span class="chev">▾</span></button>
+          <div class="preset-menu" role="menu">
+            <ul id="settings-list" class="settings-list"></ul>
+            <p id="settings-empty" class="empty" hidden>No saved settings yet — name one below and Save.</p>
+            <form id="settings-form" class="settings-save preset-foot">
+              <input id="settings-name" type="text" maxlength="42" autocomplete="off" placeholder="Name this look" aria-label="Name this look">
+              <button class="button-primary" type="submit">Save</button>
+            </form>
+          </div>
         </div>
       </div>
-      <div id="connection" class="connection" data-state="degraded" role="status" aria-live="polite"><span class="connection-dot"></span><span id="connection-text">Connecting</span></div>
-    </header>
+    </div></div>
 
-    <section class="panel" aria-labelledby="all-lights-title">
-      <div class="panel-inner">
-        <div class="panel-head">
-          <div>
-            <p class="eyebrow">Gang controls</p>
-            <h2 id="all-lights-title">All lights</h2>
-            <p class="subtle">Match writes one absolute value to every connected panel. Trim nudges each panel relative to its current setting.</p>
-          </div>
-          <button id="refresh" class="button-quiet button-icon" type="button" title="Refresh light status"><svg class="icon"><use href="#icon-refresh"></use></svg><span>Refresh</span></button>
-        </div>
-
-        <div class="control-grid">
-          <div class="control-block control-block-wide">
-            <div class="control-label"><span>Power</span><span>whole rig</span></div>
-            <div class="power-row" role="group" aria-label="All lights power">
-              <button class="button-primary button-icon" type="button" data-group-action="on"><svg class="icon"><use href="#icon-power"></use></svg><span>All on</span></button>
-              <button class="button-icon" type="button" data-group-action="off"><svg class="icon"><use href="#icon-power"></use></svg><span>All off</span></button>
-              <button class="button-quiet" type="button" data-group-action="toggle">Toggle</button>
-            </div>
-          </div>
-
-          <div class="control-block">
-            <label class="control-label" for="group-brightness"><span>Match brightness</span><output id="group-brightness-output" for="group-brightness">Unknown</output></label>
-            <div class="range-wrap">
-              <input id="group-brightness" type="range" min="0" max="100" value="55" aria-label="Match brightness for all lights">
-              <div class="range-hints"><span>0%</span><span>100%</span></div>
-            </div>
-          </div>
-
-          <div class="control-block">
-            <label class="control-label" for="group-temp"><span>Match warmth</span><output id="group-temp-output" for="group-temp">Unknown</output></label>
-            <div class="range-wrap">
-              <input id="group-temp" type="range" min="0" max="18" value="9" aria-label="Match color temperature for all lights">
-              <div class="range-hints"><span>2900K warm</span><span>7000K cool</span></div>
-            </div>
-          </div>
-
-          <div class="control-block">
-            <div class="control-label"><span>Group brightness trim</span><span>relative</span></div>
-            <div class="trim-row" role="group" aria-label="Relative group brightness trim">
-              <button type="button" data-group-action="brightness-delta" data-value="-5">-5</button>
-              <button type="button" data-group-action="brightness-delta" data-value="-1">-1</button>
-              <button type="button" data-group-action="brightness-delta" data-value="1">+1</button>
-              <button type="button" data-group-action="brightness-delta" data-value="5">+5</button>
-            </div>
-          </div>
-
-          <div class="control-block">
-            <div class="control-label"><span>Group warmth trim</span><span>one hardware step</span></div>
-            <div class="trim-row" role="group" aria-label="Relative group warmth trim">
-              <button class="button-cool button-icon" type="button" data-group-action="temp-step-delta" data-value="1"><svg class="icon"><use href="#icon-plus"></use></svg><span>Cooler</span></button>
-              <button class="button-warm button-icon" type="button" data-group-action="temp-step-delta" data-value="-1"><svg class="icon"><use href="#icon-minus"></use></svg><span>Warmer</span></button>
-            </div>
-          </div>
-        </div>
-
-        <div id="error-banner" class="error-banner" hidden role="alert">
-          <div class="error-copy"><svg class="icon"><use href="#icon-alert"></use></svg><span id="error-text"></span></div>
-          <button id="retry" type="button">Retry</button>
-        </div>
-      </div>
-    </section>
-
-    <section class="panel" aria-labelledby="mic-title">
-      <div class="panel-inner">
-        <div class="panel-head">
-          <div>
-            <p class="eyebrow">Audio</p>
-            <h2 id="mic-title">Microphone</h2>
-            <p class="subtle">Yeti X mute state, straight from the daemon. These buttons move the mic only — the meeting-app sweep stays on the physical mic button, the tray mute item, and the Stream Deck key.</p>
-          </div>
-          <span id="mic-status" class="status-badge" data-state="unknown">unknown</span>
-        </div>
-        <p id="mic-line" class="subtle">Waiting for the daemon…</p>
-        <div class="power-row" role="group" aria-label="Microphone mute">
-          <button class="button-primary" type="button" data-mic-action="mute">Mute</button>
-          <button type="button" data-mic-action="unmute">Unmute</button>
-          <!-- Toggle starts disarmed: the initial state is unknown, and an unknown-state daemon toggle is unpredictable. updateMic owns the disabled flag from the first definitive poll onward. -->
-          <button class="button-quiet" type="button" data-mic-action="toggle" disabled>Toggle</button>
-        </div>
-      </div>
-    </section>
-
-    <section class="panel" aria-labelledby="settings-title">
-      <div class="panel-inner">
-        <div class="panel-head">
-          <div>
-            <p class="eyebrow">Light looks</p>
-            <h2 id="settings-title">Saved settings</h2>
-            <p class="subtle">Snapshot the current look of every known light under a name, then restore or remove it here or from the tray menu. The daemon owns and persists the store, so this page and the tray always see the same set.</p>
-          </div>
-        </div>
-        <form id="settings-form" class="settings-save">
-          <input id="settings-name" type="text" maxlength="42" autocomplete="off" placeholder="Name this look" aria-label="Name this look">
-          <button class="button-primary" type="submit">Save</button>
-        </form>
-        <p id="settings-line" class="subtle settings-line">Checking for saved settings…</p>
-        <ul id="settings-list" class="settings-list"></ul>
-        <p id="settings-empty" class="empty" hidden>No saved settings yet — dial in a look above, name it, and Save.</p>
-      </div>
-    </section>
-
-    <div class="section-title">
-      <div><p class="eyebrow">Individual controls</p><h2>Panels</h2></div>
-      <p id="light-count">Waiting for the daemon…</p>
+    <div id="error-banner" class="error-banner" hidden role="alert" style="margin:10px 28px 0;border-radius:12px">
+      <div class="error-copy"><svg class="icon"><use href="#icon-alert"></use></svg><span id="error-text"></span></div>
+      <button id="retry" type="button">Retry</button>
     </div>
-    <section id="lights-grid" class="lights-grid" aria-live="polite" aria-label="Individual lights"></section>
-    <div id="empty" class="empty" hidden><strong>No named or connected lights yet</strong><span>Start the mutastic daemon or plug in a PL81 PRO panel, then refresh.</span></div>
+    <p id="settings-line" class="visually-hidden" role="status">Checking for saved settings…</p>
 
-    <footer>Loopback only · changes are persisted by the mutastic daemon · status refreshes every 750 ms</footer>
-  </main>
+    <main class="layout"><div class="column" style="display:flex;flex-direction:column;min-height:0">
+      <div class="content-head">
+        <p class="eyebrow" style="margin:0">Lights</p>
+        <p id="light-count">Waiting for the daemon…</p>
+        <span class="c-hint">drag sliders — applies on release</span>
+      </div>
+      <section id="lights-grid" class="lights-grid" aria-live="polite" aria-label="Individual lights"></section>
+      <div id="empty" class="empty" hidden><strong>No named or connected lights yet</strong><span>Start the mutastic daemon or plug in a PL81 PRO panel, then refresh.</span></div>
+    </div></main>
 
+    <footer class="statusbar"><div class="column">
+      <span>mutastic daemon · 750ms poll</span>
+      <span class="s-err" id="status-error"></span>
+    </div></footer>
+  </div>
   <script src="/mutation_queue.js"></script>
   <script>
     (() => {
@@ -325,10 +758,14 @@
       function showError(message) {
         $("error-text").textContent = message;
         $("error-banner").hidden = false;
+        const serr = $("status-error");
+        if (serr) serr.textContent = message;
       }
 
       function clearError() {
         $("error-banner").hidden = true;
+        const serr = $("status-error");
+        if (serr) serr.textContent = "";
       }
 
       function errorMessage(data, response) {
@@ -351,18 +788,17 @@
         const tempDisplay = on ? `${TEMP_STEPS[tempIndex]}K` : "Unknown";
         return `<article class="light-card" id="light-${port}" data-port="${port}">
           <div class="card-head">
-            <div><h3 class="light-name">${name}</h3><p class="card-meta">${port} · <span class="light-connection">${light.connected ? "connected" : "disconnected"}</span></p></div>
-            <div><span class="status-badge" data-state="${escapeHTML(light.connected ? light.state : "disconnected")}">${escapeHTML(light.connected ? light.state : "disconnected")}</span></div>
+            <h3 class="light-name">${name}</h3>
+            <p class="card-meta">${port} · <span class="light-connection">${light.connected ? "connected" : "disconnected"}</span> <span class="status-badge" data-state="${escapeHTML(light.connected ? light.state : "disconnected")}">${escapeHTML(light.connected ? light.state : "disconnected")}</span></p>
+            <button class="power-button button-icon" type="button" data-power${powerDisabled} aria-pressed="${light.state === "on"}">${icon("power")}<span class="power-label">${light.state === "on" ? "Turn off" : "Turn on"}</span></button>
           </div>
-          <button class="power-button button-icon" type="button" data-power${powerDisabled} aria-pressed="${light.state === "on"}">${icon("power")}<span class="power-label">${light.state === "on" ? "Turn off" : "Turn on"}</span></button>
           <div class="card-control">
-            <label class="control-label" for="brightness-${port}"><span>Brightness</span><output id="brightness-output-${port}" for="brightness-${port}">${brightnessDisplay}</output></label>
+            <label class="control-label" for="brightness-${port}"><output id="brightness-output-${port}" for="brightness-${port}">${brightnessDisplay}</output></label>
             <input id="brightness-${port}" data-field="brightness" type="range" min="0" max="100"${brightnessValue} aria-label="Brightness for ${name}"${sliderDisabled}>
           </div>
           <div class="card-control">
-            <label class="control-label" for="temp-${port}"><span>Color temperature</span><output id="temp-output-${port}" for="temp-${port}">${tempDisplay}</output></label>
+            <label class="control-label" for="temp-${port}"><output id="temp-output-${port}" for="temp-${port}">${tempDisplay}</output></label>
             <input id="temp-${port}" data-field="temp" type="range" min="0" max="18"${tempValue} aria-label="Color temperature for ${name}"${sliderDisabled}>
-            <div class="range-hints"><span>2900K warm</span><span>7000K cool</span></div>
           </div>
           <div class="card-error" hidden role="status">${icon("alert")}<span class="card-error-text"></span></div>
         </article>`;
@@ -376,9 +812,11 @@
           bindCards();
         }
         $("empty").hidden = lights.length !== 0;
-        $("light-count").textContent = lights.length === 1 ? "1 panel" : `${lights.length} panels`;
+        const connected = lights.filter((light) => light.connected);
+        $("light-count").textContent = `${lights.length === 1 ? "1 panel" : `${lights.length} panels`} · ${connected.length} connected`;
         lights.forEach(updateCard);
         updateGroupDefaults(lights);
+        updateGang(lights);
       }
 
       function updateCard(light) {
@@ -404,16 +842,36 @@
         temp.disabled = !on;
         const brightnessKey = lightKey(light.port, "brightness");
         const tempKey = lightKey(light.port, "temp");
-        if (on && !state.active.has(brightnessKey) && document.activeElement !== brightness) brightness.value = light.brightness;
-        if (on && !state.active.has(tempKey) && document.activeElement !== temp) temp.value = temperatureIndex(light.temp);
-        brightnessOutput.textContent = on ? `${light.brightness}%` : "—";
-        tempOutput.textContent = on ? `${TEMP_STEPS[temperatureIndex(light.temp)]}K` : "Unknown";
+        // While a slider drag is active the user's thumb owns the control:
+        // poll re-renders must not touch its value, its readout chip, or its
+        // track fill — otherwise the fill/chips flicker back to the daemon's
+        // pre-drag value while the guarded value input holds (T7 review).
+        const brightnessActive = on && (state.active.has(brightnessKey) || document.activeElement === brightness);
+        const tempActive = on && (state.active.has(tempKey) || document.activeElement === temp);
+        if (!brightnessActive) {
+          if (on) brightness.value = light.brightness;
+          brightnessOutput.textContent = on ? `${light.brightness}%` : "—";
+        }
+        if (!tempActive) {
+          if (on) temp.value = temperatureIndex(light.temp);
+          setChip(tempOutput, on ? `${TEMP_STEPS[temperatureIndex(light.temp)]}K` : "Unknown", !on);
+        }
+        applyGlow(card, light);
+        if (!brightnessActive) writeFill(brightness, on ? light.brightness : 0);
         if (light.error) {
           cardError.hidden = false;
           card.querySelector(".card-error-text").textContent = light.error;
         } else {
           cardError.hidden = true;
         }
+      }
+
+      // Unknown/Mixed readout chips render in the dim tone; definite values
+      // are bright (design-dark §3.1 value outputs). data-tone="unknown" is
+      // the hook the stylesheet already ships.
+      function setChip(output, text, dim) {
+        output.textContent = text;
+        if (dim) output.dataset.tone = "unknown"; else delete output.dataset.tone;
       }
 
       function updateGroupDefaults(lights) {
@@ -427,22 +885,23 @@
 
         if (!brightnessActive) {
           if (brightnessValues.length === 0) {
-            $("group-brightness-output").textContent = "Unknown";
+            setChip($("group-brightness-output"), "Unknown", true);
           } else if (brightnessValues.every((value) => value === brightnessValues[0])) {
             brightness.value = brightnessValues[0];
-            $("group-brightness-output").textContent = `${brightnessValues[0]}%`;
+            writeFill(brightness, brightnessValues[0]);
+            setChip($("group-brightness-output"), `${brightnessValues[0]}%`, false);
           } else {
-            $("group-brightness-output").textContent = "Mixed";
+            setChip($("group-brightness-output"), "Mixed", true);
           }
         }
         if (!tempActive) {
           if (tempValues.length === 0) {
-            $("group-temp-output").textContent = "Unknown";
+            setChip($("group-temp-output"), "Unknown", true);
           } else if (tempValues.every((value) => value === tempValues[0])) {
             temp.value = tempValues[0];
-            $("group-temp-output").textContent = `${TEMP_STEPS[tempValues[0]]}K`;
+            setChip($("group-temp-output"), `${TEMP_STEPS[tempValues[0]]}K`, false);
           } else {
-            $("group-temp-output").textContent = "Mixed";
+            setChip($("group-temp-output"), "Mixed", true);
           }
         }
       }
@@ -464,10 +923,23 @@
               const value = Number(input.value);
               const output = card.querySelector(`output[id^=${field}-output]`);
               output.textContent = field === "brightness" ? `${value}%` : `${TEMP_STEPS[value]}K`;
+              if (field === "brightness") writeFill(input, value);
               scheduleSlider(key, "/api/light", {target, action: field, value: field === "brightness" ? value : TEMP_STEPS[value]});
             });
           });
         });
+      }
+
+      // Gang square tracks its own lit/dark state + the "N of M on" caption.
+      function updateGang(lights) {
+        const btn = $("gang-toggle");
+        if (!btn) return;
+        const connected = lights.filter((light) => light.connected);
+        const onCount = connected.filter((light) => light.state === "on").length;
+        btn.dataset.on = onCount > 0 ? "true" : "false";
+        btn.querySelector(".gp-label").textContent = onCount > 0 ? "On" : "Off";
+        btn.setAttribute("aria-pressed", onCount > 0 ? "true" : "false");
+        $("gang-sub").textContent = `${onCount} of ${connected.length} on`;
       }
 
       function scheduleSlider(key, endpoint, body) {
@@ -544,7 +1016,10 @@
           }
           // F6 (200 with a failed follow-up refresh): surface the cause in
           // the card's status line so the POST itself is not silent.
-          if (result && result.error) $("settings-line").textContent = String(result.error);
+          if (result && result.error) {
+            $("settings-line").textContent = String(result.error);
+            $("settings-line").dataset.tone = "error";
+          }
           const action = mutation && mutation.body ? mutation.body.action : "";
           if (action === "save") {
             $("settings-name").value = "";
@@ -567,6 +1042,23 @@
         mutationQueue.enqueue({key, endpoint, body, replace});
       }
 
+      // -- Glow + fill helpers (additive; never required for the page to function) --
+      function applyGlow(cardEl, light) {
+        if (!cardEl || !cardEl.style || !cardEl.style.setProperty) return;
+        // An errored light carries ZERO card aura (adjudicated: the banner
+        // strip + rose border own the error state; the aura would argue).
+        const on = lightIsOn(light) && !light.error;
+        const bri = on ? Math.max(0, Math.min(100, Number(light.brightness))) : 0;
+        const hue = on ? temperatureIndex(light.temp) : 0;
+        cardEl.style.setProperty("--glow-bri", String(bri));
+        cardEl.style.setProperty("--glow-hue", String(hue >= 0 ? hue : 0));
+      }
+      function writeFill(inputEl, pct) {
+        if (!inputEl || !inputEl.style || !inputEl.style.setProperty) return;
+        inputEl.style.setProperty("--fill-pct", String(Math.max(0, Math.min(100, Number(pct)))));
+      }
+      let micCommittedAt = 0;
+
       function micLineText(micState) {
         switch (micState) {
           case "muted":
@@ -581,10 +1073,16 @@
       }
 
       function updateMic(micState) {
+        if (Date.now() - micCommittedAt < 175) return; // a just-pressed verb owns the UI until the daemon acks
         const badge = $("mic-status");
         badge.dataset.state = micState;
         badge.textContent = micState;
         $("mic-line").textContent = micLineText(micState);
+        const word = $("mic-word");
+        if (word) {
+          word.dataset.state = micState;
+          word.textContent = micState === "unmuted" ? "Live" : micState === "muted" ? "Muted" : "Unknown";
+        }
         document.querySelectorAll("[data-mic-action]").forEach((button) => {
           if (button.dataset.micAction === "toggle") {
             // Toggle at unknown resolves to an absolute mute the user cannot
@@ -618,6 +1116,7 @@
       function bindMicControls() {
         document.querySelectorAll("[data-mic-action]").forEach((button) => {
           button.addEventListener("click", () => {
+            micCommittedAt = Date.now();
             const action = button.dataset.micAction;
             enqueueMutation(`mic:${action}`, "/api/mic", {action}, false);
           });
@@ -671,7 +1170,7 @@
           // the card, so skip the rewrite when the list has not changed.
           $("settings-list").innerHTML = names.map((name) => {
             const escaped = escapeHTML(name);
-            return `<li class="setting-row"><span class="setting-name">${escaped}</span><button type="button" data-apply="${escaped}">Apply</button><button class="button-quiet" type="button" data-delete="${escaped}">Delete</button></li>`;
+            return `<li class="setting-row"><button class="item" type="button" data-apply="${escaped}" role="menuitem">${escaped}</button><button class="pdel" type="button" data-delete="${escaped}" aria-label="Delete ${escaped}">✕</button></li>`;
           }).join("");
           state.settingsSignature = signature;
           bindSettingsControls();
@@ -694,13 +1193,16 @@
           renderSettings(data.names || []);
           const error = data && data.error ? String(data.error) : "";
           // F5: a disabled/corrupt store's refusal string surfaces in the
-          // card itself; the light poll keeps owning the error banner.
+          // card itself; the light poll keeps owning the error banner. Store
+          // errors render in rose (design §3.5), the healthy line does not.
           $("settings-line").textContent = error || SETTINGS_LINE_DEFAULT;
+          if (error) $("settings-line").dataset.tone = "error"; else delete $("settings-line").dataset.tone;
           if (error) {
             $("settings-empty").hidden = true;
           }
         } catch {
           $("settings-line").textContent = "Saved settings are unreachable — the daemon is not answering.";
+          $("settings-line").dataset.tone = "error";
         } finally {
           state.settingsPolling = false;
         }
@@ -745,6 +1247,24 @@
         });
       }
 
+      function bindPresetDropdown() {
+        const dd = $("preset-dd");
+        const btn = $("preset-btn");
+        btn.addEventListener("click", (event) => {
+          event.stopPropagation();
+          dd.classList.toggle("open");
+          btn.setAttribute("aria-expanded", dd.classList.contains("open") ? "true" : "false");
+        });
+        if (document.addEventListener) {
+          document.addEventListener("click", (event) => {
+            if (!dd.contains(event.target)) {
+              dd.classList.remove("open");
+              btn.setAttribute("aria-expanded", "false");
+            }
+          });
+        }
+      }
+
       function submitSettingsSave() {
         const input = $("settings-name");
         const name = input.value;
@@ -774,13 +1294,14 @@
         brightness.addEventListener("focus", () => state.active.add("group:brightness"));
         brightness.addEventListener("blur", () => state.active.delete("group:brightness"));
         brightness.addEventListener("input", () => {
-          $("group-brightness-output").textContent = `${brightness.value}%`;
+          setChip($("group-brightness-output"), `${brightness.value}%`, false);
+          writeFill(brightness, Number(brightness.value));
           scheduleSlider("group:brightness", "/api/group", {action: "set-brightness", value: Number(brightness.value)});
         });
         temp.addEventListener("focus", () => state.active.add("group:temp"));
         temp.addEventListener("blur", () => state.active.delete("group:temp"));
         temp.addEventListener("input", () => {
-          $("group-temp-output").textContent = `${TEMP_STEPS[Number(temp.value)]}K`;
+          setChip($("group-temp-output"), `${TEMP_STEPS[Number(temp.value)]}K`, false);
           scheduleSlider("group:temp", "/api/group", {action: "set-temp", value: TEMP_STEPS[Number(temp.value)]});
         });
       }
@@ -788,6 +1309,7 @@
       bindTopControls();
       bindMicControls();
       bindSettingsControls();
+      bindPresetDropdown();
       refreshLights(false);
       refreshMic();
       refreshSettings();
