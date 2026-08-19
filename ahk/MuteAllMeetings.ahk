@@ -55,13 +55,22 @@ ToggleAllMeetings() {
     SendToAll("ahk_exe ms-teams.exe", "^+m", "Teams", report)
     SendToAll("ahk_exe Teams.exe", "^+m", "Teams classic", report)
 
-    ; --- Zoom : Alt+A (meeting window only). Zoom Workplace 6.x renamed the
-    ;     meeting window class to ConfMultiTabContentWndClass; pre-6.x Zoom
-    ;     used ZPContentViewWndClass. Try the new class first and only fall
-    ;     back when it matched nothing - if BOTH classes ever answered one
-    ;     meeting, two Alt+A sends would toggle it twice and net no change. ---
-    if (SendToAll("ahk_class ConfMultiTabContentWndClass", "!a", "Zoom", report) = 0)
-        SendToAll("ahk_class ZPContentViewWndClass", "!a", "Zoom", report)
+    ; --- Zoom : zoom-mute.exe invokes the Meeting-tools mute button through
+    ;     the accessibility interface (MSAA) directly - no Alt+A keystroke,
+    ;     no focus steal. (Zoom 6.x answers Alt+A with a Windows ding even
+    ;     though it toggles; the remaining sound issue is being worked
+    ;     separately.) Falls back to the legacy Alt+A sweep only if the
+    ;     helper is missing or found no meeting/mute button. Class note:
+    ;     Zoom Workplace 6.x meeting window is ConfMultiTabContentWndClass;
+    ;     pre-6.x used ZPContentViewWndClass. The fallback tries the new
+    ;     class first and only falls back on zero matches - if both ever
+    ;     answered one meeting, two Alt+A sends would toggle twice. ---
+    if (ToggleZoomMute()) {
+        report .= "Zoom: 1   "
+    } else {
+        if (SendToAll("ahk_class ConfMultiTabContentWndClass", "!a", "Zoom", report) = 0)
+            SendToAll("ahk_class ZPContentViewWndClass", "!a", "Zoom", report)
+    }
 
     ; --- Webex : Ctrl+M ---
     SendToAll("ahk_exe CiscoCollabHost.exe", "^m", "Webex", report)
@@ -87,6 +96,20 @@ ToggleAllMeetings() {
         report := "No meeting windows found"
     ToolTip, %report%
     SetTimer, ClearToolTip, -1500
+}
+
+; ToggleZoomMute runs the MSAA-driven helper built by deploy.cmd. Returns
+; true when the helper pressed Zoom's mute button (the sweep then skips the
+; Alt+A fallback). "Hide" keeps the console window out of the user's face;
+; UseErrorLevel returns the helper's exit code in ErrorLevel.
+ToggleZoomMute() {
+    exe := A_ScriptDir "\zoom-mute.exe"
+    if !FileExist(exe)
+        return false
+    RunWait, "%exe%", , Hide UseErrorLevel
+    if (ErrorLevel = "ERROR")
+        return false
+    return ErrorLevel = 0
 }
 
 SendToAll(criteria, keys, name, ByRef report) {

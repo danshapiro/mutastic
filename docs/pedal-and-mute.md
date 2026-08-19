@@ -48,8 +48,8 @@ disabled pedal binding.
 | App | Window match | Hotkey sent |
 |-----|--------------|-------------|
 | MS Teams (new + classic) | `ms-teams.exe` / `Teams.exe` | `Ctrl+Shift+M` |
-| Zoom Workplace 6.x | class `ConfMultiTabContentWndClass` (meeting window) | `Alt+A` |
-| Zoom pre-6.x | class `ZPContentViewWndClass` (meeting window, fallback matcher) | `Alt+A` |
+| Zoom | *(no keystroke)* `zoom-mute.exe` invokes the Meeting-tools mute button via MSAA; built at deploy time from `deploy/zoom-mute.cs` | — |
+| Zoom (fallback) | class `ConfMultiTabContentWndClass` (6.x) / `ZPContentViewWndClass` (pre-6.x) meeting window | `Alt+A` |
 | Webex | `CiscoCollabHost.exe` | `Ctrl+M` |
 | Google Meet | browser window titled `Meet - …` (chrome/edge/firefox/brave/opera) | `Ctrl+D` |
 | Teams in browser tab / PWA | browser window whose title contains `Microsoft Teams` | `Ctrl+Shift+M` |

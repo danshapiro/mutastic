@@ -26,6 +26,16 @@ copy /Y "%SRC%\ahk\MuteAllMeetings.ahk" "%DEST%\MuteAllMeetings.ahk" >nul || got
 copy /Y "%SRC%\ahk\SendF24.ahk" "%DEST%\SendF24.ahk" >nul || goto :fail
 copy /Y "%SRC%\deploy\mutastic-daemon.vbs" "%DEST%\mutastic-daemon.vbs" >nul || goto :fail
 copy /Y "%SRC%\deploy\mute-everything.cmd" "%DEST%\mute-everything.cmd" >nul || goto :fail
+
+REM zoom-mute.exe: beep-free Zoom mute toggle invoked by MuteAllMeetings.ahk.
+REM Built at deploy time from deploy\zoom-mute.cs with the in-box .NET csc.
+echo == Building zoom-mute.exe ==
+set "CSC=%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+if not exist "%CSC%" (
+  echo WARNING: csc.exe not found at %CSC% - Zoom falls back to Alt+A sweep
+) else (
+  "%CSC%" /nologo /r:Accessibility.dll "/out:%DEST%\zoom-mute.exe" "%SRC%\deploy\zoom-mute.cs" || goto :fail
+)
 if exist "%SRC%\ahk\mic_mute_light.ico" copy /Y "%SRC%\ahk\mic_mute_light.ico" "%DEST%\" >nul
 if not exist "%DEST%\mic_mute_light.ico" if exist "%OLD_DEPLOY%\mic_mute_light.ico" copy /Y "%OLD_DEPLOY%\mic_mute_light.ico" "%DEST%\" >nul
 if not exist "%DEST%\mic_mute_light.ico" echo WARNING: mic_mute_light.ico not found - tray icon will be missing
