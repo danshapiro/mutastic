@@ -1097,9 +1097,9 @@
           case "unmuted":
             return "The microphone is live.";
           case "unknown":
-            return "Mic state is unknown since daemon start — Mute and Unmute still work (they are absolute); Toggle waits for a definitive state.";
+            return "Checking the mic…";
           default:
-            return "Mic state is unreachable — the daemon is not answering, so the buttons are disarmed.";
+            return "Mic unreachable — the daemon is not answering.";
         }
       }
 
