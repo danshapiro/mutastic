@@ -149,6 +149,20 @@
     @media (max-width: 700px) {
       .column { padding: 0 16px; }
     }
+    /* ===== Narrow/a11y-scaled windows: collapse the band into stacked rows ===== */
+    @media (max-width: 1350px) {
+      .band-inner { flex-wrap: wrap; }
+      .band .cell { flex: 1 1 100%; border-left: none !important; border-top: 1px solid var(--g2-border); }
+      .band .cell:first-child { border-top: none; }
+      .band .cell.grow { flex-basis: 100%; }
+      .band .gang-cell { flex: 1 1 auto; }
+      .preset-dd { flex: 1; }
+      .preset-dd > button { width: 100%; justify-content: center; }
+      .preset-menu { left: 0; right: auto; min-width: 0; width: 100%; max-width: 340px; }
+    }
+    @media (max-width: 720px) {
+      .lights-grid { grid-template-columns: 1fr; }
+    }
     /* Content head + grid live inside the second column wrapper (content) */
     .content-head { flex: none; display: flex; align-items: baseline; gap: 16px; padding: 16px 0 12px; }
     .content-head .eyebrow { font-size: 15px; margin: 0; }
