@@ -1228,6 +1228,93 @@ func TestUIAPISettingsSaveAndApplyRefreshTheList(t *testing.T) {
 	})
 }
 
+// TestUIAPISnapshotEndpoint pins /api/snapshot: a wired snapNow's result
+// round-trips as JSON, an unwired server answers 503, an OBS-side failure
+// answers 502 with the message verbatim (never a 200 the page would read
+// as success), only POST is allowed, and a foreign Origin is refused
+// BEFORE the capture fires.
+func TestUIAPISnapshotEndpoint(t *testing.T) {
+	t.Run("wired server returns the saved path", func(t *testing.T) {
+		var calls int
+		server := newUIServer(42815, nil)
+		server.snapNow = func() (uiSnapshot, error) {
+			calls++
+			return uiSnapshot{Path: `C:\shots\snapshot-20260819-010203.jpg`, Bytes: 12345, Source: "Camera Scene"}, nil
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/snapshot", strings.NewReader(`{}`))
+		req.Host = "127.0.0.1:42815"
+		recorder := httptest.NewRecorder()
+		server.ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("status = %d, body %s, want 200", recorder.Code, recorder.Body.String())
+		}
+		var body uiSnapshot
+		if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Path != `C:\shots\snapshot-20260819-010203.jpg` || body.Bytes != 12345 || body.Source != "Camera Scene" {
+			t.Fatalf("body = %+v, want the snapNow result verbatim", body)
+		}
+		if calls != 1 {
+			t.Fatalf("snapNow calls = %d, want exactly 1", calls)
+		}
+	})
+	t.Run("unwired server answers 503", func(t *testing.T) {
+		server := newUIServer(42815, nil)
+		req := httptest.NewRequest(http.MethodPost, "/api/snapshot", strings.NewReader(`{}`))
+		req.Host = "127.0.0.1:42815"
+		recorder := httptest.NewRecorder()
+		server.ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, body %s, want 503", recorder.Code, recorder.Body.String())
+		}
+	})
+	t.Run("OBS failure answers 502 with the message verbatim", func(t *testing.T) {
+		server := newUIServer(42815, nil)
+		server.snapNow = func() (uiSnapshot, error) {
+			return uiSnapshot{}, errors.New("obs: connect ws://127.0.0.1:4455: connection refused (is OBS running with obs-websocket enabled?)")
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/snapshot", strings.NewReader(`{}`))
+		req.Host = "127.0.0.1:42815"
+		recorder := httptest.NewRecorder()
+		server.ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusBadGateway {
+			t.Fatalf("status = %d, body %s, want 502", recorder.Code, recorder.Body.String())
+		}
+		if !strings.Contains(recorder.Body.String(), "connection refused") {
+			t.Fatalf("body %s must carry the OBS failure verbatim", recorder.Body.String())
+		}
+	})
+	t.Run("guards fire before any capture", func(t *testing.T) {
+		var calls int
+		server := newUIServer(42815, nil)
+		server.snapNow = func() (uiSnapshot, error) {
+			calls++
+			return uiSnapshot{}, nil
+		}
+		for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete} {
+			req := httptest.NewRequest(method, "/api/snapshot", nil)
+			req.Host = "127.0.0.1:42815"
+			recorder := httptest.NewRecorder()
+			server.ServeHTTP(recorder, req)
+			if recorder.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("%s status = %d, want 405", method, recorder.Code)
+			}
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/snapshot", strings.NewReader(`{}`))
+		req.Host = "127.0.0.1:42815"
+		req.Header.Set("Origin", "http://evil.example")
+		recorder := httptest.NewRecorder()
+		server.ServeHTTP(recorder, req)
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("foreign Origin status = %d, want 403", recorder.Code)
+		}
+		if calls != 0 {
+			t.Fatalf("guarded requests fired %d captures; want zero", calls)
+		}
+	})
+}
+
 // TestUIAPISettingsValidatesAndPassesDaemonErrorsThrough pins the guard and
 // failure posture: client-side validation (unknown action; empty, whitespace-
 // only, or newline-bearing names) answers 400 and NEVER reaches the daemon;
@@ -1698,6 +1785,112 @@ func TestEmbeddedLightUIHasSavedSettingsSection(t *testing.T) {
 	if gangControls < 0 || settings < 0 || individual < 0 || gangControls >= settings || settings >= individual {
 		t.Fatalf("the saved-settings control must sit between the gang controls and the individual controls (offsets %d / %d / %d)", gangControls, settings, individual)
 	}
+}
+
+// TestEmbeddedLightUIHasSnapshotButtonAndLiveStatusbar pins the layout and
+// wiring of three page aspects: the Snapshot button sits right next to the
+// all-lights toggle and posts straight to /api/snapshot (it mutates no
+// light state, so it stays OUT of the mutation queue) with a
+// one-capture-at-a-time guard; the statusbar reports the live connection
+// state driven by setConnection instead of a static poll blurb; and
+// Presets (list dropdown) and Save (name popover) are two separate
+// dropdowns, each closable via closePresetDropdowns.
+func TestEmbeddedLightUIHasSnapshotButtonAndLiveStatusbar(t *testing.T) {
+	source := string(lightUIHTML)
+	for _, fragment := range []string{
+		`id="snap-btn"`,
+		`id="status-conn"`,
+		`id="save-dd"`,
+		`id="save-btn"`,
+		`function setConnection(text, mode) {`,
+		`function showStatus(message, tone) {`,
+		`function closePresetDropdowns() {`,
+		`fetch("/api/snapshot", {method: "POST"`,
+		`if (snap.disabled) return; // one capture at a time`,
+		`snap.disabled = false;`,
+		`showStatus(`,
+	} {
+		if !strings.Contains(source, fragment) {
+			t.Fatalf("embedded UI is missing fragment %q", fragment)
+		}
+	}
+	// The statusbar must say "connected" (or why not), never the static
+	// poll blurb it shipped with.
+	if strings.Contains(source, "750ms poll") {
+		t.Fatal("the statusbar must not show the static '750ms poll' blurb; it shows the connection state")
+	}
+	gang := strings.Index(source, `id="gang-toggle"`)
+	snap := strings.Index(source, `id="snap-btn"`)
+	grid := strings.Index(source, `id="lights-grid"`)
+	if gang < 0 || snap < 0 || grid < 0 || gang >= snap || snap >= grid {
+		t.Fatalf("the Snapshot button must sit between the all-lights toggle and the light grid (offsets %d / %d / %d)", gang, snap, grid)
+	}
+	// The preset list dropdown (Preset button) precedes the Save popover in
+	// the same band cell: presets on the left, save on the right.
+	preset := strings.Index(source, `id="preset-dd"`)
+	save := strings.Index(source, `id="save-dd"`)
+	if preset < 0 || save < 0 || preset >= save {
+		t.Fatalf("the Presets dropdown must precede the Save popover (offsets %d / %d)", preset, save)
+	}
+}
+
+// TestEmbeddedLightUISnapshotButtonBehaviorNodeDOMStub EXECUTES the page
+// under the DOM stub and pins the Snapshot button's runtime behavior: the
+// click posts one /api/snapshot with an empty body; a success renders the
+// saved path as a neutral ("ok") statusbar note while the button re-arms;
+// an OBS-side 502 renders the server's message in the error tone; and a
+// dead panel answers with the unreachable copy.
+func TestEmbeddedLightUISnapshotButtonBehaviorNodeDOMStub(t *testing.T) {
+	runPageScriptWithDOMStub(t, `
+stubFetchScript({
+	"/api/lights": {status: 200, body: {lights: []}},
+	"/api/mic": {status: 200, body: {state: "unmuted"}},
+	"/api/settings": {status: 200, body: {names: []}},
+	"POST /api/snapshot": {status: 200, body: {path: "C:\\shots\\snapshot-1.jpg", bytes: 99, source: "Scene"}},
+});
+intervalCallback();
+await flush();
+
+const posts = () => fetchCalls
+	.filter((call) => call.options.method === "POST")
+	.map((call) => ({url: call.url, body: JSON.parse(call.options.body)}));
+const snapBtn = document.getElementById("snap-btn");
+const statusSpan = document.getElementById("status-error");
+const banner = document.getElementById("error-banner");
+
+snapBtn.click();
+await flush();
+assert.deepEqual(posts(), [{url: "/api/snapshot", body: {}}], "the click posts exactly one /api/snapshot with an empty body");
+assert.equal(statusSpan.textContent, "Snapshot saved: C:\\shots\\snapshot-1.jpg", "the statusbar note carries the saved path");
+assert.equal(statusSpan.dataset.tone, "ok", "a saved snapshot is a neutral note, not an error");
+assert.equal(banner.hidden, true, "a saved snapshot never raises the error banner");
+assert.equal(snapBtn.disabled, false, "the button re-arms after the reply");
+
+// OBS-side failure: the 502's error text lands in the error tone.
+stubFetchScript({
+	"/api/lights": {status: 200, body: {lights: []}},
+	"/api/mic": {status: 200, body: {state: "unmuted"}},
+	"/api/settings": {status: 200, body: {names: []}},
+	"POST /api/snapshot": {status: 502, body: {error: "obs: connect ws://127.0.0.1:4455: connection refused"}},
+});
+snapBtn.click();
+await flush();
+assert.equal(statusSpan.textContent, "obs: connect ws://127.0.0.1:4455: connection refused", "an OBS 502 surfaces the server's message verbatim");
+assert.equal(statusSpan.dataset.tone, "error", "an OBS failure renders in the error tone");
+assert.equal(snapBtn.disabled, false, "the button re-arms after a failure too");
+
+// Dead panel: the fetch itself rejects.
+stubFetchScript({
+	"/api/lights": {status: 200, body: {lights: []}},
+	"/api/mic": {status: 200, body: {state: "unmuted"}},
+	"/api/settings": {status: 200, body: {names: []}},
+	"POST /api/snapshot": new Error("connection refused"),
+});
+snapBtn.click();
+await flush();
+assert.equal(statusSpan.textContent, "Snapshot failed — the panel is not answering.", "a dead panel surfaces the unreachable copy");
+assert.equal(snapBtn.disabled, false, "the button re-arms after a transport failure");
+`)
 }
 
 // TestEmbeddedLightUISettingsSectionBehaviorNodeDOMStub EXECUTES the embedded
@@ -2273,6 +2466,7 @@ const assert = require("node:assert/strict");
 const LightMutationQueue = require("./mutation_queue.js");
 
 function makeElement(id) {
+	const classes = new Set();
 	const element = {
 		id: id || "",
 		dataset: {},
@@ -2283,6 +2477,16 @@ function makeElement(id) {
 		innerHTML: "",
 		listeners: Object.create(null),
 		attributes: Object.create(null),
+		classList: {
+			add(...names) { names.forEach((n) => classes.add(n)); },
+			remove(...names) { names.forEach((n) => classes.delete(n)); },
+			toggle(name) {
+				if (classes.has(name)) { classes.delete(name); return false; }
+				classes.add(name);
+				return true;
+			},
+			contains(name) { return classes.has(name); },
+		},
 		addEventListener(type, listener) {
 			(element.listeners[type] = element.listeners[type] || []).push(listener);
 		},

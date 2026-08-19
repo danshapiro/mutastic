@@ -119,6 +119,10 @@
       background: var(--g1-sheen), var(--g2-bg); border-top: 1px solid var(--g2-border);
     }
     .statusbar .s-err { margin-left: auto; color: var(--err-text); font-size: 15px; letter-spacing: 0; }
+    .statusbar .s-err[data-tone="ok"] { color: var(--text-2); }
+    #status-conn { white-space: nowrap; }
+    #status-conn[data-state="online"] { color: var(--text-2); }
+    #status-conn[data-state="degraded"] { color: var(--err-text); }
     .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
     .brand-mark {
       width: 42px; height: 42px; border-radius: 10px; display: grid; place-items: center;
@@ -371,8 +375,9 @@
     }
     .preset-menu .setting-row:hover .pdel, .preset-menu .setting-row:focus-within .pdel { visibility: visible; }
     .preset-menu .pdel:hover { background: var(--qd-bg-hover); color: var(--qd-text); }
-    .preset-foot { display: flex; gap: 8px; padding: 8px 6px 4px; border-top: 1px solid var(--g2-border); margin-top: 6px; }
-    .preset-foot button { min-height: 40px; padding: 8px 14px; font-size: 15px; }
+    /* Save popover: the name form stands alone in its own menu. */
+    #save-dd .preset-menu { min-width: 320px; padding: 10px; }
+    #save-dd .settings-save button { min-height: 40px; padding: 8px 14px; font-size: 15px; }
     #settings-empty { border: none; background: none; padding: 14px 12px; font-size: 15px; }
 
     /* ===== Settings ===== */
@@ -682,6 +687,7 @@
           <span class="eyebrow" style="margin:0">All lights</span>
           <span class="sub" id="gang-sub">— of — on</span>
         </span>
+        <button id="snap-btn" class="button-quiet" type="button" title="Capture the current OBS scene and save it to disk">Snapshot</button>
       </div>
       <!-- Hidden but JS-owned: connection pill (no longer displayed). -->
       <div class="titlebar-right">
@@ -708,8 +714,13 @@
           <button id="preset-btn" type="button" aria-haspopup="menu" aria-expanded="false">Presets <span class="chev">▾</span></button>
           <div class="preset-menu" role="menu">
             <ul id="settings-list" class="settings-list"></ul>
-            <p id="settings-empty" class="empty" hidden>No saved settings yet — name one below and Save.</p>
-            <form id="settings-form" class="settings-save preset-foot">
+            <p id="settings-empty" class="empty" hidden>No saved settings yet — use Save to name the current look.</p>
+          </div>
+        </div>
+        <div class="preset-dd" id="save-dd">
+          <button id="save-btn" type="button" aria-haspopup="menu" aria-expanded="false">Save</button>
+          <div class="preset-menu" role="menu" aria-label="Save the current look as a preset">
+            <form id="settings-form" class="settings-save">
               <input id="settings-name" type="text" maxlength="42" autocomplete="off" placeholder="Name this look" aria-label="Name this look">
               <button class="button-primary" type="submit">Save</button>
             </form>
@@ -734,7 +745,7 @@
     </div></main>
 
     <footer class="statusbar"><div class="column">
-      <span>mutastic daemon · 750ms poll</span>
+      <span id="status-conn" data-state="idle">Connecting…</span>
       <span class="s-err" id="status-error"></span>
     </div></footer>
   </div>
@@ -766,19 +777,42 @@
       function setConnection(text, mode) {
         $("connection").dataset.state = mode;
         $("connection-text").textContent = text;
+        // The statusbar is the visible connection readout: "Connected" when
+        // the daemon answers, otherwise the reason it is not ("Panel
+        // offline", "Daemon issue"); the error span carries the detail.
+        const sc = $("status-conn");
+        if (sc) {
+          sc.dataset.state = mode;
+          sc.textContent = text;
+        }
       }
 
       function showError(message) {
         $("error-text").textContent = message;
         $("error-banner").hidden = false;
         const serr = $("status-error");
-        if (serr) serr.textContent = message;
+        if (serr) {
+          serr.textContent = message;
+          serr.dataset.tone = "error";
+        }
+      }
+
+      // showStatus writes a NON-error note into the statusbar's right span
+      // (e.g. where a snapshot landed); data-tone="ok" renders it neutral.
+      function showStatus(message, tone) {
+        const serr = $("status-error");
+        if (!serr) return;
+        serr.textContent = message;
+        serr.dataset.tone = tone || "";
       }
 
       function clearError() {
         $("error-banner").hidden = true;
         const serr = $("status-error");
-        if (serr) serr.textContent = "";
+        if (serr) {
+          serr.textContent = "";
+          serr.dataset.tone = "";
+        }
       }
 
       function errorMessage(data, response) {
@@ -1021,7 +1055,7 @@
             renderCards(state.lights);
           }
           if (!response.ok) throw new Error(errorMessage(data, response));
-          setConnection("Daemon connected", "online");
+          setConnection("Connected", "online");
           if (!silent) clearError();
         } catch (error) {
           setConnection(panelReached ? "Daemon issue" : "Panel offline", "degraded");
@@ -1063,6 +1097,9 @@
           const action = mutation && mutation.body ? mutation.body.action : "";
           if (action === "save") {
             $("settings-name").value = "";
+            // The save popover has done its job — close it so the fresh
+            // list is one click away in the Presets dropdown.
+            closePresetDropdowns();
           }
           if (action === "apply") {
             // An applied look changes light state: refresh the cards. A
@@ -1217,7 +1254,11 @@
         }
         // The empty state also answers to refreshSettings' in-band error
         // line, so it toggles on EVERY render, not only on a names change.
-        $("settings-empty").hidden = names.length !== 0;
+        const empty = $("settings-empty");
+        // A healthy poll restores the default copy (the catch path in
+        // refreshSettings rewrites it to the unreachable message).
+        empty.textContent = "No saved settings yet — use Save to name the current look.";
+        empty.hidden = names.length !== 0;
       }
 
       // In-flight guard, same shape as refreshLights: a hung daemon parks
@@ -1243,6 +1284,12 @@
         } catch {
           $("settings-line").textContent = "Saved settings are unreachable — the daemon is not answering.";
           $("settings-line").dataset.tone = "error";
+          // The dropdown is list-only now (the save form lives in the Save
+          // popover), so an unreachable daemon must still leave the menu
+          // with real content instead of an empty shell.
+          const empty = $("settings-empty");
+          empty.textContent = "Saved settings are unreachable — the daemon is not answering.";
+          empty.hidden = false;
         } finally {
           state.settingsPolling = false;
         }
@@ -1287,20 +1334,39 @@
         });
       }
 
+      function closePresetDropdowns() {
+        [["preset-dd", "preset-btn"], ["save-dd", "save-btn"]].forEach(([ddId, btnId]) => {
+          const dd = $(ddId);
+          const btn = $(btnId);
+          if (dd) dd.classList.remove("open");
+          if (btn) btn.setAttribute("aria-expanded", "false");
+        });
+      }
+
       function bindPresetDropdown() {
-        const dd = $("preset-dd");
-        const btn = $("preset-btn");
-        btn.addEventListener("click", (event) => {
-          event.stopPropagation();
-          dd.classList.toggle("open");
-          btn.setAttribute("aria-expanded", dd.classList.contains("open") ? "true" : "false");
+        // Two popovers in the band cell: the preset list (left) and the
+        // save form (right). At most one is open at a time; a click
+        // anywhere outside either closes both.
+        [["preset-dd", "preset-btn"], ["save-dd", "save-btn"]].forEach(([ddId, btnId]) => {
+          const dd = $(ddId);
+          const btn = $(btnId);
+          if (!dd || !btn) return;
+          btn.addEventListener("click", (event) => {
+            event.stopPropagation();
+            const willOpen = !dd.classList.contains("open");
+            closePresetDropdowns();
+            if (willOpen) {
+              dd.classList.add("open");
+              btn.setAttribute("aria-expanded", "true");
+            }
+          });
         });
         if (document.addEventListener) {
           document.addEventListener("click", (event) => {
-            if (!dd.contains(event.target)) {
-              dd.classList.remove("open");
-              btn.setAttribute("aria-expanded", "false");
-            }
+            const pdd = $("preset-dd");
+            const sdd = $("save-dd");
+            if ((pdd && pdd.contains(event.target)) || (sdd && sdd.contains(event.target))) return;
+            closePresetDropdowns();
           });
         }
       }
@@ -1343,6 +1409,27 @@
         temp.addEventListener("input", () => {
           setChip($("group-temp-output"), `${TEMP_STEPS[Number(temp.value)]}K`, false);
           scheduleSlider("group:temp", "/api/group", {action: "set-temp", value: TEMP_STEPS[Number(temp.value)]});
+        });
+        // Snapshot touches no light state, so it skips the mutation queue
+        // and posts directly; the button re-arms once the reply lands.
+        const snap = $("snap-btn");
+        snap.addEventListener("click", async () => {
+          if (snap.disabled) return; // one capture at a time
+          snap.disabled = true;
+          try {
+            const response = await fetch("/api/snapshot", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}", cache: "no-store"});
+            let data = null;
+            try { data = await response.json(); } catch { /* the generic message below covers a missing body */ }
+            if (!response.ok) {
+              showError((data && data.error) || `Snapshot failed (${response.status})`);
+            } else {
+              showStatus(`Snapshot saved: ${data.path}`, "ok");
+            }
+          } catch (error) {
+            showError("Snapshot failed — the panel is not answering.");
+          } finally {
+            snap.disabled = false;
+          }
         });
       }
 

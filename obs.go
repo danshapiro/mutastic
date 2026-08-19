@@ -25,6 +25,60 @@ import (
 // loopback; 15s is generous while still failing fast when OBS is wedged.
 const obsBudget = 15 * time.Second
 
+// obs-websocket's out-of-the-box listen address (OBS Studio >= 28 bundles
+// the server; Tools -> WebSocket Server Settings).
+const (
+	obsWSDefaultHost = "127.0.0.1"
+	obsWSDefaultPort = 4455
+)
+
+// defaultObsSnapshot powers the panel's Snapshot button (POST
+// /api/snapshot): it captures the current OBS program scene through the
+// same websocket client as `mutastic obs snapshot` - the UI server is the
+// same binary, so the capability is reused in-process - and writes a
+// timestamped JPEG under <state dir>/snapshots. The obs-websocket password
+// comes from OBS_WS_PASSWORD, exactly like the CLI subcommand.
+func defaultObsSnapshot() (uiSnapshot, error) {
+	stateDir := lightStateDir()
+	if stateDir == "" {
+		return uiSnapshot{}, errors.New("no user state directory to save the snapshot into")
+	}
+	dir := filepath.Join(stateDir, "snapshots")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return uiSnapshot{}, fmt.Errorf("snapshots directory: %w", err)
+	}
+	client, closeConn, err := dialOBS(obsWSDefaultHost, obsWSDefaultPort, os.Getenv("OBS_WS_PASSWORD"))
+	if err != nil {
+		if errors.Is(err, obs.ErrAuthRequired) {
+			return uiSnapshot{}, fmt.Errorf("%w (set OBS_WS_PASSWORD to the obs-websocket password)", err)
+		}
+		return uiSnapshot{}, err
+	}
+	defer closeConn()
+	scene, err := client.CurrentProgramScene()
+	if err != nil {
+		return uiSnapshot{}, err
+	}
+	img, err := client.Snapshot(obs.SnapshotRequest{Source: scene, Format: "jpg", Width: 1280, Height: 720})
+	if err != nil {
+		return uiSnapshot{}, err
+	}
+	stamp := time.Now().Format("20060102-150405")
+	path := filepath.Join(dir, "snapshot-"+stamp+".jpg")
+	// Repeated clicks landing in the same second get a numeric suffix
+	// rather than silently overwriting each other.
+	for i := 2; ; i++ {
+		if _, statErr := os.Stat(path); errors.Is(statErr, os.ErrNotExist) {
+			break
+		}
+		path = filepath.Join(dir, fmt.Sprintf("snapshot-%s-%d.jpg", stamp, i))
+	}
+	if err := os.WriteFile(path, img, 0o644); err != nil {
+		return uiSnapshot{}, err
+	}
+	return uiSnapshot{Path: path, Bytes: len(img), Source: scene}, nil
+}
+
 // runObs is the `mutastic obs <action>` entry point. args excludes the
 // program name and the "obs" word. Exit codes: 0 ok, 1 failure, 2 bad
 // usage (the repo-wide convention).
@@ -44,8 +98,8 @@ func runObs(args []string, out, errw io.Writer) int {
 
 	fs := flag.NewFlagSet("obs "+action, flag.ContinueOnError)
 	fs.SetOutput(errw)
-	host := fs.String("host", "127.0.0.1", "obs-websocket host")
-	port := fs.Int("port", 4455, "obs-websocket port")
+	host := fs.String("host", obsWSDefaultHost, "obs-websocket host")
+	port := fs.Int("port", obsWSDefaultPort, "obs-websocket port")
 	password := fs.String("password", "", "obs-websocket password (or env OBS_WS_PASSWORD)")
 	outPath := fs.String("out", "", "output image file (required for snapshot)")
 	source := fs.String("source", "", "source/scene to capture (default: current program scene)")

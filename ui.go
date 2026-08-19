@@ -164,6 +164,9 @@ func (d *daemonDispatcher) sequence(fn func(daemonCall) error) error {
 type uiServer struct {
 	dispatcher *daemonDispatcher
 	port       int
+	// snapNow captures one OBS frame to disk on demand; runUI wires it.
+	// Nil: /api/snapshot answers 503.
+	snapNow func() (uiSnapshot, error)
 	// shutdown gracefully stops the owning http.Server after the reply
 	// flushes; runUI wires it. Nil: /api/shutdown answers 503.
 	shutdown func()
@@ -268,6 +271,16 @@ func (s *uiServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleMicStatus(w)
+	case "/api/snapshot":
+		if r.Method != http.MethodPost {
+			writeUIMethodError(w, http.MethodPost)
+			return
+		}
+		if !s.validPostOrigin(r) {
+			writeUIJSON(w, http.StatusForbidden, uiResponse{Error: "origin is not allowed"})
+			return
+		}
+		s.handleSnapshot(w)
 	case "/api/shutdown":
 		if r.Method != http.MethodPost {
 			writeUIMethodError(w, http.MethodPost)
@@ -426,6 +439,31 @@ func (s *uiServer) handleMic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeUIJSON(w, http.StatusOK, uiMicStatus{State: state})
+}
+
+// uiSnapshot is the JSON reply of POST /api/snapshot: where the frame
+// landed on disk, its size, and the OBS scene that produced it.
+type uiSnapshot struct {
+	Path   string `json:"path"`
+	Bytes  int    `json:"bytes"`
+	Source string `json:"source"`
+}
+
+// handleSnapshot answers POST /api/snapshot by capturing one OBS frame.
+// OBS-side failures (OBS not running, obs-websocket auth missing, scene
+// without video) belong to the upstream dependency, not the panel: 502,
+// the same posture as the mic verbs.
+func (s *uiServer) handleSnapshot(w http.ResponseWriter) {
+	if s.snapNow == nil {
+		writeUIJSON(w, http.StatusServiceUnavailable, uiResponse{Error: "snapshot not wired"})
+		return
+	}
+	snap, err := s.snapNow()
+	if err != nil {
+		writeUIJSON(w, http.StatusBadGateway, uiResponse{Error: err.Error()})
+		return
+	}
+	writeUIJSON(w, http.StatusOK, snap)
 }
 
 // parseUIMicState maps the daemon's tri-state mic reply onto the UI's state
@@ -1210,6 +1248,7 @@ func runUI(args []string, out, errOut io.Writer) int {
 	}
 
 	ui := newUIServer(*port, newDaemonDispatcher())
+	ui.snapNow = defaultObsSnapshot
 	server := &http.Server{
 		Handler:           ui,
 		ReadHeaderTimeout: uiReadHeaderTimeout,
