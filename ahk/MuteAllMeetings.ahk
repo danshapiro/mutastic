@@ -55,8 +55,13 @@ ToggleAllMeetings() {
     SendToAll("ahk_exe ms-teams.exe", "^+m", "Teams", report)
     SendToAll("ahk_exe Teams.exe", "^+m", "Teams classic", report)
 
-    ; --- Zoom : Alt+A (meeting window only, class ZPContentViewWndClass) ---
-    SendToAll("ahk_class ZPContentViewWndClass", "!a", "Zoom", report)
+    ; --- Zoom : Alt+A (meeting window only). Zoom Workplace 6.x renamed the
+    ;     meeting window class to ConfMultiTabContentWndClass; pre-6.x Zoom
+    ;     used ZPContentViewWndClass. Try the new class first and only fall
+    ;     back when it matched nothing - if BOTH classes ever answered one
+    ;     meeting, two Alt+A sends would toggle it twice and net no change. ---
+    if (SendToAll("ahk_class ConfMultiTabContentWndClass", "!a", "Zoom", report) = 0)
+        SendToAll("ahk_class ZPContentViewWndClass", "!a", "Zoom", report)
 
     ; --- Webex : Ctrl+M ---
     SendToAll("ahk_exe CiscoCollabHost.exe", "^m", "Webex", report)
