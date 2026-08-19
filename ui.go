@@ -984,9 +984,9 @@ func uiLightSortRank(name string) int {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "desk-left":
 		return 0
-	case "desk-center":
-		return 1
 	case "desk-right":
+		return 1
+	case "desk-center":
 		return 2
 	case "":
 		return uiUnnamedLightRank

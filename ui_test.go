@@ -40,7 +40,7 @@ func TestParseUILightStatusStatesNamesAndSorting(t *testing.T) {
 	for i, light := range lights {
 		gotPorts[i] = light.Port
 	}
-	wantPorts := []string{"COM6", "COM12", "COM4", "COM5"}
+	wantPorts := []string{"COM6", "COM4", "COM12", "COM5"}
 	if !reflect.DeepEqual(gotPorts, wantPorts) {
 		t.Fatalf("sorted ports = %v, want %v", gotPorts, wantPorts)
 	}
@@ -48,7 +48,7 @@ func TestParseUILightStatusStatesNamesAndSorting(t *testing.T) {
 	for i, light := range lights {
 		gotNames[i] = light.Name
 	}
-	wantNames := []string{"desk-left", "desk-center", "desk-right", ""}
+	wantNames := []string{"desk-left", "desk-right", "desk-center", ""}
 	if !reflect.DeepEqual(gotNames, wantNames) {
 		t.Fatalf("sorted names = %v, want %v", gotNames, wantNames)
 	}
@@ -90,7 +90,7 @@ func TestUIAPILightStatusReturnsSpatialOrder(t *testing.T) {
 	for i, light := range response.Lights {
 		got[i] = light.Name
 	}
-	want := []string{"desk-left", "desk-center", "desk-right", ""}
+	want := []string{"desk-left", "desk-right", "desk-center", ""}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("API light names = %v, want %v", got, want)
 	}
@@ -120,8 +120,8 @@ func TestSortUILightsOrdersExtraNamesAndUnnamedPorts(t *testing.T) {
 	}
 	want := []string{
 		"desk-left@COM7",
-		"desk-center@COM12",
 		"desk-right@COM4",
+		"desk-center@COM12",
 		"alpha@COM2",
 		"zeta@COM30",
 		"@COM10",

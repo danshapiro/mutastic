@@ -109,9 +109,10 @@
     .titlebar .column, .statusbar .column { display: flex; align-items: center; gap: 18px; }
     .titlebar {
       flex: none; display: flex; padding: 0;
-      height: 66px; border-bottom: 1px solid var(--g2-border);
+      height: 86px; border-bottom: 1px solid var(--g2-border);
       background: var(--g1-sheen), var(--g2-bg);
     }
+    .titlebar .brand { flex: none; padding: 0 24px 0 0; }
     .statusbar {
       flex: none; display: flex; padding: 0;
       height: 40px; font-size: 16px; letter-spacing: .06em; color: var(--text-3);
@@ -174,8 +175,9 @@
       background: var(--g1-sheen), rgba(255,255,255,.03);
     }
     .band-inner { display: flex; align-items: stretch; }
-    .band .cell { padding: 20px 26px 20px 24px; display: flex; align-items: center; gap: 18px; min-width: 0; }
-    .band .cell + .cell { border-left: 1px solid var(--g2-border); }
+    .cell { padding: 14px 26px 14px 24px; display: flex; align-items: center; gap: 18px; min-width: 0; }
+    .band .cell + .cell, .titlebar .cell + .cell { border-left: 1px solid var(--g2-border); }
+    .brand + .cell { border-left: 1px solid var(--g2-border); }
     .band .cell.grow { flex: 1; gap: 22px; }
     .stack { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
     .stack .sub { font-size: 15px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -316,10 +318,10 @@
       background-color: rgba(255,255,255,.12);
     }
     input[data-field="temp"]::-webkit-slider-runnable-track, #group-temp::-webkit-slider-runnable-track {
-      background: linear-gradient(90deg, #2f6df6 0%, #16b981 100%);
+      background: linear-gradient(90deg, #ffb169 0%, #ffd9a0 30%, #f2ead9 46%, #dde3f0 62%, #8fb2e6 100%);
     }
     input[data-field="temp"]::-moz-range-track, #group-temp::-moz-range-track {
-      background: linear-gradient(90deg, #2f6df6 0%, #16b981 100%);
+      background: linear-gradient(90deg, #ffb169 0%, #ffd9a0 30%, #f2ead9 46%, #dde3f0 62%, #8fb2e6 100%);
     }
     input[type=range]:disabled::-webkit-slider-runnable-track { opacity: .5; }
     input[type=range]:disabled::-moz-range-track { opacity: .5; }
@@ -574,11 +576,11 @@
         background-image: linear-gradient(90deg, #62688a, #d9dffa);
       }
       input[data-field="temp"]::-webkit-slider-runnable-track, #group-temp::-webkit-slider-runnable-track {
-        background: linear-gradient(90deg, #2f6df6 0%, #16b981 100%);
+        background: linear-gradient(90deg, #ffb169 0%, #ffd9a0 30%, #f2ead9 46%, #dde3f0 62%, #8fb2e6 100%);
         box-shadow: inset 0 1px 2px rgba(23,28,60,.14), 0 1px 0 rgba(255,255,255,.55);
       }
       input[data-field="temp"]::-moz-range-track, #group-temp::-moz-range-track {
-        background: linear-gradient(90deg, #2f6df6 0%, #16b981 100%);
+        background: linear-gradient(90deg, #ffb169 0%, #ffd9a0 30%, #f2ead9 46%, #dde3f0 62%, #8fb2e6 100%);
       }
       /* Thumb: white face + ink identity ring */
       input[type=range]:not(:disabled):hover::-webkit-slider-thumb { box-shadow: 0 0 0 1.5px rgba(23,28,60,.60), 0 2px 6px rgba(23,28,60,.28); }
@@ -664,26 +666,16 @@
         <div class="brand-mark"><svg class="icon"><use href="#icon-sun"></use></svg></div>
         <h1>Mutastic</h1>
       </div>
-      <div class="titlebar-right">
-        <button id="refresh" class="button-quiet" type="button" title="Refresh light status"><span>Refresh</span></button>
-        <!-- Initial state is "idle" (dim dot); any value outside
-             online/degraded falls through to the base idle dot. -->
-        <div id="connection" class="conn connection" data-state="idle" role="status" aria-live="polite"><span class="connection-dot"></span><span id="connection-text">Connecting</span></div>
-      </div>
-    </div></header>
-
-    <div class="band" aria-label="Command band"><div class="column band-inner">
-      <div class="cell">
+      <div class="cell cell-mic">
         <!-- #mic-status keeps its id; it must precede the lamp button so the
              sibling lamp-state rules (#mic-status[data-state] ~ .mic-lamp) apply. -->
         <span id="mic-status" class="visually-hidden" data-state="unknown">unknown</span>
         <button id="mic-toggle" class="mic-lamp" type="button" data-mic-action="toggle" aria-label="Toggle microphone mute" title="Toggle microphone" disabled><span class="visually-hidden">Toggle microphone</span></button>
         <span class="stack">
-          <span id="mic-word" class="mic-word" data-state="unknown" aria-hidden="true">Unknown</span>
-          <span class="sub"><span id="mic-line">Waiting for the daemon…</span></span>
+          <span id="mic-word" class="mic-word" data-state="unknown" aria-hidden="true">…</span>
+          <span class="sub"><span id="mic-line">Checking the mic…</span></span>
         </span>
       </div>
-
       <div class="cell">
         <button id="gang-toggle" class="gang-power" type="button" data-group-action="toggle" data-on="false" aria-label="Toggle all lights"><span class="gp-label">On</span></button>
         <span class="stack">
@@ -691,18 +683,26 @@
           <span class="sub" id="gang-sub">— of — on</span>
         </span>
       </div>
+      <!-- Hidden but JS-owned: connection pill (no longer displayed). -->
+      <div class="titlebar-right">
+        <button id="refresh" class="button-quiet visually-hidden" type="button" title="Refresh light status"><span>Refresh</span></button>
+        <div id="connection" class="conn connection visually-hidden" data-state="idle" role="status" aria-live="polite"><span class="connection-dot"></span><span id="connection-text">Connecting</span></div>
+      </div>
+    </div></header>
 
-      <div class="cell grow" style="gap:22px">
-        <span style="display:grid;grid-template-columns:minmax(150px,220px) auto;align-items:center;gap:12px;flex:1">
-          <input id="group-brightness" type="range" min="0" max="100" value="55" style="--fill-pct:55" aria-label="Match brightness for all lights">
+    <div class="band" aria-label="Command band"><div class="column band-inner">
+      <div class="cell grow">
+        <span class="control-label" style="margin:0;display:flex;align-items:center;gap:14px;flex:1">
+          <input id="group-brightness" type="range" min="0" max="100" value="55" style="--fill-pct:55;flex:1" aria-label="Match brightness for all lights">
           <output id="group-brightness-output" for="group-brightness" data-tone="unknown">Unknown</output>
         </span>
-        <span style="display:grid;grid-template-columns:minmax(150px,220px) auto;align-items:center;gap:12px;flex:1">
-          <input id="group-temp" type="range" min="0" max="18" value="9" aria-label="Match color temperature for all lights">
+      </div>
+      <div class="cell grow">
+        <span class="control-label" style="margin:0;display:flex;align-items:center;gap:14px;flex:1">
+          <input id="group-temp" type="range" min="0" max="18" value="9" style="flex:1" aria-label="Match color temperature for all lights">
           <output id="group-temp-output" for="group-temp" data-tone="unknown">Unknown</output>
         </span>
       </div>
-
       <div class="cell">
         <div class="preset-dd" id="preset-dd">
           <button id="preset-btn" type="button" aria-haspopup="menu" aria-expanded="false">Presets <span class="chev">▾</span></button>
@@ -727,8 +727,7 @@
     <main class="layout"><div class="column" style="display:flex;flex-direction:column;min-height:0">
       <div class="content-head">
         <p class="eyebrow" style="margin:0">Lights</p>
-        <p id="light-count">Waiting for the daemon…</p>
-        <span class="c-hint">drag sliders — applies on release</span>
+        <p id="light-count" class="visually-hidden">Waiting for the daemon…</p>
       </div>
       <section id="lights-grid" class="lights-grid" aria-live="polite" aria-label="Individual lights"></section>
       <div id="empty" class="empty" hidden><strong>No named or connected lights yet</strong><span>Start the mutastic daemon or plug in a PL81 PRO panel, then refresh.</span></div>
@@ -831,6 +830,24 @@
         lights.forEach(updateCard);
         updateGroupDefaults(lights);
         updateGang(lights);
+        centerLastRow(lights.length);
+      }
+
+      // When the last grid row has a lone panel, place it in the middle
+      // column so the row reads centered instead of left-justified.
+      function centerLastRow(count) {
+        const grid = $("lights-grid");
+        if (!grid || typeof getComputedStyle !== "function") return;
+        const cols = (getComputedStyle(grid).gridTemplateColumns || "").split(" ").filter((s) => s.length).length;
+        const last = grid.lastElementChild;
+        if (last && last.classList.contains("light-card")) last.style.gridColumnStart = "";
+        if (count > 1 && cols > 1 && count % cols === 1 && last) {
+          last.style.gridColumnStart = String(Math.ceil(cols / 2));
+        }
+        if (typeof window !== "undefined" && window.addEventListener && !centerLastRow.bound) {
+          centerLastRow.bound = true;
+          window.addEventListener("resize", () => centerLastRow(state.lights.length));
+        }
       }
 
       function updateCard(light) {
