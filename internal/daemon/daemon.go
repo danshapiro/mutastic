@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -78,6 +80,30 @@ type Daemon struct {
 // New returns a Daemon that logs to logger.
 func New(logger *log.Logger) *Daemon {
 	return &Daemon{Logger: logger}
+}
+
+// micStatePersistPath returns the default location for the persisted mic
+// state: $MUTASTIC_MIC_STATE when set, else <user cache dir>/mutastic/mic-state.json
+// (same directory as openNamedLogFile and light-state-*.json).
+func micStatePersistPath() string {
+	if p := os.Getenv("MUTASTIC_MIC_STATE"); p != "" {
+		return p
+	}
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "mutastic", "mic-state.json")
+}
+
+// SetMicStatePath persists the mic tracker's state to path across daemon
+// restarts (the Yeti's firmware offers no mute-state query, so the only truth
+// survives is what the tracker last observed). The file is written on every
+// transition and hydrated at startup when present — stale state is possible
+// if the physical button was pressed while the daemon was down, which rank
+// <= always starting "unknown"; the first real press or verb overwrites it.
+func (d *Daemon) SetMicStatePath(path string) {
+	d.Track.SetPersistPath(path, d.Logger)
 }
 
 // SetDevice installs the current device handle (nil while disconnected).
@@ -301,6 +327,13 @@ func Run(ctx context.Context, open OpenFunc, light CommandHandler, inject KeyInj
 	d.Light = light
 	d.Inject = inject
 	d.Shutdown = shutdown
+	// Persist the mic tracker's last-known state under the shared state dir
+	// (%LOCALAPPDATA%\mutastic) — overridable via MUTASTIC_MIC_STATE for tests.
+	// The Yeti's firmware has no state query, so a fresh boot of the daemon
+	// would otherwise sit at "unknown" until the first verb or press.
+	if path := micStatePersistPath(); path != "" {
+		d.SetMicStatePath(path)
+	}
 	go func() {
 		<-ctx.Done()
 		pc.Close()

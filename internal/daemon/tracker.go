@@ -3,6 +3,10 @@
 package daemon
 
 import (
+	"encoding/json"
+	"log"
+	"os"
+	"path/filepath"
 	"sync"
 
 	"mutastic/internal/proto"
@@ -11,9 +15,40 @@ import (
 // Tracker holds the last known hardware mute state. The zero value is
 // usable and reports known=false until the first Apply or Set.
 type Tracker struct {
-	mu    sync.Mutex
-	known bool
-	muted bool
+	mu     sync.Mutex
+	known  bool
+	muted  bool
+	logger *log.Logger
+	// persistPath, when non-empty, writes the state across daemon restarts.
+	persistPath string
+}
+
+// SetPersistPath enables cross-restart persistence. If path is non-empty
+// and the file exists, the tracker is seeded from it immediately. Writes
+// happen inline on transitions; I/O errors are logged to logger and
+// swallowed (the tracker still works — it just forgets again on the next
+// restart).
+func (t *Tracker) SetPersistPath(path string, logger *log.Logger) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.persistPath = path
+	t.logger = logger
+	if path == "" {
+		return
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var state struct {
+		Muted bool `json:"muted"`
+	}
+	if err := json.Unmarshal(raw, &state); err != nil {
+		t.warnf("mic state persist: undecodable %s: %v", path, err)
+		return
+	}
+	t.known = true
+	t.muted = state.Muted
 }
 
 // Apply updates the state from a physical mute-button event
@@ -50,6 +85,33 @@ func (t *Tracker) Set(muted bool) {
 	defer t.mu.Unlock()
 	t.known = true
 	t.muted = muted
+	t.persistLocked()
+}
+
+// persistLocked writes the tracked state to disk; persistence failures are
+// ignored (the state is best-effort — the hardware cannot be queried).
+func (t *Tracker) persistLocked() {
+	if t.persistPath == "" {
+		return
+	}
+	raw, _ := json.Marshal(struct {
+		Muted bool `json:"muted"`
+	}{Muted: t.muted})
+	_ = os.MkdirAll(filepath.Dir(t.persistPath), 0o755)
+	tmp := t.persistPath + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
+		return
+	}
+	if err := os.Rename(tmp, t.persistPath); err != nil {
+		t.warnf("mic state persist: rename failed: %v", err)
+	}
+}
+
+// warnf logs a best-effort persistence warning; a nil logger drops it.
+func (t *Tracker) warnf(format string, args ...any) {
+	if t.logger != nil {
+		t.logger.Printf(format, args...)
+	}
 }
 
 // Reset drops the tracked state back to UNKNOWN (R8-F2): the belief the

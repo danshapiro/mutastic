@@ -450,6 +450,10 @@ func startDaemonLight(t *testing.T, open OpenFunc, light CommandHandler) (addr s
 // UDP request helper.
 func startDaemonAll(t *testing.T, open OpenFunc, light CommandHandler, inject KeyInjector) (addr string, ask func(cmd string) string) {
 	t.Helper()
+	// Isolate the mic-state persistence file per test: Run hydrates the
+	// tracker from it, and tests must not observe each other's (or a real
+	// deployment's) persisted state.
+	t.Setenv("MUTASTIC_MIC_STATE", filepath.Join(t.TempDir(), "mic-state.json"))
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -574,6 +578,7 @@ func TestOpenFailureRetriesWithoutCrashing(t *testing.T) {
 }
 
 func TestShutdownOverUDPStopsDaemon(t *testing.T) {
+	t.Setenv("MUTASTIC_MIC_STATE", filepath.Join(t.TempDir(), "mic-state.json"))
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
