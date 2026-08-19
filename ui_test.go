@@ -1636,7 +1636,7 @@ func TestUIAPISettingsDaemonFailuresAre502(t *testing.T) {
 func TestEmbeddedLightUIHasSavedSettingsSection(t *testing.T) {
 	source := string(lightUIHTML)
 	for _, fragment := range []string{
-		`>Saved settings</h2>`,
+		`id="preset-dd"`,
 		`id="settings-form"`,
 		`id="settings-name"`,
 		`id="settings-list"`,
@@ -1647,7 +1647,7 @@ func TestEmbeddedLightUIHasSavedSettingsSection(t *testing.T) {
 		`const escaped = escapeHTML(name);`,
 		`data-apply="${escaped}"`,
 		`data-delete="${escaped}"`,
-		`>Delete</button>`,
+		`aria-label="Delete ${escaped}">✕</button>`,
 		`renderSettings(data.names || []);`,
 		`renderSettings(result.names);`,
 		`if (name.trim() === "") return;`,
@@ -1692,11 +1692,11 @@ func TestEmbeddedLightUIHasSavedSettingsSection(t *testing.T) {
 	if directPost := regexp.MustCompile(`fetch\(\s*"/api/settings"\s*,\s*\{\s*method:\s*"POST"`).FindStringSubmatch(source); directPost != nil {
 		t.Fatalf("settings mutations must go through the mutation queue, never a direct fetch POST (matched %q)", directPost[0])
 	}
-	gangControls := strings.Index(source, `id="all-lights-title"`)
-	settings := strings.Index(source, `id="settings-title"`)
-	individual := strings.Index(source, `Individual controls`)
+	gangControls := strings.Index(source, `id="gang-toggle"`)
+	settings := strings.Index(source, `id="preset-dd"`)
+	individual := strings.Index(source, `id="lights-grid"`)
 	if gangControls < 0 || settings < 0 || individual < 0 || gangControls >= settings || settings >= individual {
-		t.Fatalf("the saved-settings section must sit between the gang controls and the individual controls (offsets %d / %d / %d)", gangControls, settings, individual)
+		t.Fatalf("the saved-settings control must sit between the gang controls and the individual controls (offsets %d / %d / %d)", gangControls, settings, individual)
 	}
 }
 
@@ -1817,7 +1817,7 @@ await flush();
 
 const markup = document.getElementById("settings-list").innerHTML;
 const escaped = "a &quot;b&quot; &amp; &lt;c&gt; &#39;d&#39;";
-assert.equal(markup.includes('<span class="setting-name">' + escaped + "</span>"), true, "the row label must render the entity-escaped name");
+assert.equal(markup.includes('>' + escaped + "</button>"), true, "the row label must render the entity-escaped name");
 assert.equal(markup.includes('data-apply="' + escaped + '"'), true, "the Apply button's data-apply must carry the entity-escaped name");
 assert.equal(markup.includes('data-delete="' + escaped + '"'), true, "the Delete button's data-delete must carry the entity-escaped name");
 assert.equal(markup.includes(specialName), false, "raw markup must never contain the unescaped name");
@@ -2131,10 +2131,9 @@ func TestEmbeddedLightUIMicCardUsesTheMicEndpoints(t *testing.T) {
 	for _, fragment := range []string{
 		`id="mic-status"`,
 		`id="mic-line"`,
-		`data-mic-action="mute"`,
-		`data-mic-action="unmute"`,
+		`id="mic-word"`,
 		`data-mic-action="toggle"`,
-		`<button class="button-quiet" type="button" data-mic-action="toggle" disabled>Toggle</button>`,
+		`data-mic-action="toggle" aria-label="Toggle microphone mute"`,
 		`.status-badge[data-state="unreachable"]`,
 		"enqueueMutation(`mic:${action}`, \"/api/mic\", {action}, false)",
 		`function refreshMic()`,
@@ -2144,11 +2143,6 @@ func TestEmbeddedLightUIMicCardUsesTheMicEndpoints(t *testing.T) {
 	} {
 		if !strings.Contains(source, fragment) {
 			t.Fatalf("embedded UI is missing mic card fragment %q", fragment)
-		}
-	}
-	for _, armed := range []string{`data-mic-action="mute" disabled`, `data-mic-action="unmute" disabled`} {
-		if strings.Contains(source, armed) {
-			t.Fatalf("Mute/Unmute are absolute verbs and must start armed: found %q in the markup", armed)
 		}
 	}
 	if strings.Contains(source, `fetch("/api/mic", {method: "POST"`) {

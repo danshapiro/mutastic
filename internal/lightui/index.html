@@ -98,12 +98,26 @@
     .subtle { color: var(--text-2); font-size: 13px; line-height: 1.45; }
     output, .card-meta, .mic-word, .status-badge { font-variant-numeric: tabular-nums; }
 
-    /* ===== Layout shell ===== */
-    .shell { min-height: 100vh; display: flex; flex-direction: column; }
-    .topbar {
-      display: flex; align-items: center; gap: 14px;
-      padding: 18px 28px 14px; flex: none;
+    .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+    /* ===== App shell (viewport-locked; only the tile grid scrolls) ===== */
+    html, body { height: 100%; }
+    body { height: 100vh; overflow: hidden; }
+    .shell { height: 100vh; display: flex; flex-direction: column; }
+    /* Centered column; chrome strips draw full-width */
+    .column { width: 100%; max-width: 1740px; margin: 0 auto; padding: 0 28px; min-width: 0; height: 100%; }
+    .titlebar .column, .statusbar .column { display: flex; align-items: center; gap: 18px; }
+    .titlebar {
+      flex: none; display: flex; padding: 0;
+      height: 66px; border-bottom: 1px solid var(--g2-border);
+      background: var(--g1-sheen), var(--g2-bg);
     }
+    .statusbar {
+      flex: none; display: flex; padding: 0;
+      height: 40px; font-size: 16px; letter-spacing: .06em; color: var(--text-3);
+      background: var(--g1-sheen), var(--g2-bg); border-top: 1px solid var(--g2-border);
+    }
+    .statusbar .s-err { margin-left: auto; color: var(--err-text); font-size: 15px; letter-spacing: 0; }
     .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
     .brand-mark {
       width: 42px; height: 42px; border-radius: 10px; display: grid; place-items: center;
@@ -112,8 +126,14 @@
       -webkit-backdrop-filter: var(--g3-blur); backdrop-filter: var(--g3-blur);
       color: var(--signal); filter: drop-shadow(0 0 6px rgba(125,227,255,.35));
     }
-    .brand h1 { font-size: 20px; font-weight: 750; letter-spacing: -.02em; color: var(--text); }
-    .brand .subtle { font-size: 13px; }
+    .brand h1 { font-size: 21px; font-weight: 750; letter-spacing: -.02em; color: var(--text); }
+    .brand .subtle { font-size: 15px; }
+    .brand-mark { width: 40px; height: 40px; border-radius: 12px; }
+    .brand-mark .icon { width: 22px; height: 22px; }
+    .titlebar-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+    .connection { font-size: 15px; padding: 8px 16px; }
+    /* Titlebar refresh: quiet icon affordance */
+    #refresh { min-height: 40px; padding: 8px 14px; font-size: 15px; }
     .connection {
       margin-left: auto; display: inline-flex; align-items: center; gap: 8px;
       padding: 8px 12px; border-radius: 999px; font-size: 12px; color: var(--text-2);
@@ -125,55 +145,78 @@
     .connection-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dot-idle); box-shadow: var(--dot-idle-fx); transition: background var(--t-state), box-shadow var(--t-state); }
     .connection[data-state="online"] .connection-dot { background: var(--dot-online); box-shadow: var(--dot-online-fx); }
     .connection[data-state="degraded"] .connection-dot { background: var(--dot-degraded); box-shadow: var(--dot-degraded-fx); }
-    .layout {
-      flex: 1 0 auto; display: grid; gap: 20px; align-items: start;
-      padding: 0 28px; max-width: 1280px; width: 100%; margin: 0 auto;
+    .layout { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    @media (max-width: 700px) {
+      .column { padding: 0 16px; }
     }
-    .rail { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-    .main-flow { min-width: 0; }
-    @media (min-width: 1100px) {
-      .layout { grid-template-columns: minmax(300px, 340px) 1fr; }
-      .rail { position: sticky; top: 28px; }
+    /* Content head + grid live inside the second column wrapper (content) */
+    .content-head { flex: none; display: flex; align-items: baseline; gap: 16px; padding: 16px 0 12px; }
+    .content-head .eyebrow { font-size: 15px; margin: 0; }
+    #light-count { font-size: 16px; color: var(--text-3); margin: 0; }
+    .content-head .c-hint { margin-left: auto; font-size: 15px; color: var(--text-3); }
+    /* ===== Command band ===== */
+    .band {
+      flex: none; border-bottom: 1px solid var(--g2-border);
+      background: var(--g1-sheen), rgba(255,255,255,.03);
     }
-    .footer { flex: none; text-align: center; font-size: 11px; color: var(--text-3); letter-spacing: .02em; padding: 24px 28px 26px; }
-    .section-title { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 4px 0 14px; }
-    .section-title h2 { font-size: 20px; font-weight: 800; color: var(--text); }
-    .section-title p { font-size: 12px; color: var(--text-3); }
-    /* ===== Panels (glass-1) ===== */
-    .panel {
-      background: var(--g1-sheen), var(--g1-bg); border: 1px solid var(--g1-border);
-      border-radius: var(--r-20); box-shadow: var(--g1-shadow), var(--g1-inner);
-      -webkit-backdrop-filter: var(--g1-blur); backdrop-filter: var(--g1-blur);
-      min-width: 0;
-    }
-    .panel-inner { padding: 20px; }
-    .panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
-    .panel-head h2 { font-size: 20px; font-weight: 800; color: var(--text); }
-    .panel-head .subtle { margin-top: 4px; }
-    /* ===== Mic hero ===== */
-    .mic-hero .panel-inner { padding-top: 22px; }
+    .band-inner { display: flex; align-items: stretch; }
+    .band .cell { padding: 20px 26px 20px 24px; display: flex; align-items: center; gap: 18px; min-width: 0; }
+    .band .cell + .cell { border-left: 1px solid var(--g2-border); }
+    .band .cell.grow { flex: 1; gap: 22px; }
+    .stack { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+    .stack .sub { font-size: 15px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    /* --- Mic: the button IS the lamp --- */
     .mic-lamp {
-      width: 56px; height: 56px; border-radius: 50%; flex: none; order: -1; margin-right: 4px;
+      width: 64px; height: 64px; border-radius: 50%; flex: none;
+      border: none; padding: 0; cursor: pointer;
       background: var(--lamp-unknown-face);
       box-shadow: var(--lamp-base-fx), var(--lamp-unknown-fx);
       -webkit-backdrop-filter: var(--lamp-unknown-blur); backdrop-filter: var(--lamp-unknown-blur);
-      transition: background 160ms ease-out, box-shadow 160ms ease-out, opacity 160ms ease-out;
-      position: relative;
+      transition: background 160ms ease-out, box-shadow 160ms ease-out, opacity 160ms ease-out, transform var(--t-fast);
+      position: relative; min-height: 0; display: block;
     }
-    .mic-lamp::before { content: ""; position: absolute; top: 15%; left: 20%; width: 12px; height: 12px; border-radius: 50%;
+    .mic-lamp:hover { transform: scale(1.06); }
+    .mic-lamp:active { transform: translateY(1px) scale(.97); }
+    .mic-lamp:disabled { cursor: not-allowed; transform: none !important; }
+    .mic-lamp:focus-visible { outline: 2px solid var(--signal); outline-offset: 3px; }
+    .mic-lamp::before { content: ""; position: absolute; top: 15%; left: 20%; width: 14px; height: 14px; border-radius: 50%;
       background: radial-gradient(circle, rgba(255,255,255,.85), rgba(255,255,255,0) 70%); }
-    .mic-word { display: block; font-size: 27px; font-weight: 800; letter-spacing: -.01em; line-height: 1.15; text-transform: uppercase; color: var(--dim-word); margin: 0 0 8px; transition: color var(--t-state), text-shadow var(--t-state); }
+    .mic-word { display: block; font-size: 25px; font-weight: 800; letter-spacing: -.01em; line-height: 1.15; text-transform: uppercase; color: var(--dim-word); margin: 0; transition: color var(--t-state), text-shadow var(--t-state); }
     #mic-status[data-state="unmuted"] ~ .mic-lamp { background: var(--lamp-live-face); box-shadow: var(--lamp-base-fx), var(--lamp-live-fx); -webkit-backdrop-filter: none; backdrop-filter: none; }
     #mic-status[data-state="muted"] ~ .mic-lamp { background: var(--lamp-muted-face); box-shadow: var(--lamp-base-fx), var(--lamp-muted-fx); -webkit-backdrop-filter: none; backdrop-filter: none; animation: lamp-breathe 2.6s ease-in-out infinite; }
     #mic-status[data-state="unreachable"] ~ .mic-lamp { opacity: .5; }
-    #mic-status[data-state="unreachable"] ~ .mic-lamp::after { content: ""; position: absolute; inset: -7px; border-radius: 50%; border: 1px dashed var(--lamp-unreach-ring); }
+    #mic-status[data-state="unreachable"] ~ .mic-lamp::after { content: ""; position: absolute; inset: -8px; border-radius: 50%; border: 1px dashed var(--lamp-unreach-ring); }
     @keyframes lamp-breathe {
       0%, 100% { transform: scale(1); }
-      50% { transform: scale(1.045); box-shadow: var(--lamp-base-fx), 0 0 26px var(--lamp-muted-ring), 0 0 56px var(--lamp-muted-ring); }
+      50% { transform: scale(1.045); box-shadow: var(--lamp-base-fx), 0 0 30px var(--lamp-muted-ring), 0 0 64px var(--lamp-muted-ring); }
     }
     .mic-word[data-state="unmuted"] { color: var(--live-word); }
     .mic-word[data-state="muted"] { color: var(--muted-word); text-shadow: var(--muted-word-fx); }
-    #mic-line { font-size: 13px; margin: 0 0 16px; }
+    #mic-line { font-size: 15px; margin: 0; color: var(--text-2); }
+
+    /* --- Gang power square (lit / dark, no icon) --- */
+    .gang-power {
+      position: relative; flex: none; width: 64px; height: 64px; min-height: 0; border-radius: 17px;
+      cursor: pointer; display: block; padding: 0;
+      border: 1px solid transparent;
+      font-size: 17px; font-weight: 800; letter-spacing: .02em; text-align: center;
+      transition: transform var(--t-fast), color var(--t-state), background var(--t-state), box-shadow var(--t-state);
+    }
+    .gang-power:hover { transform: translateY(-1px); }
+    .gang-power:active { transform: translateY(1px); }
+    .gang-power:focus-visible { outline: 2px solid var(--signal); outline-offset: 3px; box-shadow: 0 0 0 5px var(--ring-halo); }
+    .gang-power[data-on="true"] {
+      background: linear-gradient(180deg, #ffffff, #e6ecff);
+      color: #191b2b;
+      box-shadow: 0 8px 20px rgba(2,4,14,.40), inset 0 1px 0 rgba(255,255,255,.9), 0 0 26px rgba(125,227,255,.28);
+    }
+    .gang-power[data-on="false"] {
+      background: rgba(10,12,24,.55);
+      color: rgba(244,246,255,.45);
+      border-color: var(--g2-border);
+      box-shadow: inset 0 1px 3px rgba(2,4,14,.42);
+    }
     /* ===== Badges (eight states) ===== */
     .status-badge {
       display: inline-flex; align-items: center; padding: 4px 10px; border-radius: 999px;
@@ -187,9 +230,9 @@
     .status-badge[data-state="disconnected"] { color: var(--text-3); background: transparent; border-color: var(--disc-border); border-style: dashed; }
     /* ===== Buttons ===== */
     button {
-      font: inherit; font-size: 13px; font-weight: 700; color: var(--b2-text);
-      display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-      min-height: 44px; padding: 10px 18px; border-radius: 999px; cursor: pointer;
+      font: inherit; font-size: 16px; font-weight: 700; color: var(--b2-text);
+      display: inline-flex; align-items: center; justify-content: center; gap: 9px;
+      min-height: 46px; padding: 10px 20px; border-radius: 999px; cursor: pointer;
       background: var(--b2-bg); border: 1px solid var(--b2-border);
       transition: transform var(--t-fast), background var(--t-state), border-color var(--t-state), color var(--t-state), box-shadow var(--t-fast), opacity var(--t-state);
       box-shadow: var(--b2-shadow);
@@ -221,20 +264,11 @@
     .button-cool { color: var(--hint-cool); } .button-cool:hover { background: rgba(125,227,255,.08); }
     .button-warm { color: var(--hint-warm); } .button-warm:hover { background: rgba(255,201,125,.08); }
     .button-icon .icon { margin: -2px 0; }
-    .power-row { display: flex; flex-wrap: wrap; gap: 10px; }
-    .trim-row { display: flex; flex-wrap: wrap; gap: 8px; }
-    .trim-row button { min-width: 58px; min-height: 36px; padding: 7px 12px; }
-    /* ===== Control blocks (glass-2) ===== */
-    .control-grid { display: flex; flex-direction: column; gap: 12px; }
-    .control-block {
-      background: var(--g2-bg); border: 1px solid var(--g2-border); border-radius: var(--r-14);
-      padding: 16px; box-shadow: var(--g2-shadow), var(--g2-inner);
-    }
-    .control-label { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 10px; color: var(--text-3); font-size: 12px; }
+    .control-label { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 8px; color: var(--text-3); font-size: 15px; }
     .control-label span:first-child { color: var(--text-2); font-weight: 650; }
     .control-label output {
-      background: var(--recess-bg); border: 1px solid var(--recess-border); border-radius: var(--r-6);
-      padding: 2px 8px; font-size: 13px; font-weight: 700; color: var(--text);
+      background: var(--recess-bg); border: 1px solid var(--recess-border); border-radius: 6px;
+      padding: 3px 10px; font-size: 15px; font-weight: 700; color: var(--text);
       box-shadow: var(--recess-inner);
     }
     .control-label output[data-tone="unknown"] { color: var(--text-3); }
@@ -244,39 +278,34 @@
     input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 22px; background: transparent; cursor: pointer; margin: 0; }
     input[type=range]:disabled { cursor: not-allowed; }
     input[type=range]::-webkit-slider-runnable-track {
-      height: 6px; border-radius: 999px; background: rgba(255,255,255,.12);
+      height: 7px; border-radius: 999px; background: rgba(255,255,255,.12);
     }
     input[type=range]::-webkit-slider-thumb {
-      -webkit-appearance: none; appearance: none; width: 18px; height: 18px; border-radius: 50%;
-      background: var(--thumb-bg); border: none; margin-top: -6px; box-shadow: var(--thumb-fx);
+      -webkit-appearance: none; appearance: none; width: 20px; height: 20px; border-radius: 50%;
+      background: var(--thumb-bg); border: none; margin-top: -6.5px; box-shadow: var(--thumb-fx);
       transition: box-shadow var(--t-fast);
     }
     input[type=range]:not(:disabled):hover::-webkit-slider-thumb { box-shadow: var(--thumb-fx), 0 0 0 6px rgba(244,246,255,.10); }
     input[type=range]:active::-webkit-slider-thumb { box-shadow: var(--thumb-fx), 0 0 0 6px rgba(244,246,255,.16); }
     input[type=range]:focus-visible::-webkit-slider-thumb { box-shadow: var(--thumb-fx), 0 0 0 5px var(--ring-halo); }
     input[type=range]:disabled::-webkit-slider-thumb { background: rgba(244,246,255,.35); box-shadow: none; }
-    input[type=range]::-moz-range-track { height: 6px; border-radius: 999px; background: rgba(255,255,255,.12); }
-    input[type=range]::-moz-range-thumb { width: 18px; height: 18px; border-radius: 50%; background: var(--thumb-bg); border: none; box-shadow: var(--thumb-fx); }
+    input[type=range]::-moz-range-track { height: 7px; border-radius: 999px; background: rgba(255,255,255,.12); }
+    input[type=range]::-moz-range-thumb { width: 20px; height: 20px; border-radius: 50%; background: var(--thumb-bg); border: none; box-shadow: var(--thumb-fx); }
     input[data-field="brightness"]::-webkit-slider-runnable-track, #group-brightness::-webkit-slider-runnable-track {
-      background-image: linear-gradient(90deg, rgba(240,244,255,.28), #eef2ff);
+      background-image: linear-gradient(90deg, #2a2d3f, #eef1fb);
       background-size: calc(var(--fill-pct, 50) * 1%) 100%; background-repeat: no-repeat;
       background-color: rgba(255,255,255,.12);
     }
     input[data-field="brightness"]::-moz-range-track, #group-brightness::-moz-range-track {
-      background-image: linear-gradient(90deg, rgba(240,244,255,.28), #eef2ff);
+      background-image: linear-gradient(90deg, #2a2d3f, #eef1fb);
       background-size: calc(var(--fill-pct, 50) * 1%) 100%; background-repeat: no-repeat;
       background-color: rgba(255,255,255,.12);
     }
     input[data-field="temp"]::-webkit-slider-runnable-track, #group-temp::-webkit-slider-runnable-track {
-      background:
-        repeating-linear-gradient(90deg, rgba(10,12,24,.30) 0 1px, transparent 1px calc(100% / 18)),
-        repeating-linear-gradient(90deg, transparent 0 calc(100% / 18), rgba(244,246,255,.25) calc(100% / 18) calc(100% / 18 + 1px)),
-        linear-gradient(90deg, #ffb169 0%, #ffc58c 24%, #ffdcb0 44%, #f4e6c8 58%, #dde3f0 78%, var(--track-cool-end) 100%);
+      background: linear-gradient(90deg, #2f6df6 0%, #16b981 100%);
     }
     input[data-field="temp"]::-moz-range-track, #group-temp::-moz-range-track {
-      background:
-        repeating-linear-gradient(90deg, rgba(10,12,24,.30) 0 1px, transparent 1px calc(100% / 18)),
-        linear-gradient(90deg, #ffb169 0%, #ffc58c 24%, #ffdcb0 44%, #f4e6c8 58%, #dde3f0 78%, var(--track-cool-end) 100%);
+      background: linear-gradient(90deg, #2f6df6 0%, #16b981 100%);
     }
     input[type=range]:disabled::-webkit-slider-runnable-track { opacity: .5; }
     input[type=range]:disabled::-moz-range-track { opacity: .5; }
@@ -290,8 +319,48 @@
     .error-copy { display: flex; align-items: center; gap: 10px; min-width: 0; }
     .error-copy .icon { color: var(--err-text); }
     #retry { min-height: 36px; padding: 7px 12px; }
+    /* ===== Preset dropdown (names only; save row inside the menu) ===== */
+    .preset-dd { position: relative; }
+    .preset-dd > button {
+      display: inline-flex; align-items: center; gap: 10px;
+      background: var(--b2-bg); border: 1px solid var(--b2-border); color: var(--text);
+      border-radius: 999px; font-size: 17px; font-weight: 650; padding: 11px 20px; min-height: 48px;
+      transition: background var(--t-state), border-color var(--t-state);
+    }
+    .preset-dd > button:hover { background: var(--b2-bg-hover); border-color: var(--b2-border-hover); }
+    .preset-dd .chev { transition: transform var(--t-state); font-size: 13px; color: var(--text-3); }
+    .preset-dd.open .chev { transform: rotate(180deg); }
+    .preset-menu {
+      position: absolute; top: calc(100% + 8px); right: 0; min-width: 300px; z-index: 10;
+      padding: 8px; border-radius: 14px; display: none; max-height: 60vh; overflow-y: auto;
+      background: var(--g1-sheen), var(--g3-bg); border: 1px solid var(--g3-border);
+      box-shadow: var(--g3-shadow), var(--g3-inner);
+      -webkit-backdrop-filter: var(--g3-blur); backdrop-filter: var(--g3-blur);
+      scrollbar-width: thin; scrollbar-color: var(--scrollbar) transparent;
+    }
+    .preset-dd.open .preset-menu { display: block; }
+    .preset-menu .settings-list { gap: 4px; }
+    .preset-menu .setting-row { display: flex; align-items: stretch; gap: 4px; border: none; background: none; box-shadow: none; padding: 0; }
+    .preset-menu .item {
+      flex: 1; text-align: left; padding: 10px 12px; border: none; border-radius: 10px; min-height: 0;
+      background: transparent; color: var(--text); font-size: 16px; font-weight: 600;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .preset-menu .item:hover { background: var(--quiet-bg-hover); }
+    .preset-menu .item:active { background: var(--quiet-bg-active); }
+    .preset-menu .pdel {
+      flex: none; width: 30px; border-radius: 10px; min-height: 0; padding: 0;
+      background: transparent; border: none; color: var(--text-3); font-size: 13px; line-height: 1;
+      visibility: hidden; cursor: pointer;
+    }
+    .preset-menu .setting-row:hover .pdel, .preset-menu .setting-row:focus-within .pdel { visibility: visible; }
+    .preset-menu .pdel:hover { background: var(--qd-bg-hover); color: var(--qd-text); }
+    .preset-foot { display: flex; gap: 8px; padding: 8px 6px 4px; border-top: 1px solid var(--g2-border); margin-top: 6px; }
+    .preset-foot button { min-height: 40px; padding: 8px 14px; font-size: 15px; }
+    #settings-empty { border: none; background: none; padding: 14px 12px; font-size: 15px; }
+
     /* ===== Settings ===== */
-    .settings-save { display: flex; gap: 10px; align-items: center; }
+    .settings-save { display: flex; gap: 10px; align-items: center; flex: 1; min-width: 0; }
     #settings-name {
       flex: 1; min-height: 44px; padding: 10px 14px; font: inherit; font-size: 13px;
       color: var(--text); background: var(--recess-bg); border: 1px solid var(--recess-border);
@@ -323,10 +392,18 @@
     }
     .empty strong { color: var(--text-2); font-size: 13px; }
     /* ===== Lights grid + cards ===== */
-    .lights-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+    .lights-grid {
+      flex: 1; min-height: 0; overflow-y: auto;
+      scrollbar-width: thin; scrollbar-color: var(--scrollbar) transparent;
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(470px, 1fr)); gap: 14px;
+      padding: 0 0 18px; align-content: start;
+    }
+    .lights-grid::-webkit-scrollbar { width: 10px; }
+    .lights-grid::-webkit-scrollbar-thumb { background: var(--scrollbar); border-radius: 5px; }
+    .lights-grid::-webkit-scrollbar-track { background: transparent; }
     .light-card {
       background: var(--g1-sheen), var(--g1-bg); border: 1px solid var(--g1-border);
-      border-radius: var(--r-14); padding: 17px;
+      border-radius: var(--r-14); padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; min-width: 0;
       -webkit-backdrop-filter: var(--g1-blur); backdrop-filter: var(--g1-blur);
       --bri01: calc(var(--glow-bri, 0) / 100);
       --glow-t: calc(var(--glow-hue, 9) / 18 * 100);
@@ -341,12 +418,15 @@
         inset 0 -20px 34px -20px color-mix(in oklab, var(--aura-c) calc(20% * var(--bri01)), transparent);
       transition: border-color var(--t-state), box-shadow 160ms ease-out;
     }
-    .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
-    .light-name { font-size: 14px; font-weight: 700; color: var(--text); }
-    .card-meta { font-size: 12px; color: var(--text-3); margin-top: 2px; }
+    .card-head { display: grid; grid-template-columns: 1fr auto; grid-template-areas: "name power" "meta power"; align-items: center; column-gap: 14px; row-gap: 5px; margin-bottom: 2px; }
+    .card-head > div:first-child { display: contents; }
+    .card-head > div:last-child { display: contents; }
+    .light-name { grid-area: name; font-size: 20px; font-weight: 700; letter-spacing: -.01em; line-height: 1.25; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .card-meta { grid-area: meta; font-size: 15px; color: var(--text-3); display: flex; gap: 10px; align-items: center; line-height: 1.3; }
     .power-button {
-      display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 7px 14px;
-      border-radius: 999px; font-size: 12px; font-weight: 700;
+      grid-area: power;
+      display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 8px 18px;
+      border-radius: 999px; font-size: 16px; font-weight: 700;
       background: var(--b2-bg); border: 1px solid var(--b2-border); color: var(--b2-text);
       transition: transform var(--t-fast), background var(--t-state), border-color var(--t-state), color var(--t-state);
     }
@@ -357,12 +437,16 @@
       color: var(--live-text); background: rgba(88,240,200,.08); border-color: rgba(88,240,200,.45);
     }
     .power-button[data-on="true"] .icon { filter: drop-shadow(0 0 5px rgba(88,240,200,.5)); }
-    .card-control { margin-top: 12px; }
-    .card-control .control-label { margin-bottom: 8px; }
+    .card-control { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px; }
+    .card-control .control-label { margin: 0; display: contents; }
+    .card-control .control-label output { order: 2; }
+    .card-control input[type=range] { order: 1; grid-column: 1; }
+    .card-control output { grid-column: 2; }
     .card-error {
-      margin-top: 14px; display: flex; align-items: center; gap: 8px;
-      background: var(--carderr-bg); border: 1px solid var(--carderr-border); border-radius: var(--r-10);
-      padding: 8px 10px; color: var(--err-text); font-size: 12px;
+      margin: 0 -20px -18px; display: flex; align-items: center; gap: 8px;
+      background: var(--carderr-bg); border-top: 1px solid var(--carderr-border); border-left: none; border-right: none; border-bottom: none;
+      border-radius: 0 0 var(--r-14) var(--r-14);
+      padding: 9px 20px; color: var(--err-text); font-size: 15px;
     }
     .card-error[hidden] { display: none !important; }
     /* ===== Narrow fallback ===== */
@@ -465,27 +549,22 @@
       .power-button[data-on="true"] .icon { filter: none; }
       /* Gang power triplet keeps a floor width so it reads as one control (design-light §3.3) */
       .power-row[aria-label="All lights power"] button { min-width: 88px; }
-      /* Brightness fill: deep cyan→teal on ink-wash track */
+      /* Light slider fills: brightness dark→light, temp blue→green */
       input[data-field="brightness"]::-webkit-slider-runnable-track, #group-brightness::-webkit-slider-runnable-track {
         background-color: rgba(23,28,60,.12);
-        background-image: linear-gradient(90deg, #0b7c98, #087a56);
+        background-image: linear-gradient(90deg, #62688a, #d9dffa);
         box-shadow: inset 0 1px 2px rgba(23,28,60,.14), 0 1px 0 rgba(255,255,255,.55);
       }
       input[data-field="brightness"]::-moz-range-track, #group-brightness::-moz-range-track {
         background-color: rgba(23,28,60,.12);
-        background-image: linear-gradient(90deg, #0b7c98, #087a56);
+        background-image: linear-gradient(90deg, #62688a, #d9dffa);
       }
-      /* Warmth ribbon: physical ramp + honesty ticks */
       input[data-field="temp"]::-webkit-slider-runnable-track, #group-temp::-webkit-slider-runnable-track {
-        background:
-          repeating-linear-gradient(90deg, transparent 0 calc(5.5556% - 1px), rgba(23,28,60,.30) calc(5.5556% - 1px) 5.5556%),
-          linear-gradient(90deg, var(--track-warm-end) 0%, #d8913f 24%, #f2ead9 42%, #dee9f3 55%, #7fb4e2 78%, var(--track-cool-end) 100%);
+        background: linear-gradient(90deg, #2f6df6 0%, #16b981 100%);
         box-shadow: inset 0 1px 2px rgba(23,28,60,.14), 0 1px 0 rgba(255,255,255,.55);
       }
       input[data-field="temp"]::-moz-range-track, #group-temp::-moz-range-track {
-        background:
-          repeating-linear-gradient(90deg, transparent 0 calc(5.5556% - 1px), rgba(23,28,60,.30) calc(5.5556% - 1px) 5.5556%),
-          linear-gradient(90deg, var(--track-warm-end) 0%, #d8913f 24%, #f2ead9 42%, #dee9f3 55%, #7fb4e2 78%, var(--track-cool-end) 100%);
+        background: linear-gradient(90deg, #2f6df6 0%, #16b981 100%);
       }
       /* Thumb: white face + ink identity ring */
       input[type=range]:not(:disabled):hover::-webkit-slider-thumb { box-shadow: 0 0 0 1.5px rgba(23,28,60,.60), 0 2px 6px rgba(23,28,60,.28); }
@@ -527,6 +606,13 @@
       /* The cyan drop-shadow behind the brand glyph is a dark-field glow;
          daylight drops it (§5.3), the glass-3 blur stays. */
       .brand-mark { filter: none; }
+      /* Daylight gang square: dark square reads "off"; bright stays lit. */
+      .gang-power[data-on="false"] { background: #171b2e; color: rgba(255,255,255,.55); border-color: transparent; box-shadow: inset 0 1px 3px rgba(23,28,60,.30); }
+      .gang-power[data-on="true"] { box-shadow: 0 8px 20px -6px rgba(31,36,56,.35), inset 0 1px 0 rgba(255,255,255,.9), 0 0 20px rgba(12,107,133,.20); }
+      /* Daylight band: glass gets a hairline divider tone shift */
+      .band .cell + .cell { border-left-color: rgba(23,28,60,.12); }
+      .titlebar { border-bottom-color: rgba(23,28,60,.10); }
+      .statusbar { border-top-color: rgba(23,28,60,.10); }
     }
     /* ===== backdrop-filter fallback ===== */
     @supports not (backdrop-filter: blur(1px)) {
@@ -559,143 +645,86 @@
   </svg>
 
   <div class="shell">
-    <header class="topbar">
+    <header class="titlebar"><div class="column">
       <div class="brand">
         <div class="brand-mark"><svg class="icon"><use href="#icon-sun"></use></svg></div>
-        <div>
-          <p class="eyebrow">Mutastic / local control</p>
-          <h1>Mutastic</h1>
-          <p class="subtle">Tune each panel on its own, or move the whole rig together without losing your balance.</p>
-        </div>
+        <h1>Mutastic</h1>
       </div>
-      <!-- Initial state is "idle" (dim dot, no glow per design-dark §3.2) —
-           the old page shipped degraded/amber here, which misread as a
-           warning before the first poll; any value outside online/degraded
-           falls through to the base idle dot. -->
-      <div id="connection" class="connection" data-state="idle" role="status" aria-live="polite"><span class="connection-dot"></span><span id="connection-text">Connecting</span></div>
-    </header>
+      <div class="titlebar-right">
+        <button id="refresh" class="button-quiet" type="button" title="Refresh light status"><span>Refresh</span></button>
+        <!-- Initial state is "idle" (dim dot); any value outside
+             online/degraded falls through to the base idle dot. -->
+        <div id="connection" class="conn connection" data-state="idle" role="status" aria-live="polite"><span class="connection-dot"></span><span id="connection-text">Connecting</span></div>
+      </div>
+    </div></header>
 
-    <div class="layout">
-      <div class="rail">
-        <section class="panel mic-hero" aria-labelledby="mic-title">
-          <div class="panel-inner">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Audio</p>
-                <h2 id="mic-title">Microphone</h2>
-              </div>
-              <span id="mic-status" class="status-badge" data-state="unknown">unknown</span>
-              <span class="mic-lamp" aria-hidden="true"></span>
-            </div>
-            <span id="mic-word" class="mic-word" data-state="unknown" aria-hidden="true">unknown</span>
-            <p id="mic-line" class="subtle">Waiting for the daemon…</p>
-            <p class="subtle">Yeti X mute state, straight from the daemon. These buttons move the mic only — the meeting-app sweep stays on the physical mic button, the tray mute item, and the Stream Deck key.</p>
-            <div style="height:14px"></div>
-            <div class="power-row" role="group" aria-label="Microphone mute">
-              <button class="button-primary" type="button" data-mic-action="mute">Mute</button>
-              <button type="button" data-mic-action="unmute">Unmute</button>
-              <!-- Toggle starts disarmed: the initial state is unknown, and an unknown-state daemon toggle is unpredictable. updateMic owns the disabled flag from the first definitive poll onward. -->
-              <button class="button-quiet" type="button" data-mic-action="toggle" disabled>Toggle</button>
-            </div>
-          </div>
-        </section>
+    <div class="band" aria-label="Command band"><div class="column band-inner">
+      <div class="cell">
+        <!-- #mic-status keeps its id; it must precede the lamp button so the
+             sibling lamp-state rules (#mic-status[data-state] ~ .mic-lamp) apply. -->
+        <span id="mic-status" class="visually-hidden" data-state="unknown">unknown</span>
+        <button id="mic-toggle" class="mic-lamp" type="button" data-mic-action="toggle" aria-label="Toggle microphone mute" title="Toggle microphone" disabled><span class="visually-hidden">Toggle microphone</span></button>
+        <span class="stack">
+          <span id="mic-word" class="mic-word" data-state="unknown" aria-hidden="true">Unknown</span>
+          <span class="sub"><span id="mic-line">Waiting for the daemon…</span></span>
+        </span>
+      </div>
 
-        <section class="panel" aria-labelledby="all-lights-title">
-          <div class="panel-inner">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Gang controls</p>
-                <h2 id="all-lights-title">All lights</h2>
-                <p class="subtle">Match writes one absolute value to every connected panel. Trim nudges each panel relative to its current setting.</p>
-              </div>
-              <button id="refresh" class="button-quiet button-icon" type="button" title="Refresh light status"><svg class="icon"><use href="#icon-refresh"></use></svg><span>Refresh</span></button>
-            </div>
+      <div class="cell">
+        <button id="gang-toggle" class="gang-power" type="button" data-group-action="toggle" data-on="false" aria-label="Toggle all lights"><span class="gp-label">On</span></button>
+        <span class="stack">
+          <span class="eyebrow" style="margin:0">All lights</span>
+          <span class="sub" id="gang-sub">— of — on</span>
+        </span>
+      </div>
 
-            <div class="control-grid">
-              <div class="control-block control-block-wide">
-                <div class="control-label"><span>Power</span><span>whole rig</span></div>
-                <div class="power-row" role="group" aria-label="All lights power">
-                  <button class="button-primary button-icon" type="button" data-group-action="on"><svg class="icon"><use href="#icon-power"></use></svg><span>All on</span></button>
-                  <button class="button-icon" type="button" data-group-action="off"><svg class="icon"><use href="#icon-power"></use></svg><span>All off</span></button>
-                  <button class="button-quiet" type="button" data-group-action="toggle">Toggle</button>
-                </div>
-              </div>
+      <div class="cell grow" style="gap:22px">
+        <span style="display:grid;grid-template-columns:minmax(150px,220px) auto;align-items:center;gap:12px;flex:1">
+          <input id="group-brightness" type="range" min="0" max="100" value="55" style="--fill-pct:55" aria-label="Match brightness for all lights">
+          <output id="group-brightness-output" for="group-brightness" data-tone="unknown">Unknown</output>
+        </span>
+        <span style="display:grid;grid-template-columns:minmax(150px,220px) auto;align-items:center;gap:12px;flex:1">
+          <input id="group-temp" type="range" min="0" max="18" value="9" aria-label="Match color temperature for all lights">
+          <output id="group-temp-output" for="group-temp" data-tone="unknown">Unknown</output>
+        </span>
+      </div>
 
-              <div class="control-block">
-                <label class="control-label" for="group-brightness"><span>Match brightness</span><output id="group-brightness-output" for="group-brightness" data-tone="unknown">Unknown</output></label>
-                <div class="range-wrap">
-                  <input id="group-brightness" type="range" min="0" max="100" value="55" style="--fill-pct:55" aria-label="Match brightness for all lights">
-                  <div class="range-hints"><span>0%</span><span>100%</span></div>
-                </div>
-              </div>
-
-              <div class="control-block">
-                <label class="control-label" for="group-temp"><span>Match warmth</span><output id="group-temp-output" for="group-temp" data-tone="unknown">Unknown</output></label>
-                <div class="range-wrap">
-                  <input id="group-temp" type="range" min="0" max="18" value="9" aria-label="Match color temperature for all lights">
-                  <div class="range-hints"><span>2900K warm</span><span>7000K cool</span></div>
-                </div>
-              </div>
-
-              <div class="control-block">
-                <div class="control-label"><span>Group brightness trim</span><span>relative</span></div>
-                <div class="trim-row" role="group" aria-label="Relative group brightness trim">
-                  <button type="button" data-group-action="brightness-delta" data-value="-5">-5</button>
-                  <button type="button" data-group-action="brightness-delta" data-value="-1">-1</button>
-                  <button type="button" data-group-action="brightness-delta" data-value="1">+1</button>
-                  <button type="button" data-group-action="brightness-delta" data-value="5">+5</button>
-                </div>
-              </div>
-
-              <div class="control-block">
-                <div class="control-label"><span>Group warmth trim</span><span>one hardware step</span></div>
-                <div class="trim-row" role="group" aria-label="Relative group warmth trim">
-                  <button class="button-cool button-icon" type="button" data-group-action="temp-step-delta" data-value="1"><svg class="icon"><use href="#icon-plus"></use></svg><span>Cooler</span></button>
-                  <button class="button-warm button-icon" type="button" data-group-action="temp-step-delta" data-value="-1"><svg class="icon"><use href="#icon-minus"></use></svg><span>Warmer</span></button>
-                </div>
-              </div>
-            </div>
-
-            <div id="error-banner" class="error-banner" hidden role="alert">
-              <div class="error-copy"><svg class="icon"><use href="#icon-alert"></use></svg><span id="error-text"></span></div>
-              <button id="retry" type="button">Retry</button>
-            </div>
-          </div>
-        </section>
-
-        <section class="panel" aria-labelledby="settings-title">
-          <div class="panel-inner">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Light looks</p>
-                <h2 id="settings-title">Saved settings</h2>
-                <p class="subtle">Snapshot the current look of every known light under a name, then restore or remove it here or from the tray menu. The daemon owns and persists the store, so this page and the tray always see the same set.</p>
-              </div>
-            </div>
-            <form id="settings-form" class="settings-save">
+      <div class="cell">
+        <div class="preset-dd" id="preset-dd">
+          <button id="preset-btn" type="button" aria-haspopup="menu" aria-expanded="false">Presets <span class="chev">▾</span></button>
+          <div class="preset-menu" role="menu">
+            <ul id="settings-list" class="settings-list"></ul>
+            <p id="settings-empty" class="empty" hidden>No saved settings yet — name one below and Save.</p>
+            <form id="settings-form" class="settings-save preset-foot">
               <input id="settings-name" type="text" maxlength="42" autocomplete="off" placeholder="Name this look" aria-label="Name this look">
               <button class="button-primary" type="submit">Save</button>
             </form>
-            <p id="settings-line" class="subtle settings-line">Checking for saved settings…</p>
-            <ul id="settings-list" class="settings-list"></ul>
-            <p id="settings-empty" class="empty" hidden>No saved settings yet — dial in a look above, name it, and Save.</p>
           </div>
-        </section>
-      </div>
-
-      <main class="main-flow">
-        <div class="section-title">
-          <div><p class="eyebrow">Individual controls</p><h2>Panels</h2></div>
-          <p id="light-count">Waiting for the daemon…</p>
         </div>
-        <section id="lights-grid" class="lights-grid" aria-live="polite" aria-label="Individual lights"></section>
-        <div id="empty" class="empty" hidden><strong>No named or connected lights yet</strong><span>Start the mutastic daemon or plug in a PL81 PRO panel, then refresh.</span></div>
-      </main>
+      </div>
+    </div></div>
+
+    <div id="error-banner" class="error-banner" hidden role="alert" style="margin:10px 28px 0;border-radius:12px">
+      <div class="error-copy"><svg class="icon"><use href="#icon-alert"></use></svg><span id="error-text"></span></div>
+      <button id="retry" type="button">Retry</button>
     </div>
+    <p id="settings-line" class="visually-hidden" role="status">Checking for saved settings…</p>
 
-    <footer class="footer">Loopback only · changes are persisted by the mutastic daemon · status refreshes every 750 ms</footer>
+    <main class="layout"><div class="column" style="display:flex;flex-direction:column;min-height:0">
+      <div class="content-head">
+        <p class="eyebrow" style="margin:0">Lights</p>
+        <p id="light-count">Waiting for the daemon…</p>
+        <span class="c-hint">drag sliders — applies on release</span>
+      </div>
+      <section id="lights-grid" class="lights-grid" aria-live="polite" aria-label="Individual lights"></section>
+      <div id="empty" class="empty" hidden><strong>No named or connected lights yet</strong><span>Start the mutastic daemon or plug in a PL81 PRO panel, then refresh.</span></div>
+    </div></main>
+
+    <footer class="statusbar"><div class="column">
+      <span>mutastic daemon · 750ms poll</span>
+      <span class="s-err" id="status-error"></span>
+    </div></footer>
   </div>
-
   <script src="/mutation_queue.js"></script>
   <script>
     (() => {
@@ -729,10 +758,14 @@
       function showError(message) {
         $("error-text").textContent = message;
         $("error-banner").hidden = false;
+        const serr = $("status-error");
+        if (serr) serr.textContent = message;
       }
 
       function clearError() {
         $("error-banner").hidden = true;
+        const serr = $("status-error");
+        if (serr) serr.textContent = "";
       }
 
       function errorMessage(data, response) {
@@ -755,18 +788,17 @@
         const tempDisplay = on ? `${TEMP_STEPS[tempIndex]}K` : "Unknown";
         return `<article class="light-card" id="light-${port}" data-port="${port}">
           <div class="card-head">
-            <div><h3 class="light-name">${name}</h3><p class="card-meta">${port} · <span class="light-connection">${light.connected ? "connected" : "disconnected"}</span></p></div>
-            <div><span class="status-badge" data-state="${escapeHTML(light.connected ? light.state : "disconnected")}">${escapeHTML(light.connected ? light.state : "disconnected")}</span></div>
+            <h3 class="light-name">${name}</h3>
+            <p class="card-meta">${port} · <span class="light-connection">${light.connected ? "connected" : "disconnected"}</span> <span class="status-badge" data-state="${escapeHTML(light.connected ? light.state : "disconnected")}">${escapeHTML(light.connected ? light.state : "disconnected")}</span></p>
+            <button class="power-button button-icon" type="button" data-power${powerDisabled} aria-pressed="${light.state === "on"}">${icon("power")}<span class="power-label">${light.state === "on" ? "Turn off" : "Turn on"}</span></button>
           </div>
-          <button class="power-button button-icon" type="button" data-power${powerDisabled} aria-pressed="${light.state === "on"}">${icon("power")}<span class="power-label">${light.state === "on" ? "Turn off" : "Turn on"}</span></button>
           <div class="card-control">
-            <label class="control-label" for="brightness-${port}"><span>Brightness</span><output id="brightness-output-${port}" for="brightness-${port}">${brightnessDisplay}</output></label>
+            <label class="control-label" for="brightness-${port}"><output id="brightness-output-${port}" for="brightness-${port}">${brightnessDisplay}</output></label>
             <input id="brightness-${port}" data-field="brightness" type="range" min="0" max="100"${brightnessValue} aria-label="Brightness for ${name}"${sliderDisabled}>
           </div>
           <div class="card-control">
-            <label class="control-label" for="temp-${port}"><span>Color temperature</span><output id="temp-output-${port}" for="temp-${port}">${tempDisplay}</output></label>
+            <label class="control-label" for="temp-${port}"><output id="temp-output-${port}" for="temp-${port}">${tempDisplay}</output></label>
             <input id="temp-${port}" data-field="temp" type="range" min="0" max="18"${tempValue} aria-label="Color temperature for ${name}"${sliderDisabled}>
-            <div class="range-hints"><span>2900K warm</span><span>7000K cool</span></div>
           </div>
           <div class="card-error" hidden role="status">${icon("alert")}<span class="card-error-text"></span></div>
         </article>`;
@@ -780,9 +812,11 @@
           bindCards();
         }
         $("empty").hidden = lights.length !== 0;
-        $("light-count").textContent = lights.length === 1 ? "1 panel" : `${lights.length} panels`;
+        const connected = lights.filter((light) => light.connected);
+        $("light-count").textContent = `${lights.length === 1 ? "1 panel" : `${lights.length} panels`} · ${connected.length} connected`;
         lights.forEach(updateCard);
         updateGroupDefaults(lights);
+        updateGang(lights);
       }
 
       function updateCard(light) {
@@ -894,6 +928,18 @@
             });
           });
         });
+      }
+
+      // Gang square tracks its own lit/dark state + the "N of M on" caption.
+      function updateGang(lights) {
+        const btn = $("gang-toggle");
+        if (!btn) return;
+        const connected = lights.filter((light) => light.connected);
+        const onCount = connected.filter((light) => light.state === "on").length;
+        btn.dataset.on = onCount > 0 ? "true" : "false";
+        btn.querySelector(".gp-label").textContent = onCount > 0 ? "On" : "Off";
+        btn.setAttribute("aria-pressed", onCount > 0 ? "true" : "false");
+        $("gang-sub").textContent = `${onCount} of ${connected.length} on`;
       }
 
       function scheduleSlider(key, endpoint, body) {
@@ -1033,7 +1079,10 @@
         badge.textContent = micState;
         $("mic-line").textContent = micLineText(micState);
         const word = $("mic-word");
-        if (word) { word.dataset.state = micState; word.textContent = micState; }
+        if (word) {
+          word.dataset.state = micState;
+          word.textContent = micState === "unmuted" ? "Live" : micState === "muted" ? "Muted" : "Unknown";
+        }
         document.querySelectorAll("[data-mic-action]").forEach((button) => {
           if (button.dataset.micAction === "toggle") {
             // Toggle at unknown resolves to an absolute mute the user cannot
@@ -1121,7 +1170,7 @@
           // the card, so skip the rewrite when the list has not changed.
           $("settings-list").innerHTML = names.map((name) => {
             const escaped = escapeHTML(name);
-            return `<li class="setting-row"><span class="setting-name">${escaped}</span><button type="button" data-apply="${escaped}">Apply</button><button class="button-quiet button-danger" type="button" data-delete="${escaped}">Delete</button></li>`;
+            return `<li class="setting-row"><button class="item" type="button" data-apply="${escaped}" role="menuitem">${escaped}</button><button class="pdel" type="button" data-delete="${escaped}" aria-label="Delete ${escaped}">✕</button></li>`;
           }).join("");
           state.settingsSignature = signature;
           bindSettingsControls();
@@ -1198,6 +1247,24 @@
         });
       }
 
+      function bindPresetDropdown() {
+        const dd = $("preset-dd");
+        const btn = $("preset-btn");
+        btn.addEventListener("click", (event) => {
+          event.stopPropagation();
+          dd.classList.toggle("open");
+          btn.setAttribute("aria-expanded", dd.classList.contains("open") ? "true" : "false");
+        });
+        if (document.addEventListener) {
+          document.addEventListener("click", (event) => {
+            if (!dd.contains(event.target)) {
+              dd.classList.remove("open");
+              btn.setAttribute("aria-expanded", "false");
+            }
+          });
+        }
+      }
+
       function submitSettingsSave() {
         const input = $("settings-name");
         const name = input.value;
@@ -1242,6 +1309,7 @@
       bindTopControls();
       bindMicControls();
       bindSettingsControls();
+      bindPresetDropdown();
       refreshLights(false);
       refreshMic();
       refreshSettings();
