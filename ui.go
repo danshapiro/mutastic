@@ -53,6 +53,12 @@ var lightUIHTML []byte
 //go:embed internal/lightui/mutation_queue.js
 var lightMutationQueueJS []byte
 
+//go:embed internal/lightui/favicon.ico
+var lightUIFaviconICO []byte
+
+//go:embed internal/lightui/favicon.svg
+var lightUIFaviconSVG []byte
+
 // uiLight is the stable JSON shape consumed by the embedded controller.
 // Brightness and Temp are null when the daemon cannot know those values
 // (for example, an off or freshly restarted light).
@@ -209,6 +215,22 @@ func (s *uiServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		_, _ = w.Write(lightMutationQueueJS)
+	case "/favicon.ico":
+		if r.Method != http.MethodGet {
+			writeUIMethodError(w, http.MethodGet)
+			return
+		}
+		w.Header().Set("Content-Type", "image/x-icon")
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		_, _ = w.Write(lightUIFaviconICO)
+	case "/favicon.svg":
+		if r.Method != http.MethodGet {
+			writeUIMethodError(w, http.MethodGet)
+			return
+		}
+		w.Header().Set("Content-Type", "image/svg+xml")
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		_, _ = w.Write(lightUIFaviconSVG)
 	case "/api/health":
 		if r.Method != http.MethodGet {
 			writeUIMethodError(w, http.MethodGet)

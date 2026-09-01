@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+<defs>
+  <linearGradient id="fbg" x1="0" y1="0" x2="0" y2="64" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#1d2141"/><stop offset="0.6" stop-color="#10122a"/><stop offset="1" stop-color="#0a0c18"/>
+  </linearGradient>
+  <linearGradient id="fstemL" x1="13" y1="9.5" x2="14" y2="45" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#22a5b2"/><stop offset="0.5" stop-color="#1589a0"/><stop offset="0.66" stop-color="#0f6f8f"/>
+    <stop offset="0.78" stop-color="#0c4f6b" stop-opacity="0.6"/><stop offset="0.92" stop-color="#093048" stop-opacity="0.15"/><stop offset="1" stop-color="#082233" stop-opacity="0"/>
+  </linearGradient>
+  <linearGradient id="fdiagL" x1="13" y1="10" x2="32" y2="33" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#3ed1df"/><stop offset="0.3" stop-color="#3aa5d4"/><stop offset="0.55" stop-color="#4b7cc9"/><stop offset="0.8" stop-color="#6357c4"/><stop offset="1" stop-color="#744dc3"/>
+  </linearGradient>
+  <linearGradient id="fstemR" x1="51" y1="9.5" x2="50" y2="42" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#eb7634"/><stop offset="0.55" stop-color="#d95932"/><stop offset="0.72" stop-color="#cf452e"/>
+    <stop offset="0.85" stop-color="#a93328" stop-opacity="0.6"/><stop offset="1" stop-color="#581a20" stop-opacity="0"/>
+  </linearGradient>
+  <linearGradient id="fdiagR" x1="32" y1="33" x2="50" y2="10" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#8f47ad"/><stop offset="0.45" stop-color="#c85f6d"/><stop offset="0.78" stop-color="#f27d47"/><stop offset="1" stop-color="#f89346"/>
+  </linearGradient>
+  <linearGradient id="fmicG" x1="13.5" y1="32.5" x2="13.5" y2="49" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#eafff9"/><stop offset="0.45" stop-color="#a0e7e7"/><stop offset="1" stop-color="#4cb8bc"/>
+  </linearGradient>
+  <linearGradient id="fcamG" x1="49.75" y1="33.5" x2="49.75" y2="46" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#f07f45"/><stop offset="1" stop-color="#de4b3a"/>
+  </linearGradient>
+  <linearGradient id="fshadeG" x1="32" y1="38" x2="32" y2="46" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#a379e0"/><stop offset="1" stop-color="#6d4bc0"/>
+  </linearGradient>
+  <linearGradient id="fb0" x1="32" y1="46" x2="32" y2="57" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#a58df0" stop-opacity="0.28"/><stop offset="1" stop-color="#a58df0" stop-opacity="0"/>
+  </linearGradient>
+  <linearGradient id="fb1" x1="32" y1="46" x2="32" y2="57" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#a58df0" stop-opacity="0.3"/><stop offset="1" stop-color="#a58df0" stop-opacity="0"/>
+  </linearGradient>
+  <linearGradient id="fb2" x1="32" y1="46" x2="32" y2="57" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#a58df0" stop-opacity="0.32"/><stop offset="1" stop-color="#a58df0" stop-opacity="0"/>
+  </linearGradient>
+  <clipPath id="fclip"><rect x="0" y="0" width="64" height="64" rx="9" ry="9"/></clipPath>
+  <mask id="fmicSlots" maskUnits="userSpaceOnUse" x="8" y="31" width="12" height="13">
+    <rect x="9.8" y="32.5" width="7.4" height="10.5" rx="3.7" fill="#ffffff"/>
+    <g fill="#000000">
+    <rect x="11.2" y="35.4" width="1.8000000000000007" height="1.3" rx="0.6"/>
+    <rect x="14.0" y="35.4" width="1.8000000000000007" height="1.3" rx="0.6"/>
+    <rect x="11.2" y="37.7" width="1.8000000000000007" height="1.3" rx="0.6"/>
+    <rect x="14.0" y="37.7" width="1.8000000000000007" height="1.3" rx="0.6"/>
+    <rect x="11.2" y="40.0" width="1.8000000000000007" height="1.3" rx="0.6"/>
+    <rect x="14.0" y="40.0" width="1.8000000000000007" height="1.3" rx="0.6"/>
+    </g>
+  </mask>
+</defs>
+
+<g clip-path="url(#fclip)">
+  <rect x="0" y="0" width="64" height="64" fill="url(#fbg)"/>
+
+  <!-- M -->
+  <path d="M 8.5,12.0 Q 8.5,9.5 11.0,9.5 L 18.5,9.5 L 18.5,45 L 8.5,45 Z" fill="url(#fstemL)"/>
+  <path d="M 45.5,9.5 L 53.0,9.5 Q 55.5,9.5 55.5,12.0 L 55.5,42 L 45.5,42 Z" fill="url(#fstemR)"/>
+  <path d="M 8.5,12.5 L 8.5,12.0 Q 8.5,9.5 11.0,9.5 L 18.0,9.5 Q 20,9.5 21.143585323376346,11.140796333539974 L 31.5,26 L 31.5,33.0 Q 31.5,34 30.5,34.0 L 29.5,34.0 Q 28.5,34 27.889196545708177,33.20821774443653 L 15,16.5 Z" fill="url(#fdiagL)"/>
+  <path d="M 55.5,12.5 L 55.5,12.0 Q 55.5,9.5 53.0,9.5 L 46.0,9.5 Q 44,9.5 42.85641467662366,11.140796333539974 L 32.5,26 L 32.5,33.0 Q 32.5,34 33.5,34.0 L 34.5,34.0 Q 35.5,34 36.11080345429182,33.20821774443653 L 49,16.5 Z" fill="url(#fdiagR)"/>
+
+  <!-- lamp cord -->
+  <rect x="31.6" y="34" width="0.8" height="4" fill="#19113a"/>
+
+  <!-- microphone -->
+  <rect x="9.8" y="32.5" width="7.4" height="10.5" rx="3.7" fill="url(#fmicG)" mask="url(#fmicSlots)"/>
+  <path d="M 7.8,37.2 L 7.8,40.2 Q 7.8,45 13.5,45 Q 19.2,45 19.2,40.2 L 19.2,37.2" fill="none" stroke="url(#fmicG)" stroke-width="2.2" stroke-linecap="round"/>
+  <rect x="12.7" y="45" width="1.6" height="2.4" fill="#54c0c2"/>
+  <rect x="10.5" y="47.3" width="6" height="1.8" rx="0.9" fill="#46b3b8"/>
+
+  <!-- camera -->
+  <path d="M 46.6,36.6 L 47.6,34.2 Q 47.8,33.8 48.3,33.8 L 51.2,33.8 Q 51.7,33.8 51.9,34.2 L 52.9,36.6 Z" fill="url(#fcamG)"/>
+  <rect x="43" y="36" width="13.5" height="10" rx="2.8" fill="url(#fcamG)"/>
+  <circle cx="49.75" cy="41" r="3.5" fill="url(#fcamG)" stroke="#1a1024" stroke-width="1.5"/>
+
+  <!-- lamp: shade + bulb + downward beam only -->
+  <polygon points="28.8,46 35.2,46 38.8,57 25.2,57" fill="url(#fb0)"/>
+  <polygon points="29.8,46 34.2,46 37.0,57 27.0,57" fill="url(#fb1)"/>
+  <polygon points="30.7,46 33.3,46 35.2,57 28.8,57" fill="url(#fb2)"/>
+  <path d="M 29.6,39.2 Q 32,37.6 34.4,39.2 C 35.6,40.8 36.2,42.8 36,44.6 Q 32,45.8 28,44.6 C 27.8,42.8 28.4,40.8 29.6,39.2 Z" fill="url(#fshadeG)"/>
+  <rect x="31.3" y="37.2" width="1.4" height="1.8" rx="0.5" fill="#8a63c4"/>
+  <ellipse cx="32" cy="45" rx="3.6" ry="2" fill="#ffffff"/>
+</g>
+</svg>

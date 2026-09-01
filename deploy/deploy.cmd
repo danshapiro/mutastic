@@ -9,7 +9,6 @@ if not "%~1"=="" set "SRC=%~1"
 set "DEST=C:\Users\dan\code\mutastic-deploy"
 set "STARTUP=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
 set "AHK_EXE=C:\Program Files\AutoHotkey\AutoHotkeyU64.exe"
-set "OLD_DEPLOY=C:\Users\dan\code\mute-unmute-meetings"
 set "ODPLUGDIR=%APPDATA%\opendeck\plugins\com.danshapiro.mutastic.sdPlugin"
 set "OPENDECK_EXE=C:\Users\dan\AppData\Local\OpenDeck\opendeck.exe"
 
@@ -36,9 +35,6 @@ if not exist "%CSC%" (
 ) else (
   "%CSC%" /nologo /r:Accessibility.dll "/out:%DEST%\zoom-mute.exe" "%SRC%\deploy\zoom-mute.cs" || goto :fail
 )
-if exist "%SRC%\ahk\mic_mute_light.ico" copy /Y "%SRC%\ahk\mic_mute_light.ico" "%DEST%\" >nul
-if not exist "%DEST%\mic_mute_light.ico" if exist "%OLD_DEPLOY%\mic_mute_light.ico" copy /Y "%OLD_DEPLOY%\mic_mute_light.ico" "%DEST%\" >nul
-if not exist "%DEST%\mic_mute_light.ico" echo WARNING: mic_mute_light.ico not found - tray icon will be missing
 
 echo == Installing OpenDeck plugin ==
 if not exist "%ODPLUGDIR%\icons" mkdir "%ODPLUGDIR%\icons"

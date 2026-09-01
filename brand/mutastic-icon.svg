@@ -1,0 +1,161 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="460" height="460" viewBox="0 0 460 460">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="0" y2="460" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#1b1f3c"/><stop offset="0.55" stop-color="#0f1126"/><stop offset="1" stop-color="#090b17"/>
+  </linearGradient>
+  <radialGradient id="bgGlow" cx="230" cy="80" r="280" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#2c3263" stop-opacity="0.35"/><stop offset="1" stop-color="#2c3263" stop-opacity="0"/>
+  </radialGradient>
+  <linearGradient id="stemL" x1="86.94" y1="93.08" x2="97.94" y2="325.79" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#21a3b0"/><stop offset="0.45" stop-color="#16899f"/><stop offset="0.6" stop-color="#0f718f"/>
+    <stop offset="0.7" stop-color="#0d5f7d" stop-opacity="0.9"/><stop offset="0.78" stop-color="#0b4d68" stop-opacity="0.55"/>
+    <stop offset="0.86" stop-color="#0a3a53" stop-opacity="0.3"/><stop offset="0.93" stop-color="#092c41" stop-opacity="0.1"/>
+    <stop offset="0.97" stop-color="#082233" stop-opacity="0"/><stop offset="1" stop-color="#082233" stop-opacity="0"/>
+  </linearGradient>
+  <linearGradient id="diagL" x1="92.44" y1="96.33" x2="226.7" y2="252.19" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#3ed1df"/><stop offset="0.3" stop-color="#3aa5d4"/><stop offset="0.55" stop-color="#4b7cc9"/><stop offset="0.8" stop-color="#6357c4"/><stop offset="1" stop-color="#744dc3"/>
+  </linearGradient>
+  <linearGradient id="stemR" x1="378.56" y1="93.08" x2="363.16" y2="306.31" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#ea7433"/><stop offset="0.5" stop-color="#d95932"/><stop offset="0.68" stop-color="#cf452e"/>
+    <stop offset="0.76" stop-color="#c5402f"/><stop offset="0.85" stop-color="#b03330" stop-opacity="0.85"/>
+    <stop offset="0.92" stop-color="#7c2628" stop-opacity="0.4"/><stop offset="1" stop-color="#581a20" stop-opacity="0"/>
+  </linearGradient>
+  <linearGradient id="diagR" x1="233.3" y1="250.02" x2="362.06" y2="96.33" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#8f47ad"/><stop offset="0.45" stop-color="#c85f6d"/><stop offset="0.78" stop-color="#f27d47"/><stop offset="1" stop-color="#f89346"/>
+  </linearGradient>
+  <linearGradient id="micG" x1="103.44" y1="246.78" x2="103.44" y2="355.01" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#c9efed"/><stop offset="0.4" stop-color="#8ad9d9"/><stop offset="0.7" stop-color="#55c2c4"/><stop offset="1" stop-color="#3caab5"/>
+  </linearGradient>
+  <linearGradient id="camG" x1="354.35" y1="260.85" x2="354.35" y2="342.02" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#f07f45"/><stop offset="0.55" stop-color="#e5643f"/><stop offset="1" stop-color="#de4b3a"/>
+  </linearGradient>
+  <linearGradient id="shadeG" x1="228.9" y1="291.15" x2="228.9" y2="337.69" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#a379e0"/><stop offset="1" stop-color="#6d4bc0"/>
+  </linearGradient>
+  <linearGradient id="beamL0" x1="228.9" y1="330.12" x2="228.9" y2="421.04" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#9d86e8" stop-opacity="0.07"/><stop offset="0.55" stop-color="#9d86e8" stop-opacity="0.027"/><stop offset="1" stop-color="#9d86e8" stop-opacity="0"/>
+  </linearGradient>
+  <linearGradient id="beamL1" x1="228.9" y1="330.12" x2="228.9" y2="421.04" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#9d86e8" stop-opacity="0.07"/><stop offset="0.55" stop-color="#9d86e8" stop-opacity="0.027"/><stop offset="1" stop-color="#9d86e8" stop-opacity="0"/>
+  </linearGradient>
+  <linearGradient id="beamL2" x1="228.9" y1="330.12" x2="228.9" y2="421.04" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#9d86e8" stop-opacity="0.07"/><stop offset="0.55" stop-color="#9d86e8" stop-opacity="0.027"/><stop offset="1" stop-color="#9d86e8" stop-opacity="0"/>
+  </linearGradient>
+  <linearGradient id="beamL3" x1="228.9" y1="330.12" x2="228.9" y2="421.04" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#9d86e8" stop-opacity="0.07"/><stop offset="0.55" stop-color="#9d86e8" stop-opacity="0.027"/><stop offset="1" stop-color="#9d86e8" stop-opacity="0"/>
+  </linearGradient>
+  <linearGradient id="beamL4" x1="228.9" y1="330.12" x2="228.9" y2="421.04" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#9d86e8" stop-opacity="0.07"/><stop offset="0.55" stop-color="#9d86e8" stop-opacity="0.027"/><stop offset="1" stop-color="#9d86e8" stop-opacity="0"/>
+  </linearGradient>
+  <linearGradient id="beamL5" x1="228.9" y1="330.12" x2="228.9" y2="421.04" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#9d86e8" stop-opacity="0.07"/><stop offset="0.55" stop-color="#9d86e8" stop-opacity="0.027"/><stop offset="1" stop-color="#9d86e8" stop-opacity="0"/>
+  </linearGradient>
+  <linearGradient id="beamL6" x1="228.9" y1="330.12" x2="228.9" y2="421.04" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#9d86e8" stop-opacity="0.07"/><stop offset="0.55" stop-color="#9d86e8" stop-opacity="0.027"/><stop offset="1" stop-color="#9d86e8" stop-opacity="0"/>
+  </linearGradient>
+  <linearGradient id="beamL7" x1="228.9" y1="330.12" x2="228.9" y2="421.04" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#9d86e8" stop-opacity="0.07"/><stop offset="0.55" stop-color="#9d86e8" stop-opacity="0.027"/><stop offset="1" stop-color="#9d86e8" stop-opacity="0"/>
+  </linearGradient>
+  <linearGradient id="beamL8" x1="228.9" y1="330.12" x2="228.9" y2="421.04" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#9d86e8" stop-opacity="0.07"/><stop offset="0.55" stop-color="#9d86e8" stop-opacity="0.027"/><stop offset="1" stop-color="#9d86e8" stop-opacity="0"/>
+  </linearGradient>
+  <linearGradient id="beamL9" x1="228.9" y1="330.12" x2="228.9" y2="421.04" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#9d86e8" stop-opacity="0.07"/><stop offset="0.55" stop-color="#9d86e8" stop-opacity="0.027"/><stop offset="1" stop-color="#9d86e8" stop-opacity="0"/>
+  </linearGradient>
+  <linearGradient id="beamL10" x1="228.9" y1="330.12" x2="228.9" y2="421.04" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#9d86e8" stop-opacity="0.07"/><stop offset="0.55" stop-color="#9d86e8" stop-opacity="0.027"/><stop offset="1" stop-color="#9d86e8" stop-opacity="0"/>
+  </linearGradient>
+  <linearGradient id="beamL11" x1="228.9" y1="330.12" x2="228.9" y2="421.04" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#9d86e8" stop-opacity="0.07"/><stop offset="0.55" stop-color="#9d86e8" stop-opacity="0.027"/><stop offset="1" stop-color="#9d86e8" stop-opacity="0"/>
+  </linearGradient>
+  <linearGradient id="beamL12" x1="228.9" y1="330.12" x2="228.9" y2="421.04" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#9d86e8" stop-opacity="0.07"/><stop offset="0.55" stop-color="#9d86e8" stop-opacity="0.027"/><stop offset="1" stop-color="#9d86e8" stop-opacity="0"/>
+  </linearGradient>
+  <linearGradient id="beamL13" x1="228.9" y1="330.12" x2="228.9" y2="421.04" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#9d86e8" stop-opacity="0.07"/><stop offset="0.55" stop-color="#9d86e8" stop-opacity="0.027"/><stop offset="1" stop-color="#9d86e8" stop-opacity="0"/>
+  </linearGradient>
+  <linearGradient id="beamL14" x1="228.9" y1="330.12" x2="228.9" y2="421.04" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#9d86e8" stop-opacity="0.07"/><stop offset="0.55" stop-color="#9d86e8" stop-opacity="0.027"/><stop offset="1" stop-color="#9d86e8" stop-opacity="0"/>
+  </linearGradient>
+  <linearGradient id="beamL15" x1="228.9" y1="330.12" x2="228.9" y2="421.04" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#9d86e8" stop-opacity="0.07"/><stop offset="0.55" stop-color="#9d86e8" stop-opacity="0.027"/><stop offset="1" stop-color="#9d86e8" stop-opacity="0"/>
+  </linearGradient>
+  <linearGradient id="beamL16" x1="228.9" y1="330.12" x2="228.9" y2="421.04" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#9d86e8" stop-opacity="0.07"/><stop offset="0.55" stop-color="#9d86e8" stop-opacity="0.027"/><stop offset="1" stop-color="#9d86e8" stop-opacity="0"/>
+  </linearGradient>
+  <linearGradient id="beamL17" x1="228.9" y1="330.12" x2="228.9" y2="421.04" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#9d86e8" stop-opacity="0.07"/><stop offset="0.55" stop-color="#9d86e8" stop-opacity="0.027"/><stop offset="1" stop-color="#9d86e8" stop-opacity="0"/>
+  </linearGradient>
+  <radialGradient id="throat" cx="230.0" cy="338.78" r="33.00999999999999" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#d9c9fa" stop-opacity="0.55"/><stop offset="0.6" stop-color="#b39eee" stop-opacity="0.25"/><stop offset="1" stop-color="#b39eee" stop-opacity="0"/>
+  </radialGradient>
+  <clipPath id="iconClip"><rect x="0" y="0" width="460" height="460" rx="62" ry="62"/></clipPath>
+  <mask id="micSlots" maskUnits="userSpaceOnUse" x="70.43" y="241.36" width="71.53" height="86.58999999999997">
+    <rect x="84.74" y="246.78" width="39.61" height="73.60" rx="19.80" fill="#ffffff"/>
+    <g fill="#000000">
+    <rect x="85.84" y="263.55" width="14.30" height="7.04" rx="2.5"/>
+    <rect x="107.85" y="263.55" width="15.40" height="7.04" rx="2.5"/>
+    <rect x="85.84" y="275.46" width="14.30" height="7.03" rx="2.5"/>
+    <rect x="107.85" y="275.46" width="15.40" height="7.03" rx="2.5"/>
+    <rect x="85.84" y="287.36" width="14.30" height="7.04" rx="2.5"/>
+    <rect x="107.85" y="287.36" width="15.40" height="7.04" rx="2.5"/>
+    </g>
+  </mask>
+</defs>
+
+<g clip-path="url(#iconClip)">
+  <rect x="0" y="0" width="460" height="460" fill="url(#bg)"/>
+  <rect x="0" y="0" width="460" height="460" fill="url(#bgGlow)"/>
+
+  <!-- M left half: stem extends down behind mic, fading out -->
+  <path d="M 77.03,100.66 Q 77.03,93.08 84.74,93.08 L 138.66,93.08 L 138.66,325.79 L 77.03,325.79 Z" fill="url(#stemL)"/>
+  <path d="M 77.03,100.66 Q 77.03,93.08 84.74,93.08 L 139.76,93.08 Q 144.16,93.08 146.91,96.47 L 226.7,194.82 L 226.7,253.27 Q 226.7,256.52 223.4,256.52 L 210.19,256.52 Q 206.89,256.52 204.84,253.98 L 138.66,172.09 L 77.03,102.82 Z" fill="url(#diagL)"/>
+  <path d="M 78.13,103.91 L 137.56,171.01" stroke="#06222b" stroke-opacity="0.2" stroke-width="2.5" stroke-linecap="round"/>
+
+  <!-- M right half: stem extends down behind camera, fading out -->
+  <path d="M 321.34,93.08 L 375.26,93.08 Q 382.97,93.08 382.97,100.66 L 382.97,306.31 L 321.34,306.31 Z" fill="url(#stemR)"/>
+  <path d="M 382.97,100.66 Q 382.97,93.08 375.26,93.08 L 326.84,93.08 Q 322.44,93.08 319.57,96.36 L 233.3,194.82 L 233.3,253.27 Q 233.3,256.52 236.6,256.52 L 249.81,256.52 Q 253.11,256.52 255.16,253.98 L 321.34,172.09 L 382.97,102.82 Z" fill="url(#diagR)"/>
+  <path d="M 381.87,103.91 L 322.44,171.01" stroke="#8a2f10" stroke-opacity="0.22" stroke-width="2.5" stroke-linecap="round"/>
+
+  <!-- lamp cord -->
+  <rect x="226.7" y="241.36" width="4.95" height="35.72" fill="#19113a"/>
+
+  <!-- microphone: grill slots are cutouts showing the stem through -->
+  <rect x="84.74" y="246.78" width="39.61" height="73.60" rx="19.80" fill="url(#micG)" mask="url(#micSlots)"/>
+  <path d="M 72.63,291.15 L 72.63,306.31 Q 72.63,332.28 104.55,332.28 Q 136.46,332.28 136.46,306.31 L 136.46,291.15"
+        fill="none" stroke="url(#micG)" stroke-width="8" stroke-linecap="round"/>
+  <rect x="99.59" y="332.28" width="8.81" height="14.07" fill="#48b4ba"/>
+  <rect x="89.14" y="345.27" width="29.71" height="9.20" rx="4.2" fill="#3caab5"/>
+
+  <!-- camera: short bump blends into body -->
+  <path d="M 334.55,279.25 L 340.05,269.51 Q 341.15,266.26 344.45,266.26 L 364.26,266.26 Q 367.56,266.26 368.66,269.51 L 374.16,279.25 Z" fill="url(#camG)"/>
+  <rect x="308.13" y="277.08" width="92.44" height="64.94" rx="11" fill="url(#camG)"/>
+  <circle cx="353.8" cy="310.64" r="22.84" fill="url(#camG)" stroke="#1a1024" stroke-width="6.5"/>
+
+  <!-- lamp: light shines straight down only, no halo -->
+  <polygon points="200.29,330.12 257.51,330.12 301.53,421.04 156.27,421.04" fill="url(#beamL0)"/>
+  <polygon points="201.06,330.12 256.74,330.12 298.94,421.04 158.86,421.04" fill="url(#beamL1)"/>
+  <polygon points="201.84,330.12 255.96,330.12 296.35,421.04 161.45,421.04" fill="url(#beamL2)"/>
+  <polygon points="202.62,330.12 255.18,330.12 293.76,421.04 164.04,421.04" fill="url(#beamL3)"/>
+  <polygon points="203.39,330.12 254.4,330.12 291.17,421.04 166.63,421.04" fill="url(#beamL4)"/>
+  <polygon points="204.17,330.12 253.63,330.12 288.58,421.04 169.21,421.04" fill="url(#beamL5)"/>
+  <polygon points="204.95,330.12 252.85,330.12 285.99,421.04 171.8,421.04" fill="url(#beamL6)"/>
+  <polygon points="205.72,330.12 252.07,330.12 283.41,421.04 174.39,421.04" fill="url(#beamL7)"/>
+  <polygon points="206.5,330.12 251.3,330.12 280.82,421.04 176.98,421.04" fill="url(#beamL8)"/>
+  <polygon points="207.28,330.12 250.52,330.12 278.23,421.04 179.57,421.04" fill="url(#beamL9)"/>
+  <polygon points="208.06,330.12 249.74,330.12 275.64,421.04 182.16,421.04" fill="url(#beamL10)"/>
+  <polygon points="208.83,330.12 248.97,330.12 273.05,421.04 184.75,421.04" fill="url(#beamL11)"/>
+  <polygon points="209.61,330.12 248.19,330.12 270.46,421.04 187.34,421.04" fill="url(#beamL12)"/>
+  <polygon points="210.39,330.12 247.41,330.12 267.87,421.04 189.93,421.04" fill="url(#beamL13)"/>
+  <polygon points="211.16,330.12 246.64,330.12 265.28,421.04 192.52,421.04" fill="url(#beamL14)"/>
+  <polygon points="211.94,330.12 245.86,330.12 262.69,421.04 195.11,421.04" fill="url(#beamL15)"/>
+  <polygon points="212.72,330.12 245.08,330.12 260.1,421.04 197.7,421.04" fill="url(#beamL16)"/>
+  <polygon points="213.49,330.12 244.31,330.12 257.51,421.04 200.29,421.04" fill="url(#beamL17)"/>
+  <ellipse cx="230.0" cy="339.86" rx="33.00999999999999" ry="17.319999999999993" fill="url(#throat)"/>
+  <path d="M 215.69,299.81 Q 228.9,290.07 242.11,299.81 C 250.91,307.39 255.31,320.38 253.11,332.28 Q 228.9,340.94 204.69,332.28 C 202.49,320.38 206.89,307.39 215.69,299.81 Z" fill="url(#shadeG)"/>
+  <path d="M 211.29,306.31 L 211.29,290.07 Q 211.29,280.33 221.2,280.33 L 236.6,280.33 Q 246.51,280.33 246.51,290.07 L 246.51,306.31"
+        fill="none" stroke="#9274c8" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 223.95,274.92 L 233.85,274.92 L 231.1,283.58 L 226.7,283.58 Z" fill="#8a63c4"/>
+  <ellipse cx="230.0" cy="325.79" rx="19.81" ry="9.74" fill="#f8f6ff"/>
+</g>
+</svg>
