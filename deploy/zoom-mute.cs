@@ -30,11 +30,21 @@ public class ZoomMute {
   const string MeetingWindowClassLegacy = "ZPContentViewWndClass"; // Zoom pre-6.x
   const string ToolsPanelClass = "ZPControlPanelClass";
 
+  // A snapshot of Zoom's PIDs, taken once. The previous implementation
+  // called Process.GetProcessById for EVERY top-level window on the
+  // desktop (~20ms each; ~1000 windows on a busy desktop -> ~20s per run),
+  // which stalled MuteAllMeetings.ahk's single thread long enough to
+  // coalesce rapid mute-button presses and desync the apps from the mic.
+  static readonly System.Collections.Generic.HashSet<uint> ZoomPids = LoadZoomPids();
+  static System.Collections.Generic.HashSet<uint> LoadZoomPids() {
+    var set = new System.Collections.Generic.HashSet<uint>();
+    foreach (var p in System.Diagnostics.Process.GetProcessesByName("zoom")) set.Add((uint)p.Id);
+    return set;
+  }
+
   static bool IsZoomWindow(IntPtr h) {
     uint pid; GetWindowThreadProcessId(h, out pid);
-    System.Diagnostics.Process p;
-    try { p = System.Diagnostics.Process.GetProcessById((int)pid); } catch { return false; }
-    return p.ProcessName.Equals("zoom", StringComparison.OrdinalIgnoreCase);
+    return ZoomPids.Contains(pid);
   }
 
   // The mute button in the Meeting tools panel carries its shortcut and its

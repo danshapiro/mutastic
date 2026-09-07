@@ -96,6 +96,16 @@ ToggleAllMeetings() {
         report := "No meeting windows found"
     ToolTip, %report%
     SetTimer, ClearToolTip, -1500
+
+    ; Sweep log: the daemon logs every F24 injection, so correlating this
+    ; file (%LOCALAPPDATA%\mutastic\ahk-sweep.log) with mutastic.log splits
+    ; every "button pressed but app didn't toggle" report into three buckets:
+    ; inject logged but no sweep entry = F24 never reached AHK (elevated
+    ; foreground window eats the synthetic keystroke); "No meeting windows
+    ; found" = window-title match failed (meeting tab not active in its
+    ; window); "Teams (tab): 1" but no UI change = keystroke delivery failed.
+    EnvGet, localApp, LOCALAPPDATA
+    FileAppend, %A_Now%  %report%`n, %localApp%\mutastic\ahk-sweep.log
 }
 
 ; ToggleZoomMute runs the MSAA-driven helper built by deploy.cmd. Returns

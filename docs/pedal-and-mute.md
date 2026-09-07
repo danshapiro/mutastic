@@ -42,8 +42,14 @@ handler changes meeting apps only and never calls `mutastic.exe toggle`.
 
 `ToggleAllMeetings()` activates each matching window briefly, sends that
 application's own mute shortcut, restores focus, and shows a summary tooltip.
-It is currently reached through the active `*F24::` binding, not either
-disabled pedal binding.
+It also appends every sweep's report line to
+`%LOCALAPPDATA%\mutastic\ahk-sweep.log`; correlating that log with the
+daemon's F24-injection lines in `mutastic.log` splits a missed toggle into
+"synthetic F24 never reached AutoHotkey" (inject logged, no sweep entry),
+"no window matched the title rules" (`No meeting windows found`), and
+"window matched but the keystroke did not toggle the app" (`Teams (tab): 1`
+etc. with no UI change). It is currently reached through the active `*F24::`
+binding, not either disabled pedal binding.
 
 | App | Window match | Hotkey sent |
 |-----|--------------|-------------|
