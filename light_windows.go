@@ -24,7 +24,9 @@ var comPortGUID = windows.GUID{
 // opening a serial port. A CH340 bridge is a candidate until explicitly
 // paired. The COM label and interface path both come from the same devnode.
 func enumerateLightCandidates() (map[string]string, error) {
-	devices, err := windows.SetupDiGetClassDevsEx(&comPortGUID, "USB", 0,
+	// For an interface class, a non-empty enumerator selects one device
+	// instance. Enumerate the class, then filter by USB hardware ID below.
+	devices, err := windows.SetupDiGetClassDevsEx(&comPortGUID, "", 0,
 		windows.DIGCF_PRESENT|windows.DIGCF_DEVICEINTERFACE, 0, "")
 	if err != nil {
 		return nil, err

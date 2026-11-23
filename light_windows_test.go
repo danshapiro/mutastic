@@ -14,3 +14,18 @@ func TestSerialInterfaceName(t *testing.T) {
 		}
 	}
 }
+
+// Exercise the native SetupAPI call even on machines with no panels. This
+// reads device metadata only; COM handles and wake writes belong to sessions.
+func TestEnumerateLightCandidates(t *testing.T) {
+	ports, err := enumerateLightCandidates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for port, path := range ports {
+		if _, err := serialInterfaceName(path); err != nil {
+			t.Fatalf("%s: %v", port, err)
+		}
+		t.Logf("%s: %s", port, path)
+	}
+}
