@@ -8,41 +8,87 @@ import (
 	"time"
 
 	"go.bug.st/serial"
-	"go.bug.st/serial/enumerator"
+	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 
 	"mutastic/internal/light"
 )
 
-// PL81 Pro = CH340 USB-serial bridge (docs/pl81-pro-serial-protocol.md).
-// The enumerator reports VID/PID as hex strings.
-const (
-	pl81VID = "1A86"
-	pl81PID = "7523"
-)
+// GUID_DEVINTERFACE_COMPORT identifies Windows serial port interfaces.
+var comPortGUID = windows.GUID{
+	Data1: 0x86e0d1e0, Data2: 0x8089, Data3: 0x11d0,
+	Data4: [8]byte{0x9c, 0xe4, 0x08, 0x00, 0x3e, 0x30, 0x1f, 0x73},
+}
 
-// enumeratePL81Ports lists the COM name of every CH340 bridge currently
-// attached (VID 1A86 PID 7523). Two identical panels are distinguished
-// ONLY by COM name - CH340s expose no USB serial number - so the COM port
-// is a light's identity (stable per physical USB jack; see
-// docs/pl81-pro-serial-protocol.md).
-func enumeratePL81Ports() ([]string, error) {
-	ports, err := enumerator.GetDetailedPortsList()
+// enumerateLightCandidates reads Windows Plug and Play metadata without
+// opening a serial port. A CH340 bridge is a candidate until explicitly
+// paired. The COM label and interface path both come from the same devnode.
+func enumerateLightCandidates() (map[string]string, error) {
+	devices, err := windows.SetupDiGetClassDevsEx(&comPortGUID, "USB", 0,
+		windows.DIGCF_PRESENT|windows.DIGCF_DEVICEINTERFACE, 0, "")
 	if err != nil {
 		return nil, err
 	}
-	var names []string
-	for _, p := range ports {
-		if p.IsUSB && strings.EqualFold(p.VID, pl81VID) && strings.EqualFold(p.PID, pl81PID) {
-			names = append(names, p.Name)
+	defer devices.Close()
+	ports := make(map[string]string)
+	for i := 0; ; i++ {
+		device, err := devices.EnumDeviceInfo(i)
+		if err == windows.ERROR_NO_MORE_ITEMS {
+			return ports, nil
 		}
+		if err != nil {
+			return nil, fmt.Errorf("enumerating USB serial devices: %w", err)
+		}
+		id, err := devices.DeviceInstanceID(device)
+		if err != nil {
+			continue
+		}
+		const ch340 = `USB\VID_1A86&PID_7523`
+		upper := strings.ToUpper(id)
+		if !strings.HasPrefix(upper, ch340+`\`) && !strings.HasPrefix(upper, ch340+"&") {
+			continue
+		}
+		paths, err := windows.CM_Get_Device_Interface_List(id, &comPortGUID, windows.CM_GET_DEVICE_INTERFACE_LIST_PRESENT)
+		if err != nil || len(paths) != 1 {
+			continue
+		}
+		handle, err := devices.OpenDevRegKey(device, windows.DICS_FLAG_GLOBAL, 0, windows.DIREG_DEV, windows.KEY_QUERY_VALUE)
+		if err != nil {
+			continue
+		}
+		key := registry.Key(handle)
+		name, _, err := key.GetStringValue("PortName")
+		key.Close()
+		if err != nil {
+			continue
+		}
+		port, err := light.NormalizePort(name)
+		if err != nil {
+			continue
+		}
+		if _, duplicate := ports[port]; duplicate {
+			return nil, fmt.Errorf("ambiguous USB serial port %s", port)
+		}
+		ports[port] = paths[0]
 	}
-	return names, nil
 }
 
-// openPL81Port opens one specific PL81 serial port at 115200 8N1 with
-// both buffers flushed. The wake sequence is the session's job, not this
-// function's.
-func openPL81Port(name string) (light.Port, error) {
+// go.bug.st/serial prepends the Win32 device prefix to every name which
+// doesn't already use it. Preserve the full USB interface link, changing
+// only that prefix; a reassigned COM alias must never be opened on retry.
+func serialInterfaceName(interfacePath string) (string, error) {
+	path, ok := strings.CutPrefix(interfacePath, `\\?\`)
+	if !ok || !strings.HasPrefix(strings.ToUpper(path), "USB#") {
+		return "", fmt.Errorf("expected a USB device interface path, got %q", interfacePath)
+	}
+	return `\\.\` + path, nil
+}
+
+func openPL81Port(interfacePath string) (light.Port, error) {
+	name, err := serialInterfaceName(interfacePath)
+	if err != nil {
+		return nil, err
+	}
 	mode := &serial.Mode{
 		BaudRate: 115200,
 		DataBits: 8,

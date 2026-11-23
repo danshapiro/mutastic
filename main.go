@@ -107,6 +107,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "       mutastic light toggle|on|off|status|list  (bare light commands act on ALL lights)")
 	fmt.Fprintln(os.Stderr, "       mutastic light brightness <0-100> | temp <2900-7000> | preset <cold|sunlight|afternoon|sunset|candle>")
 	fmt.Fprintln(os.Stderr, "       mutastic light brightness-delta <-20..20> | temp-step-delta <-3..3>")
+	fmt.Fprintln(os.Stderr, "       mutastic light pair <COMx> | unpair <COMx>  (permit or release a verified panel)")
 	fmt.Fprintln(os.Stderr, "       mutastic light name <COMx> <name> | unname <name|COMx>")
 	fmt.Fprintln(os.Stderr, "       mutastic light@<name|COMx> <command>  (one light)")
 	fmt.Fprintln(os.Stderr, "       mutastic obs snapshot --out <path> [--source <name>] | obs list-sources  (OBS still capture)")
@@ -181,7 +182,7 @@ func runDaemon() int {
 		namesPath = filepath.Join(stateDir, "light-names.json")
 	}
 	reg := light.NewRegistry(namesPath)
-	lights := light.NewMultiManager(logger, stateDir, reg, enumeratePL81Ports, openPL81Port)
+	lights := light.NewMultiManager(logger, stateDir, reg, enumerateLightCandidates, openPL81Port)
 	lightsDone := make(chan struct{})
 	go func() {
 		lights.Run(ctx)

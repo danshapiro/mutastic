@@ -264,14 +264,18 @@ func (s *SettingsStore) Get(name string) (SavedSetting, bool) {
 // possibly plus an orphan .tmp - never a truncated store. The safety
 // argument is the write→close→replace ORDER, portable across platforms.
 func (s *SettingsStore) writeLocked(byName map[string]SavedSetting) error {
-	data, err := json.Marshal(byName)
+	return writeJSON(s.path, byName)
+}
+
+func writeJSON(path string, value any) error {
+	data, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	tmp := s.path + ".tmp"
+	tmp := path + ".tmp"
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		return err
@@ -285,7 +289,11 @@ func (s *SettingsStore) writeLocked(byName map[string]SavedSetting) error {
 		os.Remove(tmp)
 		return err
 	}
-	return os.Rename(tmp, s.path)
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // validateSettingsName enforces the name grammar shared identically by

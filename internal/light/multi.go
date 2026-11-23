@@ -50,16 +50,17 @@ var (
 	lightCallTimeout = CallTimeout
 )
 
-// Enumerate lists the COM port names of every PL81 currently attached.
-type Enumerate func() ([]string, error)
+// Enumerate reads Windows metadata for candidate bridges (COM name -> device interface path).
+// A matching bridge is only eligible for a session after explicit pairing.
+type Enumerate func() (map[string]string, error)
 
-// OpenPort opens one specific PL81 serial port by COM name.
-type OpenPort func(name string) (Port, error)
+// OpenPort opens the paired device interface directly, including on retries.
+type OpenPort func(interfacePath string) (Port, error)
 
 // MultiManager owns one Manager per attached PL81 and answers the
 // daemon's light commands: bare verbs fan out to every light, "@target"
-// addresses one, plus name/unname/list bookkeeping (Task 4). A light's
-// identity is its COM port - CH340 bridges have no USB serial number.
+// addresses one. Names and saved settings use the COM port. Serial access
+// requires a pairing with the Windows device interface path.
 type MultiManager struct {
 	logger    *log.Logger
 	reg       *Registry
@@ -68,9 +69,11 @@ type MultiManager struct {
 	enumerate Enumerate
 	openPort  OpenPort
 
-	mu       sync.Mutex
-	sessions map[string]*lightSession // key: canonical port name ("COM4")
-	misses   map[string]int           // consecutive successful scans missing each port
+	mu         sync.Mutex
+	pairings   map[string]string        // COM name -> explicitly paired device interface
+	pairingErr error                    // unreadable configuration disables pairing
+	sessions   map[string]*lightSession // key: canonical port name ("COM4")
+	misses     map[string]int           // consecutive successful scans missing each port
 }
 
 type lightSession struct {
@@ -88,15 +91,21 @@ func NewMultiManager(logger *log.Logger, stateDir string, reg *Registry, enumera
 	if stateDir != "" {
 		settingsPath = filepath.Join(stateDir, "light-settings.json")
 	}
+	pairs, err := loadPairings(stateDir)
+	if err != nil {
+		logger.Printf("light: automatic connections disabled: %v", err)
+	}
 	return &MultiManager{
-		logger:    logger,
-		reg:       reg,
-		settings:  NewSettingsStore(settingsPath),
-		stateDir:  stateDir,
-		enumerate: enumerate,
-		openPort:  openPort,
-		sessions:  map[string]*lightSession{},
-		misses:    map[string]int{},
+		pairings:   pairs,
+		pairingErr: err,
+		logger:     logger,
+		reg:        reg,
+		settings:   NewSettingsStore(settingsPath),
+		stateDir:   stateDir,
+		enumerate:  enumerate,
+		openPort:   openPort,
+		sessions:   map[string]*lightSession{},
+		misses:     map[string]int{},
 	}
 }
 
@@ -131,26 +140,26 @@ func (mm *MultiManager) rescan(ctx context.Context) {
 		mm.logger.Printf("light: rescan: %v (keeping current sessions)", err)
 		return
 	}
-	var ports []string
-	for _, r := range raw {
-		if p, err := NormalizePort(r); err == nil {
-			ports = append(ports, p)
-		}
-	}
 	var doomed []*lightSession
 	mm.mu.Lock()
-	seen := map[string]bool{}
+	// Keep the association check and session creation under the same lock as
+	// unpair. COM numbers are display/settings keys and can be reassigned.
+	ports := make(map[string]string)
+	for port, path := range raw {
+		if path != "" && strings.EqualFold(mm.pairings[port], path) {
+			ports[port] = path
+		}
+	}
 	changed := false
-	for _, port := range ports {
-		seen[port] = true
+	for port, path := range ports {
 		delete(mm.misses, port) // seen: reset the miss counter
 		if _, ok := mm.sessions[port]; !ok {
-			mm.startSessionLocked(ctx, port, len(ports))
+			mm.startSessionLocked(ctx, port, path, len(ports))
 			changed = true
 		}
 	}
 	for port, s := range mm.sessions {
-		if seen[port] {
+		if _, present := ports[port]; present {
 			continue
 		}
 		mm.misses[port]++
@@ -180,11 +189,13 @@ func (mm *MultiManager) rescan(ctx context.Context) {
 // are abandoned: a truly wedged write leaks one goroutine + handle -
 // degraded, never wedged; same-COM re-adoption self-heals via the
 // open-retry loop once the driver completes the I/O.
-func (mm *MultiManager) drain(s *lightSession) {
+func (mm *MultiManager) drain(s *lightSession) bool {
 	select {
 	case <-s.done:
+		return true
 	case <-time.After(drainTimeout):
 		mm.logger.Printf("light %s: session still draining", s.port)
+		return false
 	}
 }
 
@@ -203,7 +214,7 @@ func (mm *MultiManager) stillPresent(port string) bool {
 // is the only attached light and no per-port state exists yet, the legacy
 // single-light state file is migrated (renamed) so a one-light setup
 // keeps its remembered look across the upgrade.
-func (mm *MultiManager) startSessionLocked(ctx context.Context, port string, scanCount int) {
+func (mm *MultiManager) startSessionLocked(ctx context.Context, port, interfacePath string, scanCount int) {
 	statePath := mm.statePath(port)
 	if statePath != "" && scanCount == 1 {
 		if _, err := os.Stat(statePath); os.IsNotExist(err) {
@@ -215,17 +226,16 @@ func (mm *MultiManager) startSessionLocked(ctx context.Context, port string, sca
 	}
 	logger := log.New(mm.logger.Writer(), port+" ", mm.logger.Flags()|log.Lmsgprefix)
 	m := NewManager(logger, statePath)
-	p := port
 	// Presence reads the debounced rescan snapshot - sessions never call
 	// the enumerator directly (one shared, rate-limited view of the bus).
-	m.Present = func() bool { return mm.stillPresent(p) }
+	m.Present = func() bool { return mm.stillPresent(port) }
 	sessCtx, cancel := context.WithCancel(ctx)
 	s := &lightSession{port: port, m: m, cancel: cancel, done: make(chan struct{})}
 	mm.sessions[port] = s
 	mm.logger.Printf("light %s: starting session", port)
 	go func() {
 		defer close(s.done)
-		m.Run(sessCtx, func() (Port, error) { return mm.openPort(p) })
+		m.Run(sessCtx, func() (Port, error) { return mm.openPort(interfacePath) })
 	}()
 }
 
@@ -290,6 +300,11 @@ func (mm *MultiManager) HandleCommand(cmd string) string {
 		return "error: unknown light command"
 	}
 	switch fields[0] {
+	case "pair", "unpair":
+		if len(fields) != 2 {
+			return "error: usage: light " + fields[0] + " <COMx>"
+		}
+		return mm.changePairing(fields[0], fields[1])
 	case "name":
 		if len(fields) != 3 {
 			return "error: usage: light name <COMx> <name>"
@@ -448,21 +463,7 @@ const (
 // returns to serveUDP and reads another datagram. Per-light calls are still
 // bounded and run in parallel, matching the existing collective operations.
 func (mm *MultiManager) handleDelta(kind deltaKind, delta int) string {
-	mm.mu.Lock()
-	ports := mm.portsLocked()
-	managers := make(map[string]*Manager, len(ports))
-	for _, port := range ports {
-		managers[port] = mm.sessions[port].m
-	}
-	mm.mu.Unlock()
-	for _, port := range mm.reg.All() {
-		if _, ok := managers[port]; ok {
-			continue
-		}
-		managers[port] = nil
-		ports = append(ports, port)
-	}
-	sortPorts(ports)
+	ports, managers := mm.knownManagers()
 	if len(ports) == 0 {
 		return "error: no light"
 	}
@@ -757,26 +758,34 @@ func (mm *MultiManager) label(port string) string {
 	return port
 }
 
-// known renders every addressable light for error messages:
-// "COM4=desk, COM7" (attached ports plus named-but-absent ports).
-func (mm *MultiManager) known() string {
-	set := map[string]bool{}
+// knownManagers includes disconnected pairings and previously named ports.
+func (mm *MultiManager) knownManagers() ([]string, map[string]*Manager) {
+	managers := map[string]*Manager{}
+	for _, port := range mm.reg.All() {
+		managers[port] = nil
+	}
 	mm.mu.Lock()
-	for p := range mm.sessions {
-		set[p] = true
+	for port := range mm.pairings {
+		managers[port] = nil
+	}
+	for port, s := range mm.sessions {
+		managers[port] = s.m
 	}
 	mm.mu.Unlock()
-	for _, p := range mm.reg.All() {
-		set[p] = true
+
+	ports := make([]string, 0, len(managers))
+	for port := range managers {
+		ports = append(ports, port)
 	}
-	if len(set) == 0 {
+	sortPorts(ports)
+	return ports, managers
+}
+
+func (mm *MultiManager) known() string {
+	all, _ := mm.knownManagers()
+	if len(all) == 0 {
 		return "none"
 	}
-	all := make([]string, 0, len(set))
-	for p := range set {
-		all = append(all, p)
-	}
-	sortPorts(all)
 	parts := make([]string, len(all))
 	for i, p := range all {
 		if name := mm.reg.NameFor(p); name != "" {
@@ -791,35 +800,18 @@ func (mm *MultiManager) known() string {
 // list renders one line per known light:
 // "<port> <name|-> connected <state>" or "<port> <name|-> disconnected".
 func (mm *MultiManager) list() string {
-	managers := map[string]*Manager{}
-	mm.mu.Lock()
-	for p, s := range mm.sessions {
-		managers[p] = s.m
-	}
-	mm.mu.Unlock()
-	set := map[string]bool{}
-	for p := range managers {
-		set[p] = true
-	}
-	for _, p := range mm.reg.All() {
-		set[p] = true
-	}
-	if len(set) == 0 {
+	ports, managers := mm.knownManagers()
+	if len(ports) == 0 {
 		return "no lights known"
 	}
-	ports := make([]string, 0, len(set))
-	for p := range set {
-		ports = append(ports, p)
-	}
-	sortPorts(ports)
 	lines := make([]string, len(ports))
 	for i, p := range ports {
 		name := mm.reg.NameFor(p)
 		if name == "" {
 			name = "-"
 		}
-		m, ok := managers[p]
-		if !ok {
+		m := managers[p]
+		if m == nil {
 			lines[i] = fmt.Sprintf("%s %s disconnected", p, name)
 			continue
 		}

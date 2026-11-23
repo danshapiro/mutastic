@@ -774,7 +774,7 @@ func newPartialFailureMulti(t *testing.T, fail map[int]error) (*MultiManager, co
 		}
 		return healthy, nil
 	}
-	mm := NewMultiManager(testLogger(), t.TempDir(), NewRegistry(""), enumerate, open)
+	mm := newPairedFixture(t, t.TempDir(), NewRegistry(""), enumerate, open)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {
 		cancel()

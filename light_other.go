@@ -9,9 +9,8 @@ import (
 )
 
 // The daemon only supports Windows; these stubs keep cross-platform
-// builds and tests compiling. enumeratePL81Ports erroring means the
-// rescan loop fails open with zero sessions.
-func enumeratePL81Ports() ([]string, error) {
+// builds and tests compiling.
+func enumerateLightCandidates() (map[string]string, error) {
 	return nil, errors.New("the mutastic daemon only supports Windows")
 }
 

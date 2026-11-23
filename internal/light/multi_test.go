@@ -89,6 +89,27 @@ func fastRescan(t *testing.T) {
 	t.Cleanup(func() { rescanInterval = old })
 }
 
+// Existing fleet fixtures represent paired lights. Their fake device paths
+// happen to match their port labels; the discovery tests use distinct paths.
+func newPairedFixture(t *testing.T, dir string, reg *Registry, ports func() ([]string, error), open OpenPort) *MultiManager {
+	t.Helper()
+	scan := func() (map[string]string, error) {
+		ports, err := ports()
+		paths := make(map[string]string, len(ports))
+		for _, p := range ports {
+			paths[p] = p
+		}
+		return paths, err
+	}
+	mm := NewMultiManager(testLogger(), dir, reg, scan, open)
+	var err error
+	mm.pairings, err = scan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mm
+}
+
 // newTestMulti builds a MultiManager over the fleet. stateDir may be ""
 // (no persistence). The registry persists to <stateDir>/light-names.json.
 func newTestMulti(t *testing.T, fleet *fakeFleet, stateDir string) (*MultiManager, context.Context) {
@@ -97,7 +118,7 @@ func newTestMulti(t *testing.T, fleet *fakeFleet, stateDir string) (*MultiManage
 	if stateDir != "" {
 		regPath = filepath.Join(stateDir, "light-names.json")
 	}
-	mm := NewMultiManager(testLogger(), stateDir, NewRegistry(regPath), fleet.enumerate, fleet.open)
+	mm := newPairedFixture(t, stateDir, NewRegistry(regPath), fleet.enumerate, fleet.open)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {
 		cancel()
@@ -171,6 +192,7 @@ func TestRescanDiscoversHotPluggedLight(t *testing.T) {
 	fastRescan(t)
 	fleet := newFakeFleet("COM4")
 	mm, ctx := newTestMulti(t, fleet, "")
+	mm.pairings["COM7"] = "COM7" // this panel starts unplugged
 	runCtx, stopRun := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
@@ -187,7 +209,7 @@ func TestRescanDiscoversHotPluggedLight(t *testing.T) {
 	})
 	waitConnected(t, mm, "COM4")
 
-	fleet.set("COM4", "COM7") // plug in a second light, no restart
+	fleet.set("COM4", "COM7") // plug a previously paired panel back in, no restart
 	waitConnected(t, mm, "COM4", "COM7")
 
 	// The stable light must not be churned by rescans: exactly one wake.
@@ -290,7 +312,7 @@ func TestRescanUnblockedByWedgedPort(t *testing.T) {
 		}
 		return healthy, nil
 	}
-	mm := NewMultiManager(testLogger(), "", NewRegistry(""), enumerate, open)
+	mm := newPairedFixture(t, "", NewRegistry(""), enumerate, open)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {
 		cancel()
@@ -559,7 +581,7 @@ func TestMultiDeltaGrammarAndPartialFailure(t *testing.T) {
 		}
 		return healthy, nil
 	}
-	mm := NewMultiManager(testLogger(), "", NewRegistry(""), enumerate, open)
+	mm := newPairedFixture(t, "", NewRegistry(""), enumerate, open)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {
 		cancel()
@@ -752,7 +774,7 @@ func TestMultiFanOutBoundedByWedgedLight(t *testing.T) {
 		}
 		return healthy, nil
 	}
-	mm := NewMultiManager(testLogger(), "", NewRegistry(""), enumerate, open)
+	mm := newPairedFixture(t, "", NewRegistry(""), enumerate, open)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {
 		cancel()

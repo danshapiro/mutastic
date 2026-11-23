@@ -9,20 +9,14 @@ machine's unit on 2026-08-08 (see "Local probe results" below).
 ## Transport (VERIFIED locally)
 
 - The light is a CH340 USB-to-serial bridge: **VID `0x1A86`, PID `0x7523`**
-- On this machine it enumerates as `USB-SERIAL CH340 (COM4)` (driver already
-  present; port status OK). Do NOT hardcode COM4 — enumerate by VID/PID
-  (go.bug.st/serial/enumerator).
-- With multiple panels, VID/PID no longer discriminates and the CH340
-  exposes **no USB serial number** — measured, not folklore: this unit's
-  Windows instance ID is a machine-generated location ID
-  (`8&39d912e3&0&3`, verified 2026-08-09 — no iSerialNumber, so
-  `SerialNumber` is always empty via go.bug.st). The **COM port name is
-  the light's identity** (this is what
-  `light name`/`light-state-<COMx>.json` key on). Windows keys the COM
-  assignment to the physical-jack location path, and ComDB never recycles
-  released COM numbers — an unplugged device keeps its number reserved.
-  Moving a panel to a different jack gives it a new COM number, i.e. a
-  new identity (re-run `light name`).
+- Other products use the same bridge. Use Windows Plug and Play metadata to
+  enumerate candidates. Only an explicitly paired COM name and device
+  interface path may start a session. Each open and retry uses that interface
+  path directly. Names and per-port settings still use the COM number.
+- These panels have no USB serial number. Windows derives the instance from
+  the USB jack (COM4's instance suffix is `8&39d912e3&0&3`). Before reusing
+  a paired jack for another CH340, run `mutastic light unpair COM4`. Identify
+  and pair a panel again if moved to another jack.
 - **115200 baud, 8N1**
 - Open sequence used by working implementations: open, reset buffers, write
   wake bytes `00 00 00 00`, sleep ~80-120ms. Insert ~60ms delay before each
@@ -105,14 +99,14 @@ echo: 3A 02 03 01 00 09 00 49   <- ACK, light turned off
 
 ## Multiple panels
 
-- The daemon enumerates ALL VID 1A86 / PID 7523 ports and runs one
-  independent session per port (own state tracker, reconnect loop, and
+- The daemon reads present port metadata and runs one independent session
+  per matching pairing (own state tracker, reconnect loop, and
   60 ms rate-limited writes). A rescan every 5 s starts sessions for
   newly plugged-in panels; a session is torn down only after its port is
   missing from 2 CONSECUTIVE successful scans (debounce — a transient
   enumeration omission or power blip never kills a session). No daemon
   restart needed.
-- Identity = COM port name (see Transport). User-facing names map to
+- Pairings are stored in `%LOCALAPPDATA%\mutastic\light-pairs.json`. User-facing names map to
   ports in `%LOCALAPPDATA%\mutastic\light-names.json`; each panel's last
   look persists in `light-state-<COMx>.json`.
 - Collective toggle: if ANY panel is on, all turn off; otherwise all turn
@@ -170,7 +164,8 @@ echo: 3A 02 03 01 00 09 00 49   <- ACK, light turned off
    settles whether wake-once-per-session
    suffices.
 6. When the two additional PL81 PRO panels arrive: plug each in, confirm
-   the daemon discovers it within ~5 s (`light list` gains a row; log
+   its COM number by unplugging and replugging, pair it, and confirm
+   the daemon connects within ~5 s (`light list` gains a row; log
    shows `light COM<n>: starting session`), name them, confirm which COM
    maps to which physical light, and verify the mapping survives a
    replug into the SAME USB jack. Also verify clean teardown on unplug

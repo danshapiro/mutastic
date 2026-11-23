@@ -1256,7 +1256,7 @@ func TestOversizedSettingsDeleteRejectsWholeOnWire(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "light-settings.json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	storeHandler := light.NewMultiManager(testLogger(), dir, light.NewRegistry(""), func() ([]string, error) { return nil, nil }, nil)
+	storeHandler := light.NewMultiManager(testLogger(), dir, light.NewRegistry(""), func() (map[string]string, error) { return nil, nil }, nil)
 	open := func() (Device, error) { return newFakeDevice(), nil }
 	_, ask := startDaemonLight(t, open, storeHandler)
 
@@ -1328,7 +1328,7 @@ func TestFullBufferDatagramRefusedOnWire(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "light-settings.json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	storeHandler := light.NewMultiManager(testLogger(), dir, light.NewRegistry(""), func() ([]string, error) { return nil, nil }, nil)
+	storeHandler := light.NewMultiManager(testLogger(), dir, light.NewRegistry(""), func() (map[string]string, error) { return nil, nil }, nil)
 	open := func() (Device, error) { return newFakeDevice(), nil }
 	_, ask := startDaemonLight(t, open, storeHandler)
 

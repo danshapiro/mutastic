@@ -22,13 +22,24 @@ so your desk agrees with itself everywhere you look.
 
 Dial brightness and warmth across every panel at once or each light by name,
 jump straight to a mood with presets like *sunlight* or *candle*, or flick the
-whole fleet on and off together. Panels you plug in later join the family on
-their own, and every light remembers its favorite look across reboots. Give a
-panel a name and talk to it directly:
+whole fleet on and off together.
+
+Pair each PL81 once, including after upgrading from automatic discovery.
+In Windows Device Manager, expand **Ports (COM & LPT)**. Unplug just the
+panel's USB cable, plug it back into the same jack, and note which COM
+port disappears and returns. For example, if the panel is COM4:
 
 ```
-mutastic light@\"left key\" brightness 60
+mutastic light pair COM4
+mutastic light name COM4 desk-right
+mutastic light@desk-right brightness 60
 ```
+
+A paired panel reconnects automatically within about five seconds. Its name,
+saved looks, and remembered settings survive pairing. Before using that USB
+jack for another device, run `mutastic light unpair COM4`. These panels have
+no unique USB serial number, so Windows can give an identical bridge in the
+same jack the same device identity.
 
 Lights at **28% / 3356 K** for a call? Save it:
 
